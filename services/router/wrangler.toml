@@ -1,0 +1,59 @@
+name = "trainfabric-router"
+main = "src/index.ts"
+compatibility_date = "2025-03-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+STREAM_SIZE_THRESHOLD_BYTES = "52428800"
+MAX_RESULT_ROWS = "10000000"
+ENABLE_BRANCHING = "false"
+CASE_A_MODE = "manifest"
+WARM_HOT_THRESHOLD = "20"
+WARM_IDLE_TIMEOUT_MS = "600000"
+CATALOG_BACKEND = "rest"
+ICEBERG_WAREHOUSE = "s3://trainfabric-data/__r2_data_catalog"
+R2_BUCKET = "trainfabric-data"
+R2_REGION = "auto"
+R2_ENDPOINT = "https://e5793b12d9dd58ea18bde1fbbed5262b.r2.cloudflarestorage.com"
+ICEBERG_REST_URI = "https://catalog.cloudflarestorage.com/e5793b12d9dd58ea18bde1fbbed5262b/trainfabric-data"
+ICEBERG_WAREHOUSE_ID = "e5793b12d9dd58ea18bde1fbbed5262b_trainfabric-data"
+
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "trainfabric-data"
+preview_bucket_name = "trainfabric-data"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "trainfabric-registry"
+database_id = "3c61f216-8adf-46b5-a82f-346cc51407cc"
+
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "dataset-embeddings"
+
+[ai]
+binding = "AI"
+
+[[containers]]
+class_name = "ComputeContainer"
+image = "../compute/Dockerfile"
+max_instances = 2
+
+[durable_objects]
+bindings = [
+  { name = "CATALOG_DO", class_name = "CatalogDO" },
+  { name = "WARM_ROUTER_DO", class_name = "WarmRouterDO" },
+  { name = "COMPUTE", class_name = "ComputeContainer" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["CatalogDO", "WarmRouterDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["ComputeContainer"]
+
+# Dashboard UI is hosted on Vercel (dynamic Next.js).
+# This Worker is API-only.

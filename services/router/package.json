@@ -1,0 +1,28 @@
+{
+  "name": "@trainfabric/router",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run --coverage",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "^0.3.7",
+    "@trainfabric/shared": "workspace:*",
+    "agents": "^0.0.94",
+    "hono": "^4.7.4",
+    "jose": "^6.0.10",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.8.1",
+    "@cloudflare/workers-types": "^4.20250317.0",
+    "@vitest/coverage-v8": "^3.0.9",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.9",
+    "wrangler": "^4.0.0"
+  }
+}

@@ -1,0 +1,27 @@
+name = "trainfabric-router"
+main = "src/index.ts"
+compatibility_date = "2025-03-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+STREAM_SIZE_THRESHOLD_BYTES = "52428800"
+MAX_RESULT_ROWS = "10000000"
+ENABLE_BRANCHING = "false"
+CASE_A_MODE = "manifest"
+WARM_HOT_THRESHOLD = "20"
+WARM_IDLE_TIMEOUT_MS = "600000"
+
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "trainfabric-data"
+preview_bucket_name = "trainfabric-data-preview"
+
+[durable_objects]
+bindings = [
+  { name = "CATALOG_DO", class_name = "CatalogDO" },
+  { name = "WARM_ROUTER_DO", class_name = "WarmRouterDO" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["CatalogDO", "WarmRouterDO"]

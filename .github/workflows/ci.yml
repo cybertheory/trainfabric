@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install
+      - run: pnpm --filter @trainfabric/shared build
+      - run: pnpm --filter @trainfabric/shared test
+      - run: pnpm --filter @trainfabric/router test
+
+  py:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_USER: test
+          POSTGRES_DB: iceberg
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      minio:
+        image: minio/minio:latest
+        env:
+          MINIO_ROOT_USER: minio
+          MINIO_ROOT_PASSWORD: minio12345
+        ports: ["9000:9000"]
+        options: --health-cmd "curl -f http://localhost:9000/minio/health/live" --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install compute deps
+        working-directory: services/compute
+        run: |
+          pip install -r requirements.txt
+      - name: Pytest
+        working-directory: services/compute
+        env:
+          ICEBERG_CATALOG_URI: postgresql://test:test@localhost:5432/iceberg
+          ICEBERG_WAREHOUSE: file:///tmp/warehouse
+          CATALOG_BACKEND: sql
+          S3_ENDPOINT: http://127.0.0.1:9000
+          AWS_ACCESS_KEY_ID: minio
+          AWS_SECRET_ACCESS_KEY: minio12345
+        run: |
+          mkdir -p /tmp/warehouse
+          # Prefer local sqlite for unit suite stability; Postgres available for integration
+          export ICEBERG_CATALOG_URI=sqlite:////tmp/iceberg_ci.db
+          pytest -q

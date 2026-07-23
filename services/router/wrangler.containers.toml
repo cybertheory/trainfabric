@@ -1,0 +1,35 @@
+# Enable after creating R2 S3 API tokens in the Cloudflare dashboard
+# (R2 → Manage API Tokens → Object Read & Write on trainfabric-data), then:
+#
+#   cd services/router
+#   pnpm exec wrangler secret put R2_ACCESS_KEY_ID
+#   pnpm exec wrangler secret put R2_SECRET_ACCESS_KEY
+#   # optional durable Iceberg catalog:
+#   pnpm exec wrangler secret put ICEBERG_CATALOG_URI
+#
+# Then merge this into wrangler.toml (or: wrangler deploy -c wrangler.containers.toml)
+
+name = "trainfabric-router"
+main = "src/index.ts"
+compatibility_date = "2025-03-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[containers]]
+class_name = "ComputeContainer"
+image = "../compute/Dockerfile"
+max_instances = 2
+
+[durable_objects]
+bindings = [
+  { name = "CATALOG_DO", class_name = "CatalogDO" },
+  { name = "WARM_ROUTER_DO", class_name = "WarmRouterDO" },
+  { name = "COMPUTE", class_name = "ComputeContainer" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["CatalogDO", "WarmRouterDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["ComputeContainer"]

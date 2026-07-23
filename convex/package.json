@@ -1,0 +1,6 @@
+# Package marker so pnpm workspace can optionally depend on convex types later.
+{
+  "name": "@trainfabric/convex",
+  "private": true,
+  "version": "0.1.0"
+}
