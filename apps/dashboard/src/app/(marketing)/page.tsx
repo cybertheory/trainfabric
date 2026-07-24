@@ -95,7 +95,7 @@ export default function LandingPage() {
         <div aria-hidden className="pointer-events-none absolute inset-0 landing-intel-glow" />
         <div className="relative mx-auto max-w-6xl px-5 py-20 sm:px-6 sm:py-24">
           <div className="mx-auto max-w-3xl text-center">
-            <h2 className="font-display text-[clamp(1.85rem,4vw,2.85rem)] font-semibold tracking-[-0.03em]">
+            <h2 className="font-display text-[clamp(1.85rem,4vw,2.85rem)] font-semibold leading-[1.35] tracking-[-0.03em]">
               The Agentic Data Lakehouse
             </h2>
             <p className="mt-5 text-lg leading-relaxed text-[hsl(190_12%_68%)] sm:text-xl">
