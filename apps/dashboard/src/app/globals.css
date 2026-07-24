@@ -130,6 +130,26 @@
     0 30px 80px hsl(0 0% 0% / 0.35);
 }
 
+.landing-slice-step {
+  animation: landing-rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.landing-slice-step-0 {
+  animation-delay: 0.05s;
+}
+
+.landing-slice-step-1 {
+  animation-delay: 0.12s;
+}
+
+.landing-slice-step-2 {
+  animation-delay: 0.19s;
+}
+
+.landing-slice-step-3 {
+  animation-delay: 0.26s;
+}
+
 @keyframes landing-rise {
   from {
     opacity: 0;
