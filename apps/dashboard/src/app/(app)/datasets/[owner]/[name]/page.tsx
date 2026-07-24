@@ -61,12 +61,19 @@ export default function DatasetDetailPage() {
         const full = await apiFetch<DatasetDetail>(`/datasets/${found.id}`);
         setDataset(full);
         setSelected(full.schema?.columns.map((c) => c.name) ?? []);
+        // Show registry sample immediately — compute /sample can hang on cold containers.
+        const seeded = full.schema?.sampleRows ?? [];
+        setPreview(seeded);
         apiFetch<{ rows: Record<string, unknown>[] }>(`/datasets/${found.id}/sample`, {
           method: "POST",
           body: JSON.stringify({ n: 20 }),
         })
-          .then((s) => setPreview(s.rows))
-          .catch(() => setPreview(full.schema?.sampleRows ?? []));
+          .then((s) => {
+            if (s.rows?.length) setPreview(s.rows);
+          })
+          .catch(() => {
+            /* keep seeded rows */
+          });
         apiFetch<{ snapshots: unknown[] }>(`/datasets/${found.id}/snapshots`)
           .then((s) => setSnapshots(s.snapshots))
           .catch(() => setSnapshots([]));
@@ -170,7 +177,7 @@ export default function DatasetDetailPage() {
         </div>
       </div>
 
-      <Tabs defaultValue="overview">
+      <Tabs defaultValue="preview">
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="schema">Schema</TabsTrigger>
@@ -191,6 +198,10 @@ export default function DatasetDetailPage() {
           {dataset.materializationDecision ? (
             <p className="text-sm text-muted-foreground">{dataset.materializationDecision.reason}</p>
           ) : null}
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Sample rows</p>
+            <ResultsTable rows={preview.slice(0, 5)} />
+          </div>
         </TabsContent>
 
         <TabsContent value="schema">

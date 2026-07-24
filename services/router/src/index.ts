@@ -329,21 +329,23 @@ app.post("/datasets/:id/sample", async (c) => {
     const { authorizeDataset } = await import("./resolver");
     authorizeDataset(ds, c.get("identity"));
     const n = Number((await c.req.json().catch(() => ({}))).n ?? 20);
-    const fallbackRows = () => c.json({ rows: (ds.schema?.sampleRows ?? []).slice(0, n) });
-    if (!(c.env.COMPUTE || c.env.COMPUTE_URL)) {
-      return fallbackRows();
+    const registryRows = (ds.schema?.sampleRows ?? []).slice(0, n);
+
+    // Prefer fast registry sample; only hit compute briefly when registry is empty.
+    if (registryRows.length || !(c.env.COMPUTE || c.env.COMPUTE_URL)) {
+      return c.json({ rows: registryRows });
     }
     try {
       const compute = createComputeClientFromEnv(c.env);
-      const rows = await compute.sample(
-        ds.icebergTable ?? ds.id,
-        n,
-        ds.icebergNamespace ?? "default",
-      );
-      return c.json({ rows });
+      const rows = await Promise.race([
+        compute.sample(ds.icebergTable ?? ds.id, n, ds.icebergNamespace ?? "default"),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
+      ]);
+      if (Array.isArray(rows) && rows.length) return c.json({ rows });
     } catch {
-      return fallbackRows();
+      /* empty */
     }
+    return c.json({ rows: registryRows });
   } catch (e) {
     return errResponse(e);
   }
