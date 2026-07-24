@@ -2,18 +2,16 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-import type { CostTier, DatasetMeta, QueryEstimate, SchemaContract } from "@trainfabric/shared";
-import { Star, Download, GitBranch } from "lucide-react";
+import type { DatasetMeta, QueryEstimate, SchemaContract } from "@trainfabric/shared";
+import { Star, GitBranch } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Textarea } from "@/components/ui/textarea";
-import { Separator } from "@/components/ui/separator";
 import { CreateDerivedDialog } from "@/components/create-derived-dialog";
 import { DatasetAgentSidebar } from "@/components/dataset-agent-sidebar";
+import { DatasetQueryPanel } from "@/components/dataset-query-panel";
 import { apiFetch } from "@/lib/api";
 import { formatBytes, formatRows } from "@/lib/utils";
 
@@ -22,13 +20,6 @@ type DatasetDetail = DatasetMeta & {
   materializationDecision?: { mode: string; reason: string };
   stale?: boolean;
 };
-
-function CostBadge({ tier }: { tier?: CostTier }) {
-  if (!tier) return null;
-  const variant = tier === "cache" ? "cache" : tier === "A" ? "A" : "B";
-  const label = tier === "cache" ? "cache hit" : tier === "A" ? "Case A · zero compute" : "Case B · compute";
-  return <Badge variant={variant}>{label}</Badge>;
-}
 
 export default function DatasetDetailPage() {
   const params = useParams<{ owner: string; name: string }>();
@@ -40,8 +31,6 @@ export default function DatasetDetailPage() {
   const [selected, setSelected] = useState<string[]>([]);
   const [filter, setFilter] = useState("");
   const [estimate, setEstimate] = useState<QueryEstimate | null>(null);
-  const [results, setResults] = useState<Record<string, unknown>[] | null>(null);
-  const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [snapshots, setSnapshots] = useState<unknown[]>([]);
   const [lineage, setLineage] = useState<unknown>(null);
 
@@ -106,33 +95,6 @@ export default function DatasetDetailPage() {
     }, 300);
     return () => clearTimeout(t);
   }, [dataset?.id, selected, filter]);
-
-  async function runQuery() {
-    if (!dataset) return;
-    try {
-      const result = await apiFetch<{
-        costTier: CostTier;
-        url?: string;
-        arrowBase64?: string;
-        rowCount?: number;
-        affordances?: string[];
-      }>(`/datasets/${dataset.id}/query`, {
-        method: "POST",
-        body: JSON.stringify({
-          columns: selected.length ? selected : undefined,
-          filter: filter || undefined,
-          mode: "stream",
-          limit: 100,
-        }),
-      });
-      setResultUrl(result.url ?? null);
-      if (result.affordances?.length) toast.message(result.affordances[0]);
-      setResults([{ note: `Returned ${result.rowCount ?? "?"} rows`, costTier: result.costTier, url: result.url }]);
-      toast.success(`Query ${result.costTier}`);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Query failed");
-    }
-  }
 
   const storageStory = useMemo(() => {
     if (dataset?.kind !== "derived") return null;
@@ -242,50 +204,16 @@ export default function DatasetDetailPage() {
               </Table>
             </TabsContent>
 
-            <TabsContent value="query" className="space-y-4 pt-2">
-              <div className="flex flex-wrap items-center gap-3">
-                <CostBadge tier={estimate?.costTier} />
-                {estimate ? (
-                  <span className="text-xs text-muted-foreground">
-                    ~{formatRows(estimate.estimatedRows)} rows · {formatBytes(estimate.estimatedBytes)}
-                    {estimate.cacheHit ? " · cached" : ""}
-                  </span>
-                ) : null}
-              </div>
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {columns.map((c) => (
-                  <label key={c.name} className="flex items-center gap-2 text-sm">
-                    <Checkbox
-                      checked={selected.includes(c.name)}
-                      onCheckedChange={(v) => {
-                        setSelected((prev) =>
-                          v ? [...prev, c.name] : prev.filter((x) => x !== c.name),
-                        );
-                      }}
-                    />
-                    {c.name}
-                    {c.isPartition ? <Badge variant="outline">partition</Badge> : null}
-                  </label>
-                ))}
-              </div>
-              <Textarea
-                placeholder="Filter e.g. pickup_date = '2024-01-01' AND fare_amount > 10"
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
+            <TabsContent value="query">
+              <DatasetQueryPanel
+                dataset={dataset}
+                columns={columns}
+                selected={selected}
+                setSelected={setSelected}
+                filter={filter}
+                setFilter={setFilter}
+                estimate={estimate}
               />
-              <div className="flex gap-2">
-                <Button onClick={runQuery}>Run query</Button>
-                {resultUrl ? (
-                  <Button variant="outline" asChild>
-                    <a href={resultUrl} target="_blank" rel="noreferrer">
-                      <Download className="h-4 w-4" />
-                      Download
-                    </a>
-                  </Button>
-                ) : null}
-              </div>
-              <Separator />
-              {results ? <ResultsTable rows={results} /> : null}
             </TabsContent>
 
             <TabsContent value="versions" className="space-y-2 pt-2">
