@@ -47,13 +47,13 @@ export default function LandingPage() {
     <div className="landing relative bg-[#f4f8fa] text-[hsl(210_28%_12%)]">
       <LandingNav />
 
-      {/* Hero */}
-      <section className="relative isolate min-h-[100svh]">
+      {/* Hero — normal document flow (no nested scroll / no vertical centering) */}
+      <section className="relative isolate min-h-[85svh] overflow-visible">
         <div aria-hidden className="pointer-events-none absolute inset-0 landing-atmosphere" />
         <LakehouseVisual />
 
-        <div className="relative z-10 mx-auto flex min-h-[100svh] max-w-6xl flex-col px-5 pt-28 pb-28 sm:px-6 sm:pt-32 lg:pt-36">
-          <div className="landing-rise my-auto max-w-[44rem] space-y-6 overflow-visible sm:space-y-7">
+        <div className="relative z-10 mx-auto max-w-6xl px-5 pb-16 pt-28 sm:px-6 sm:pb-20 sm:pt-32 lg:pb-24 lg:pt-36">
+          <div className="landing-rise max-w-[44rem] space-y-6 sm:space-y-7">
             <h1 className="landing-hero-title font-display text-[clamp(2.5rem,7vw,5.25rem)] font-bold tracking-[-0.03em] text-[hsl(210_40%_8%)]">
               The Agentic Multiplayer Data Lakehouse
             </h1>
@@ -86,11 +86,6 @@ export default function LandingPage() {
             </ul>
           </div>
         </div>
-
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-x-0 bottom-0 z-[5] h-40 bg-gradient-to-b from-transparent via-[#f4f8fa]/60 to-[#071016]"
-        />
       </section>
 
       {/* Exact slice — near top */}
