@@ -17,6 +17,15 @@ export function SiteHeader() {
           <Link href="/datasets" className="hover:text-foreground">
             Datasets
           </Link>
+          <Link href="/docs" className="hover:text-foreground">
+            Docs
+          </Link>
+          <Link href="/docs/mcp" className="hidden hover:text-foreground sm:inline">
+            MCP
+          </Link>
+          <Link href="/docs/api" className="hidden hover:text-foreground sm:inline">
+            API
+          </Link>
           <Link href="/me" className="hover:text-foreground">
             My datasets
           </Link>

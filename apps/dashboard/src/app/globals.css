@@ -56,6 +56,47 @@
   }
 }
 
+/* Docs prose */
+.docs-prose h2 {
+  @apply mt-10 scroll-mt-24 font-display text-2xl font-semibold tracking-tight;
+}
+.docs-prose h3 {
+  @apply mt-8 scroll-mt-24 font-display text-xl font-semibold tracking-tight;
+}
+.docs-prose p {
+  @apply mt-4 text-[0.975rem] leading-relaxed text-[hsl(210_12%_32%)];
+}
+.docs-prose a {
+  @apply font-medium text-[hsl(168_55%_28%)] underline-offset-2 hover:underline;
+}
+.docs-prose ul {
+  @apply mt-4 list-disc space-y-2 pl-5 text-[0.975rem] text-[hsl(210_12%_32%)];
+}
+.docs-prose ol {
+  @apply mt-4 list-decimal space-y-2 pl-5 text-[0.975rem] text-[hsl(210_12%_32%)];
+}
+.docs-prose table {
+  @apply mt-6 w-full border-collapse overflow-hidden rounded-xl text-left text-sm;
+}
+.docs-prose th {
+  @apply border-b border-[hsl(200_18%_86%)] bg-[hsl(195_25%_96%)] px-3 py-2 font-medium;
+}
+.docs-prose td {
+  @apply border-b border-[hsl(200_18%_90%)] px-3 py-2 align-top text-[hsl(210_12%_32%)];
+}
+.docs-prose pre {
+  @apply mt-4 overflow-x-auto rounded-xl border border-[hsl(200_18%_86%)] bg-[#0b1218] p-4 text-sm text-[hsl(168_30%_88%)];
+}
+.docs-prose code {
+  @apply rounded bg-[hsl(195_25%_94%)] px-1.5 py-0.5 font-mono text-[0.85em] text-[hsl(210_28%_18%)];
+}
+.docs-prose pre code {
+  @apply bg-transparent p-0 text-inherit;
+}
+.docs-prose blockquote {
+  @apply mt-4 border-l-2 border-[hsl(168_40%_45%)] pl-4 text-[hsl(210_12%_38%)];
+}
+
 /* Landing page */
 .landing-btn-primary {
   background: hsl(168 58% 28%);

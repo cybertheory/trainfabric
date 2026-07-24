@@ -1,0 +1,43 @@
+---
+title: Agent Skill
+description: Install the Trainfabric skill so agents know how to use the lakehouse.
+---
+
+# Agent Skill
+
+The Trainfabric agent skill teaches coding agents how to connect over MCP, discover datasets, and query slices — without rediscovering the API each session.
+
+## Install (Cursor / skill-compatible agents)
+
+Copy the skill into your agent skills directory, or clone from this repo:
+
+```
+apps/dashboard/content/skills/trainfabric/SKILL.md
+```
+
+Typical Cursor location:
+
+```
+~/.cursor/skills/trainfabric/SKILL.md
+```
+
+## What the skill does
+
+- Points the agent at the production MCP URL
+- Lists workflow tools (`discover` → `inspect` → `estimate` → `query`)
+- Explains private vs public visibility
+- Reminds agents to prefer exact slices over full downloads
+
+## MCP URL (quick paste)
+
+```
+https://trainfabric-router.rishabhspro.workers.dev/mcp
+```
+
+## After install
+
+1. Ask your agent: “List Trainfabric datasets about taxi trips”
+2. Then: “Estimate and query a cheap slice”
+3. Or: “Publish this CSV as a private dataset for our team”
+
+See also: [MCP](/docs/mcp) · [API](/docs/api) · [Quickstart](/docs/quickstart)

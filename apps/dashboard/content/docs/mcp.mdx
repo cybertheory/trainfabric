@@ -1,0 +1,60 @@
+---
+title: MCP
+description: Connect agents to Trainfabric over the Model Context Protocol.
+---
+
+# MCP
+
+Trainfabric exposes the same resolver over MCP so agents can discover, inspect, estimate, and query without custom glue.
+
+## Endpoint
+
+| Method | Path |
+|--------|------|
+| `GET` | `/mcp/tools` — list tools |
+| `POST` | `/mcp` — call tools |
+
+**Production base**
+
+```
+https://trainfabric-router.rishabhspro.workers.dev
+```
+
+**MCP URL**
+
+```
+https://trainfabric-router.rishabhspro.workers.dev/mcp
+```
+
+## Cursor / Claude config
+
+```json
+{
+  "mcpServers": {
+    "trainfabric": {
+      "url": "https://trainfabric-router.rishabhspro.workers.dev/mcp"
+    }
+  }
+}
+```
+
+If your client expects HTTP JSON-RPC tools, `POST /mcp` accepts `tools/list`, `tools/call`, or the tool name as `method`.
+
+## Tools
+
+| Tool | Purpose |
+|------|---------|
+| `discover_datasets` | Find datasets by intent / tags |
+| `inspect_schema` | Schema + cheap filter hints |
+| `estimate_query` | Cost / case estimate before running |
+| `query_slice` | Exact column + filter query |
+| `sample_dataset` | Peek at rows |
+| `publish_dataset` | Ingest / publish |
+| `check_job` | Poll async jobs |
+| `create_derived_dataset` | Materialize derived tables |
+| `preview_derived` | Preview a derived spec |
+| `get_lineage` | Upstream / downstream lineage |
+
+## Auth
+
+When Clerk is configured, pass `Authorization: Bearer <token>`. Otherwise anonymous access works for public datasets.

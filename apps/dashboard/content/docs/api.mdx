@@ -1,0 +1,63 @@
+---
+title: API
+description: REST API for humans, agents, and automation.
+---
+
+# API
+
+Base URL:
+
+```
+https://trainfabric-router.rishabhspro.workers.dev
+```
+
+All routes below are relative to that host. Dashboard local proxy: `/api/proxy`.
+
+## Health
+
+```
+GET /health
+```
+
+## Datasets
+
+| Method | Path | Notes |
+|--------|------|-------|
+| `GET` | `/datasets` | List / search (`search`, `tag`, `owner`) |
+| `GET` | `/datasets/:id` | Metadata |
+| `GET` | `/datasets/:id/schema` | Schema contract |
+| `GET` | `/datasets/:id/snapshots` | Iceberg snapshots |
+| `GET` | `/datasets/:id/lineage` | Lineage graph |
+| `POST` | `/datasets` | Publish / ingest |
+| `POST` | `/datasets/derived` | Create derived dataset |
+| `POST` | `/datasets/:id/query` | Query slice |
+| `POST` | `/datasets/:id/estimate` | Estimate query |
+| `POST` | `/datasets/:id/sample` | Sample rows |
+| `POST` | `/datasets/:id/rebuild` | Rebuild derived |
+
+## Jobs & results
+
+| Method | Path |
+|--------|------|
+| `GET` | `/jobs/:id` |
+| `GET` | `/results/:hash` |
+
+## MCP
+
+| Method | Path |
+|--------|------|
+| `GET` | `/mcp/tools` |
+| `POST` | `/mcp` |
+
+## Example: query
+
+```bash
+curl -X POST https://trainfabric-router.rishabhspro.workers.dev/datasets/<id>/query \
+  -H 'content-type: application/json' \
+  -d '{
+    "columns": ["pickup_date", "fare"],
+    "filters": [{ "column": "pickup_date", "op": "eq", "value": "2024-01-01" }]
+  }'
+```
+
+Identical queries return cached results. Partition-aligned filters can resolve to zero-compute (presigned ranges).
