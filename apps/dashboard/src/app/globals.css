@@ -97,7 +97,34 @@
   @apply mt-4 border-l-2 border-[hsl(168_40%_45%)] pl-4 text-[hsl(210_12%_38%)];
 }
 
-/* Landing page */
+/* Landing page
+   Tight line-heights let the next line paint over descenders (g/y/p look flat-cut).
+   Keep generous leading on display type — this is not an overflow issue. */
+.landing h1.landing-hero-title {
+  line-height: 1.45;
+  overflow: visible;
+  padding-bottom: 0.1em;
+}
+
+.landing-hero-body {
+  line-height: 1.75;
+  overflow: visible;
+}
+
+.landing .font-display {
+  line-height: 1.4;
+  overflow: visible;
+  padding-bottom: 0.08em;
+}
+
+.landing-btn-primary,
+.landing-btn-secondary {
+  overflow: visible;
+  line-height: 1.4;
+  padding-top: 0.55em;
+  padding-bottom: 0.55em;
+}
+
 .landing-btn-primary {
   background: hsl(168 58% 28%);
   box-shadow: 0 1px 0 hsl(168 50% 40% / 0.35) inset, 0 8px 24px hsl(168 45% 20% / 0.18);
@@ -153,11 +180,9 @@
 @keyframes landing-rise {
   from {
     opacity: 0;
-    transform: translateY(16px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
   }
 }
 

@@ -44,20 +44,20 @@ const DOORS = [
 
 export default function LandingPage() {
   return (
-    <div className="landing relative overflow-x-hidden bg-[#f4f8fa] text-[hsl(210_28%_12%)]">
+    <div className="landing relative bg-[#f4f8fa] text-[hsl(210_28%_12%)]">
       <LandingNav />
 
       {/* Hero */}
-      <section className="relative isolate min-h-[100svh] overflow-x-hidden">
+      <section className="relative isolate min-h-[100svh]">
         <div aria-hidden className="pointer-events-none absolute inset-0 landing-atmosphere" />
         <LakehouseVisual />
 
         <div className="relative z-10 mx-auto flex min-h-[100svh] max-w-6xl flex-col px-5 pt-28 pb-28 sm:px-6 sm:pt-32 lg:pt-36">
-          <div className="landing-rise my-auto max-w-[44rem] space-y-6 sm:space-y-7">
-            <h1 className="font-display text-[clamp(2.5rem,7vw,5.25rem)] font-bold leading-[1.08] tracking-[-0.035em] text-[hsl(210_40%_8%)]">
+          <div className="landing-rise my-auto max-w-[44rem] space-y-6 overflow-visible sm:space-y-7">
+            <h1 className="landing-hero-title font-display text-[clamp(2.5rem,7vw,5.25rem)] font-bold tracking-[-0.03em] text-[hsl(210_40%_8%)]">
               The Agentic Multiplayer Data Lakehouse
             </h1>
-            <p className="max-w-lg text-[0.95rem] leading-relaxed text-[hsl(210_12%_38%)] sm:text-lg sm:leading-relaxed">
+            <p className="landing-hero-body max-w-lg text-[0.95rem] text-[hsl(210_12%_38%)] sm:text-lg">
               Agents and Developers can now effortlessly host, share, and query
               the exact data they need for faster workflows, analysis, and
               autoresearch. No matter the size.
@@ -65,13 +65,13 @@ export default function LandingPage() {
             <div className="flex flex-wrap items-center gap-3 pt-1">
               <Link
                 href="/docs/agent-skill"
-                className="landing-btn-primary inline-flex h-11 items-center justify-center rounded-full px-6 text-sm font-medium text-white"
+                className="landing-btn-primary inline-flex min-h-11 items-center justify-center rounded-full px-6 py-2.5 text-sm font-medium leading-normal text-white"
               >
                 Connect an agent
               </Link>
               <Link
                 href="/datasets"
-                className="landing-btn-secondary inline-flex h-11 items-center justify-center rounded-full px-6 text-sm font-medium text-[hsl(210_28%_14%)]"
+                className="landing-btn-secondary inline-flex min-h-11 items-center justify-center rounded-full px-6 py-2.5 text-sm font-medium leading-normal text-[hsl(210_28%_14%)]"
               >
                 Explore datasets
               </Link>
@@ -102,9 +102,9 @@ export default function LandingPage() {
               <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[hsl(168_45%_58%)]">
                 What you need is what you get
               </p>
-              <h2 className="font-display text-[clamp(1.85rem,4vw,2.85rem)] font-semibold leading-[1.08] tracking-[-0.03em]">
-                Agents ask as granular as they want
-              </h2>
+                <h2 className="font-display text-[clamp(1.85rem,4vw,2.85rem)] font-semibold tracking-[-0.03em]">
+                  Agents ask as granular as they want
+                </h2>
               <p className="max-w-md text-base leading-relaxed text-[hsl(190_12%_68%)] sm:text-lg">
                 Every query runs in a sandbox. We pull only the columns and rows
                 requested — then hand back a download link. No full-table dumps.
@@ -126,7 +126,7 @@ export default function LandingPage() {
                 <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[hsl(168_45%_58%)]">
                   Built for agents
                 </p>
-                <h2 className="font-display text-[clamp(2rem,5vw,3.75rem)] font-semibold leading-[1.05] tracking-[-0.03em]">
+                <h2 className="font-display text-[clamp(2rem,5vw,3.75rem)] font-semibold tracking-[-0.03em]">
                   Democratizing access to intelligence
                 </h2>
                 <p className="max-w-md text-lg leading-relaxed text-[hsl(190_14%_68%)] sm:text-xl">

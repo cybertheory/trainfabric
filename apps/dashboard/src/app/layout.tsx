@@ -5,7 +5,13 @@ import { Providers } from "@/components/providers";
 
 const sans = DM_Sans({ subsets: ["latin"], variable: "--font-sans" });
 const mono = IBM_Plex_Mono({ subsets: ["latin"], weight: ["400", "500"], variable: "--font-mono" });
-const display = Syne({ subsets: ["latin"], variable: "--font-display" });
+const display = Syne({
+  subsets: ["latin"],
+  variable: "--font-display",
+  // Avoid metric clipping from fallback swap; keep descenders in layout
+  adjustFontFallback: false,
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "Trainfabric — The Agentic Multiplayer Data Lakehouse",
