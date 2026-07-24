@@ -56,11 +56,43 @@
   }
 }
 
-/* Landing page motion */
+/* Landing page */
+.landing-btn-primary {
+  background: hsl(168 58% 28%);
+  box-shadow: 0 1px 0 hsl(168 50% 40% / 0.35) inset, 0 8px 24px hsl(168 45% 20% / 0.18);
+  transition: background 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+
+.landing-btn-primary:hover {
+  background: hsl(168 58% 24%);
+  transform: translateY(-1px);
+  box-shadow: 0 1px 0 hsl(168 50% 40% / 0.4) inset, 0 12px 28px hsl(168 45% 20% / 0.22);
+}
+
+.landing-btn-secondary {
+  border: 1px solid hsl(200 18% 78% / 0.9);
+  background: hsl(0 0% 100% / 0.55);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 1px 0 hsl(0 0% 100% / 0.65) inset;
+  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.landing-btn-secondary:hover {
+  background: hsl(0 0% 100% / 0.82);
+  border-color: hsl(200 16% 62%);
+  transform: translateY(-1px);
+}
+
+.landing-panel {
+  box-shadow:
+    0 0 0 1px hsl(168 40% 40% / 0.08),
+    0 30px 80px hsl(0 0% 0% / 0.35);
+}
+
 @keyframes landing-rise {
   from {
     opacity: 0;
-    transform: translateY(18px);
+    transform: translateY(16px);
   }
   to {
     opacity: 1;
@@ -77,12 +109,12 @@
 @keyframes landing-node-pulse {
   0%,
   100% {
-    opacity: 0.75;
+    opacity: 0.7;
     transform: scale(1);
   }
   50% {
     opacity: 1;
-    transform: scale(1.08);
+    transform: scale(1.06);
   }
 }
 
@@ -92,81 +124,89 @@
     transform: translateY(0);
   }
   50% {
-    transform: translateY(-10px);
+    transform: translateY(-8px);
   }
 }
 
 @keyframes landing-atmosphere-shift {
   0%,
   100% {
-    opacity: 0.85;
+    opacity: 0.9;
     transform: scale(1);
   }
   50% {
     opacity: 1;
-    transform: scale(1.04);
+    transform: scale(1.03);
   }
 }
 
 .landing-rise {
-  animation: landing-rise 0.9s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: landing-rise 0.85s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .landing-atmosphere {
   background:
-    radial-gradient(ellipse 70% 50% at 70% 35%, hsl(168 40% 70% / 0.35), transparent 60%),
-    radial-gradient(ellipse 50% 40% at 20% 70%, hsl(205 45% 75% / 0.4), transparent 55%),
-    radial-gradient(ellipse 40% 30% at 50% 10%, hsl(195 50% 92% / 0.8), transparent 50%);
-  animation: landing-atmosphere-shift 14s ease-in-out infinite;
+    radial-gradient(ellipse 55% 45% at 78% 32%, hsl(168 42% 68% / 0.32), transparent 62%),
+    radial-gradient(ellipse 40% 35% at 18% 72%, hsl(205 40% 78% / 0.28), transparent 55%),
+    radial-gradient(ellipse 35% 28% at 42% 8%, hsl(195 50% 96% / 0.7), transparent 50%);
+  animation: landing-atmosphere-shift 16s ease-in-out infinite;
 }
 
 .landing-intel-glow {
   background:
-    radial-gradient(ellipse 55% 60% at 15% 80%, hsl(168 45% 28% / 0.35), transparent 55%),
-    radial-gradient(ellipse 40% 50% at 85% 20%, hsl(195 40% 30% / 0.28), transparent 50%);
+    radial-gradient(ellipse 50% 55% at 12% 85%, hsl(168 55% 28% / 0.28), transparent 58%),
+    radial-gradient(ellipse 45% 40% at 88% 18%, hsl(195 45% 28% / 0.22), transparent 52%);
+}
+
+.landing-intel-grid {
+  background-image:
+    linear-gradient(hsl(190 20% 100% / 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(190 20% 100% / 0.03) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 50%, black, transparent 75%);
 }
 
 .landing-stream {
-  stroke-dasharray: 10 16;
-  animation: landing-stream-dash 8s linear infinite;
+  stroke-dasharray: 8 14;
+  animation: landing-stream-dash 9s linear infinite;
 }
 
 .landing-stream-b {
-  animation-duration: 10s;
+  animation-duration: 11s;
   animation-delay: -2s;
 }
 
 .landing-stream-c {
-  animation-duration: 9s;
+  animation-duration: 10s;
   animation-delay: -4s;
 }
 
 .landing-stream-d {
-  animation-duration: 11s;
+  animation-duration: 12s;
   animation-delay: -1s;
 }
 
 .landing-stream-e {
-  animation-duration: 12s;
+  animation-duration: 13s;
   animation-delay: -6s;
 }
 
 .landing-node {
   transform-box: fill-box;
   transform-origin: center;
-  animation: landing-node-pulse 4.5s ease-in-out infinite;
+  animation: landing-node-pulse 5s ease-in-out infinite;
 }
 
 .landing-node-1 {
-  animation-delay: -1.4s;
+  animation-delay: -1.6s;
 }
 
 .landing-node-2 {
-  animation-delay: -2.8s;
+  animation-delay: -3.2s;
 }
 
 .landing-ripple {
-  animation: landing-ripple-drift 9s ease-in-out infinite;
+  animation: landing-ripple-drift 10s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -176,5 +216,10 @@
   .landing-node,
   .landing-ripple {
     animation: none;
+  }
+
+  .landing-btn-primary:hover,
+  .landing-btn-secondary:hover {
+    transform: none;
   }
 }
