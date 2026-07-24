@@ -6,7 +6,7 @@ const withMDX = createMDX({
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  transpilePackages: ["@trainfabric/shared"],
+  transpilePackages: ["@trainfabric/shared", "fumadocs-ui", "fumadocs-core", "fumadocs-mdx"],
 };
 
 export default withMDX(nextConfig);

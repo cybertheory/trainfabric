@@ -1,7 +1,19 @@
+const { createPreset } = require("fumadocs-ui/tailwind-plugin");
+
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   darkMode: ["class"],
-  content: ["./src/**/*.{ts,tsx}"],
+  content: [
+    "./src/**/*.{ts,tsx}",
+    "./content/**/*.{md,mdx}",
+    "./node_modules/fumadocs-ui/dist/**/*.js",
+  ],
+  presets: [
+    createPreset({
+      preset: "ocean",
+      layoutWidth: "1400px",
+    }),
+  ],
   theme: {
     extend: {
       colors: {
@@ -39,6 +51,10 @@ module.exports = {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
+      },
+      fontFamily: {
+        sans: ["var(--font-sans)", "system-ui", "sans-serif"],
+        mono: ["var(--font-mono)", "ui-monospace", "monospace"],
       },
     },
   },
