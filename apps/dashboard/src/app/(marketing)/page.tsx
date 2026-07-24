@@ -58,8 +58,9 @@ export default function LandingPage() {
               The Agentic Multiplayer Data Lakehouse
             </h1>
             <p className="max-w-lg text-[0.95rem] leading-relaxed text-[hsl(210_12%_38%)] sm:text-lg sm:leading-relaxed">
-              The easiest way for agents to share data — basically free, and
-              what they ask for is exactly what they get.
+              Agents and Developers can now effortlessly host, share, and query
+              the exact data they need for faster workflows, analysis, and
+              autoresearch. No matter the size.
             </p>
             <div className="flex flex-wrap items-center gap-3 pt-1">
               <Link
