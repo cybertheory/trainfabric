@@ -98,8 +98,8 @@
 }
 
 /* Landing page
-   Tight line-heights let the next line paint over descenders (g/y/p look flat-cut).
-   Keep generous leading on display type — this is not an overflow issue. */
+   Syne at large sizes clips descenders unless the line box is padded.
+   Hero stays tight; section titles use an inner span box. */
 .landing h1.landing-hero-title {
   line-height: 1.12;
   overflow: visible;
@@ -112,17 +112,19 @@
 }
 
 .landing .font-display {
-  line-height: 1.4;
   overflow: visible;
-  padding-bottom: 0.08em;
 }
 
-/* Single-line section titles still need room for Syne descenders (g/y/p) */
-.landing h2.font-display {
-  line-height: 1.35;
+.landing-section-title {
+  line-height: 1;
   overflow: visible;
-  padding-top: 0.08em;
-  padding-bottom: 0.22em;
+}
+
+.landing-section-title > span {
+  display: inline-block;
+  line-height: 1.3;
+  padding: 0.12em 0.06em 0.28em;
+  overflow: visible;
 }
 
 .landing-btn-primary,
