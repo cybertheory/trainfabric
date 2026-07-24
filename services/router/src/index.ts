@@ -231,16 +231,34 @@ app.get("/datasets/:id/snapshots", async (c) => {
     if (!ds) return c.json({ error: "Not found" }, 404);
     const { authorizeDataset } = await import("./resolver");
     authorizeDataset(ds, c.get("identity"));
-    if (!(c.env.COMPUTE || c.env.COMPUTE_URL)) {
-      return c.json({
+
+    const fallback = () =>
+      c.json({
         snapshots: ds.latestSnapshotId
-          ? [{ snapshot_id: ds.latestSnapshotId, summary: { "total-records": ds.rowCount } }]
+          ? [
+              {
+                snapshotId: ds.latestSnapshotId,
+                summary: { "total-records": String(ds.rowCount ?? 0) },
+              },
+            ]
           : [],
       });
+
+    if (!(c.env.COMPUTE || c.env.COMPUTE_URL)) {
+      return fallback();
     }
-    const compute = createComputeClientFromEnv(c.env);
-    const snaps = await compute.snapshots(ds.id, ds.icebergNamespace ?? "default");
-    return c.json({ snapshots: snaps });
+    try {
+      const compute = createComputeClientFromEnv(c.env);
+      const snaps = await compute.snapshots(
+        ds.icebergTable ?? ds.id,
+        ds.icebergNamespace ?? "default",
+      );
+      if (snaps?.length) return c.json({ snapshots: snaps });
+      return fallback();
+    } catch {
+      // Container/catalog may be cold or misconfigured — registry snapshot is enough for UI.
+      return fallback();
+    }
   } catch (e) {
     return errResponse(e);
   }
@@ -314,12 +332,21 @@ app.post("/datasets/:id/sample", async (c) => {
     const { authorizeDataset } = await import("./resolver");
     authorizeDataset(ds, c.get("identity"));
     const n = Number((await c.req.json().catch(() => ({}))).n ?? 20);
+    const fallbackRows = () => c.json({ rows: (ds.schema?.sampleRows ?? []).slice(0, n) });
     if (!(c.env.COMPUTE || c.env.COMPUTE_URL)) {
-      return c.json({ rows: (ds.schema?.sampleRows ?? []).slice(0, n) });
+      return fallbackRows();
     }
-    const compute = createComputeClientFromEnv(c.env);
-    const rows = await compute.sample(ds.id, n, ds.icebergNamespace ?? "default");
-    return c.json({ rows });
+    try {
+      const compute = createComputeClientFromEnv(c.env);
+      const rows = await compute.sample(
+        ds.icebergTable ?? ds.id,
+        n,
+        ds.icebergNamespace ?? "default",
+      );
+      return c.json({ rows });
+    } catch {
+      return fallbackRows();
+    }
   } catch (e) {
     return errResponse(e);
   }
