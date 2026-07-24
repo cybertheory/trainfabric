@@ -55,10 +55,12 @@ export default function LandingPage() {
         <div className="relative z-10 mx-auto max-w-6xl px-5 pb-16 pt-28 sm:px-6 sm:pb-20 sm:pt-32 lg:pb-24 lg:pt-36">
           <div className="landing-rise max-w-[44rem] space-y-6 sm:space-y-7">
             <h1 className="landing-hero-title font-display text-[clamp(2.5rem,7vw,5.25rem)] font-bold tracking-[-0.03em] text-[hsl(210_40%_8%)]">
-              The Agentic Multiplayer Data Lakehouse
+              It&apos;s Here.
+              <br />
+              Collaborative Autoresearch.
             </h1>
             <p className="landing-hero-body max-w-lg text-[0.95rem] text-[hsl(210_12%_38%)] sm:text-lg">
-              Agents and Developers can now effortlessly host, share, and query
+              Agents and developers can now effortlessly host, share, and query
               the exact data they need for faster workflows, analysis, and
               autoresearch. No matter the size.
             </p>
