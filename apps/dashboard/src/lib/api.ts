@@ -5,6 +5,8 @@ const API =
     ? "https://trainfabric-router.rishabhspro.workers.dev"
     : "/api/proxy");
 
+const PUBLIC_WORKER = "https://trainfabric-router.rishabhspro.workers.dev";
+
 function apiBase(): string {
   const configured = API.replace(/\/$/, "");
   if (typeof window === "undefined") return configured;
@@ -16,6 +18,14 @@ function apiBase(): string {
     return "/api/proxy";
   }
   return configured || "/api/proxy";
+}
+
+/** Absolute Worker origin for docs / MCP / curl snippets (never the local proxy). */
+export function publicApiOrigin(): string {
+  const configured = (process.env.NEXT_PUBLIC_API_URL ?? PUBLIC_WORKER).replace(/\/$/, "");
+  if (configured.includes("127.0.0.1") || configured.includes("localhost")) return PUBLIC_WORKER;
+  if (configured.startsWith("http")) return configured;
+  return PUBLIC_WORKER;
 }
 
 export async function apiFetch<T>(
