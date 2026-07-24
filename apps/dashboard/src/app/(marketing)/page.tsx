@@ -94,20 +94,17 @@ export default function LandingPage() {
       <section className="relative bg-[#071016] text-[hsl(190_20%_94%)]">
         <div aria-hidden className="pointer-events-none absolute inset-0 landing-intel-glow" />
         <div className="relative mx-auto max-w-6xl px-5 py-20 sm:px-6 sm:py-24">
-          <div className="grid gap-10 lg:grid-cols-[0.95fr_1.05fr] lg:items-center lg:gap-14">
-            <div className="space-y-5">
-              <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[hsl(168_45%_58%)]">
-                What you need is what you get
-              </p>
-                <h2 className="font-display text-[clamp(1.85rem,4vw,2.85rem)] font-semibold tracking-[-0.03em]">
-                  Agents ask as granular as they want
-                </h2>
-              <p className="max-w-md text-base leading-relaxed text-[hsl(190_12%_68%)] sm:text-lg">
-                Every query runs in a sandbox. We pull only the columns and rows
-                requested — then hand back a download link. No full-table dumps.
-                No guessing.
-              </p>
-            </div>
+          <div className="mx-auto max-w-3xl text-center">
+            <h2 className="font-display text-[clamp(1.85rem,4vw,2.85rem)] font-semibold tracking-[-0.03em]">
+              The Agentic Data Lakehouse
+            </h2>
+            <p className="mt-5 text-lg leading-relaxed text-[hsl(190_12%_68%)] sm:text-xl">
+              What you need is what you get. Every query runs in a sandbox. We
+              pull only the columns and rows requested — then hand back a
+              download link. No full-table dumps. No guessing.
+            </p>
+          </div>
+          <div className="mt-12 lg:mt-14">
             <SliceFlowVisual />
           </div>
         </div>
