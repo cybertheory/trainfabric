@@ -11,6 +11,7 @@ import {
   type ResolverDeps,
 } from "./resolver";
 import { createRegistry } from "./registry";
+import { createD1Registry } from "./d1";
 import {
   createComputeClientFromEnv,
   CONTAINER_COMPUTE,
@@ -277,7 +278,7 @@ app.get("/datasets/:id/lineage", async (c) => {
 
 app.post("/datasets/:id/query", async (c) => {
   try {
-    const body = (await c.req.json()) as Partial<QueryRequest>;
+    const body = (await c.req.json()) as Partial<QueryRequest> & { name?: string; save?: boolean };
     const req: QueryRequest = {
       datasetId: c.req.param("id"),
       columns: body.columns,
@@ -296,7 +297,110 @@ app.post("/datasets/:id/query", async (c) => {
       /* ignore if DO unavailable in tests */
     }
     const result = await resolveQuery(req, c.get("identity"), depsFrom(c));
-    return c.json(result);
+
+    // Persist as first-class query (history + forkable). Prefer R2 artifact URL when present.
+    let savedQueryId: string | undefined;
+    if (c.env.DB && body.save !== false) {
+      try {
+        const identity = identityOrAnon(c.get("identity"), c.env);
+        const owner = identity?.subject ?? "anon";
+        const d1 = createD1Registry(c.env.DB);
+        // Prefer durable R2 key from cache when available
+        let r2Url = result.url;
+        if (result.queryHash) {
+          const cached = await d1.lookupCache(result.queryHash);
+          if (cached?.r2Url) {
+            const base = c.env.R2_PUBLIC_BASE || new URL(c.req.url).origin;
+            r2Url = publicResultUrl(base, cached.r2Url);
+          }
+        }
+        const saved = await d1.upsertQuery({
+          owner,
+          datasetId: req.datasetId,
+          name: body.name,
+          columns: req.columns,
+          filter: req.filter,
+          snapshotId: req.snapshot,
+          branch: req.branch,
+          limit: req.limit,
+          queryHash: result.queryHash,
+          r2Url: r2Url,
+          costTier: result.costTier,
+          rowCount: result.rowCount,
+          sizeBytes: result.sizeBytes,
+        });
+        savedQueryId = saved.id;
+      } catch {
+        /* history is best-effort */
+      }
+    }
+
+    return c.json({ ...result, queryId: savedQueryId });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.get("/datasets/:id/queries", async (c) => {
+  try {
+    if (!c.env.DB) return c.json({ queries: [] });
+    const deps = depsFrom(c);
+    const ds = await deps.getDataset(c.req.param("id"));
+    if (!ds) return c.json({ error: "Not found" }, 404);
+    const { authorizeDataset } = await import("./resolver");
+    authorizeDataset(ds, c.get("identity"));
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    const d1 = createD1Registry(c.env.DB);
+    const queries = await d1.listQueries({
+      datasetId: ds.id,
+      owner: identity?.subject ?? "anon",
+      includePublic: true,
+      limit: Number(c.req.query("limit") ?? 50),
+    });
+    return c.json({
+      queries: queries.map((q) => {
+        const base = c.env.R2_PUBLIC_BASE || new URL(c.req.url).origin;
+        return {
+          ...q,
+          resultUrl: q.r2Url ? publicResultUrl(base, q.r2Url) : undefined,
+        };
+      }),
+    });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.get("/queries", async (c) => {
+  try {
+    if (!c.env.DB) return c.json({ queries: [] });
+    const d1 = createD1Registry(c.env.DB);
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    const onlyPublic = c.req.query("public") === "1";
+    const queries = await d1.listQueries({
+      owner: onlyPublic ? undefined : identity?.subject ?? "anon",
+      includePublic: true,
+      limit: Number(c.req.query("limit") ?? 50),
+    });
+    return c.json({ queries });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.patch("/queries/:id", async (c) => {
+  try {
+    if (!c.env.DB) return c.json({ error: "Queries require D1" }, 501);
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const body = (await c.req.json()) as { visibility?: Visibility; name?: string };
+    const d1 = createD1Registry(c.env.DB);
+    if (body.visibility) {
+      const updated = await d1.setQueryVisibility(c.req.param("id"), body.visibility, identity.subject);
+      if (!updated) return c.json({ error: "Not found or forbidden" }, 404);
+      return c.json(updated);
+    }
+    return c.json({ error: "Nothing to update" }, 400);
   } catch (e) {
     return errResponse(e);
   }
@@ -939,8 +1043,10 @@ export default {
       path.startsWith("/r2/") ||
       path === "/datasets" ||
       path === "/datasets/derived" ||
+      path === "/queries" ||
+      /^\/queries\/[^/]+$/.test(path) ||
       /^\/datasets\/[^/]+$/.test(path) ||
-      /^\/datasets\/[^/]+\/(schema|snapshots|lineage|query|estimate|sample|rebuild)$/.test(path) ||
+      /^\/datasets\/[^/]+\/(schema|snapshots|lineage|query|estimate|sample|rebuild|queries)$/.test(path) ||
       /^\/datasets\/[^/]+\/query\/proxy$/.test(path);
     if (!isApi) {
       const dash = (env.DASHBOARD_URL ?? "").replace(/\/$/, "");

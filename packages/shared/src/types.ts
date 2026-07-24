@@ -46,6 +46,9 @@ export interface DerivedSource {
   datasetId: string;
   snapshotPin?: string;
   query: QueryRequest;
+  /** When forking from a saved query, reuse its R2 artifact if present. */
+  queryId?: string;
+  resultR2Url?: string;
 }
 
 export type DerivedCombine =
@@ -158,6 +161,28 @@ export interface CreateDerivedRequest {
   tags?: string[];
   visibility: Visibility;
   spec: DerivedSpec;
+}
+
+/** First-class saved query — reusable slice, publishable, forkable. */
+export interface SavedQuery {
+  id: string;
+  owner: string;
+  datasetId: string;
+  name: string;
+  visibility: Visibility;
+  columns?: string[];
+  filter?: string;
+  snapshotId?: string;
+  branch?: string;
+  limit?: number;
+  queryHash: string;
+  r2Url?: string;
+  costTier?: CostTier;
+  rowCount?: number;
+  sizeBytes?: number;
+  lastRunAt: number;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export const STREAM_SIZE_THRESHOLD_BYTES = 50 * 1024 * 1024;

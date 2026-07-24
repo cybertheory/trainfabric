@@ -1,5 +1,7 @@
 /** D1-backed control plane (replaces Convex HTTP for Cloudflare deploy). */
 
+import type { CostTier, SavedQuery, Visibility } from "@trainfabric/shared";
+
 export interface D1Dataset {
   id: string;
   owner: string;
@@ -84,6 +86,35 @@ export async function ensureSchema(db: D1Database): Promise<void> {
     `,
     )
     .run();
+  await db
+    .prepare(
+      `
+      CREATE TABLE IF NOT EXISTS queries (
+        id TEXT PRIMARY KEY,
+        owner TEXT NOT NULL,
+        dataset_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        visibility TEXT NOT NULL DEFAULT 'private',
+        columns_json TEXT,
+        filter TEXT,
+        snapshot_id TEXT,
+        branch TEXT DEFAULT 'main',
+        limit_n INTEGER,
+        query_hash TEXT NOT NULL,
+        r2_url TEXT,
+        cost_tier TEXT,
+        row_count INTEGER,
+        size_bytes INTEGER,
+        last_run_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `,
+    )
+    .run();
+  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_queries_dataset ON queries(dataset_id)`).run();
+  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_queries_owner ON queries(owner)`).run();
+  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_queries_visibility ON queries(visibility)`).run();
 }
 
 function rowToDataset(r: Record<string, unknown>): D1Dataset {
@@ -108,6 +139,29 @@ function rowToDataset(r: Record<string, unknown>): D1Dataset {
     staleReason: r.stale_reason ? String(r.stale_reason) : undefined,
     icebergNamespace: r.iceberg_namespace ? String(r.iceberg_namespace) : undefined,
     icebergTable: r.iceberg_table ? String(r.iceberg_table) : undefined,
+    createdAt: Number(r.created_at),
+    updatedAt: Number(r.updated_at),
+  };
+}
+
+function rowToQuery(r: Record<string, unknown>): SavedQuery {
+  return {
+    id: String(r.id),
+    owner: String(r.owner),
+    datasetId: String(r.dataset_id),
+    name: String(r.name),
+    visibility: r.visibility as Visibility,
+    columns: r.columns_json ? (JSON.parse(String(r.columns_json)) as string[]) : undefined,
+    filter: r.filter ? String(r.filter) : undefined,
+    snapshotId: r.snapshot_id ? String(r.snapshot_id) : undefined,
+    branch: r.branch ? String(r.branch) : "main",
+    limit: r.limit_n != null ? Number(r.limit_n) : undefined,
+    queryHash: String(r.query_hash),
+    r2Url: r.r2_url ? String(r.r2_url) : undefined,
+    costTier: r.cost_tier ? (String(r.cost_tier) as CostTier) : undefined,
+    rowCount: r.row_count != null ? Number(r.row_count) : undefined,
+    sizeBytes: r.size_bytes != null ? Number(r.size_bytes) : undefined,
+    lastRunAt: Number(r.last_run_at),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
   };
@@ -328,6 +382,121 @@ export function createD1Registry(db: D1Database) {
         updatedAt: r.updated_at,
         createdAt: r.created_at,
       };
+    },
+
+    async upsertQuery(q: {
+      id?: string;
+      owner: string;
+      datasetId: string;
+      name?: string;
+      visibility?: Visibility;
+      columns?: string[];
+      filter?: string;
+      snapshotId?: string;
+      branch?: string;
+      limit?: number;
+      queryHash: string;
+      r2Url?: string;
+      costTier?: CostTier;
+      rowCount?: number;
+      sizeBytes?: number;
+    }): Promise<SavedQuery> {
+      await ensureSchema(db);
+      const now = Date.now();
+      // Reuse same hash+owner+dataset as an update (history collapses duplicates)
+      const existing = await db
+        .prepare(
+          `SELECT * FROM queries WHERE dataset_id = ? AND owner = ? AND query_hash = ? LIMIT 1`,
+        )
+        .bind(q.datasetId, q.owner, q.queryHash)
+        .first();
+      const id = existing ? String(existing.id) : q.id ?? `qry_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+      const name =
+        q.name ??
+        (existing ? String(existing.name) : q.filter ? `filter: ${q.filter.slice(0, 48)}` : "slice");
+      const visibility = (q.visibility ??
+        (existing ? String(existing.visibility) : "private")) as Visibility;
+      const createdAt = existing ? Number(existing.created_at) : now;
+      await db
+        .prepare(
+          `INSERT OR REPLACE INTO queries
+          (id, owner, dataset_id, name, visibility, columns_json, filter, snapshot_id, branch, limit_n,
+           query_hash, r2_url, cost_tier, row_count, size_bytes, last_run_at, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          id,
+          q.owner,
+          q.datasetId,
+          name,
+          visibility,
+          q.columns ? JSON.stringify(q.columns) : existing?.columns_json ?? null,
+          q.filter ?? (existing?.filter ? String(existing.filter) : null),
+          q.snapshotId ?? (existing?.snapshot_id ? String(existing.snapshot_id) : null),
+          q.branch ?? "main",
+          q.limit ?? (existing?.limit_n != null ? Number(existing.limit_n) : null),
+          q.queryHash,
+          q.r2Url ?? (existing?.r2_url ? String(existing.r2_url) : null),
+          q.costTier ?? (existing?.cost_tier ? String(existing.cost_tier) : null),
+          q.rowCount ?? (existing?.row_count != null ? Number(existing.row_count) : null),
+          q.sizeBytes ?? (existing?.size_bytes != null ? Number(existing.size_bytes) : null),
+          now,
+          createdAt,
+          now,
+        )
+        .run();
+      const row = await db.prepare("SELECT * FROM queries WHERE id = ?").bind(id).first();
+      return rowToQuery(row as Record<string, unknown>);
+    },
+
+    async listQueries(opts: {
+      datasetId?: string;
+      owner?: string;
+      includePublic?: boolean;
+      limit?: number;
+    }): Promise<SavedQuery[]> {
+      await ensureSchema(db);
+      const limit = opts.limit ?? 50;
+      let sql = "SELECT * FROM queries WHERE 1=1";
+      const binds: unknown[] = [];
+      if (opts.datasetId) {
+        sql += " AND dataset_id = ?";
+        binds.push(opts.datasetId);
+      }
+      if (opts.owner && opts.includePublic) {
+        sql += " AND (owner = ? OR visibility = 'public')";
+        binds.push(opts.owner);
+      } else if (opts.owner) {
+        sql += " AND owner = ?";
+        binds.push(opts.owner);
+      } else if (opts.includePublic) {
+        sql += " AND visibility = 'public'";
+      }
+      sql += " ORDER BY last_run_at DESC LIMIT ?";
+      binds.push(limit);
+      const res = await db
+        .prepare(sql)
+        .bind(...binds)
+        .all();
+      return (res.results ?? []).map((r) => rowToQuery(r as Record<string, unknown>));
+    },
+
+    async getQuery(id: string): Promise<SavedQuery | null> {
+      await ensureSchema(db);
+      const r = await db.prepare("SELECT * FROM queries WHERE id = ?").bind(id).first();
+      return r ? rowToQuery(r as Record<string, unknown>) : null;
+    },
+
+    async setQueryVisibility(id: string, visibility: Visibility, owner: string): Promise<SavedQuery | null> {
+      await ensureSchema(db);
+      const existing = await db.prepare("SELECT * FROM queries WHERE id = ?").bind(id).first();
+      if (!existing) return null;
+      if (String(existing.owner) !== owner && owner !== "admin") return null;
+      await db
+        .prepare(`UPDATE queries SET visibility = ?, updated_at = ? WHERE id = ?`)
+        .bind(visibility, Date.now(), id)
+        .run();
+      return this.getQuery(id);
     },
 
     async seedDemo() {

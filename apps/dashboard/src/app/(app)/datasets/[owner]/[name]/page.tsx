@@ -9,11 +9,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { CreateDerivedDialog } from "@/components/create-derived-dialog";
+import { ForkDialog } from "@/components/fork-dialog";
 import { DatasetAgentSidebar } from "@/components/dataset-agent-sidebar";
 import { DatasetQueryPanel } from "@/components/dataset-query-panel";
 import { apiFetch } from "@/lib/api";
 import { formatBytes, formatRows } from "@/lib/utils";
+import type { SavedQuery } from "@trainfabric/shared";
+
+type QueryRow = SavedQuery & { resultUrl?: string };
 
 type DatasetDetail = DatasetMeta & {
   schema?: SchemaContract;
@@ -33,6 +36,7 @@ export default function DatasetDetailPage() {
   const [estimate, setEstimate] = useState<QueryEstimate | null>(null);
   const [snapshots, setSnapshots] = useState<unknown[]>([]);
   const [lineage, setLineage] = useState<unknown>(null);
+  const [queries, setQueries] = useState<QueryRow[]>([]);
 
   useEffect(() => {
     if (!owner || !name) return;
@@ -74,6 +78,9 @@ export default function DatasetDetailPage() {
         apiFetch(`/datasets/${found.id}/lineage`)
           .then(setLineage)
           .catch(() => setLineage(null));
+        apiFetch<{ queries: QueryRow[] }>(`/datasets/${found.id}/queries`)
+          .then((q) => setQueries(q.queries))
+          .catch(() => setQueries([]));
       })
       .catch(() => setNotFound(true));
   }, [owner, name]);
@@ -142,7 +149,7 @@ export default function DatasetDetailPage() {
           {storageStory ? <p className="text-sm text-accent-foreground">{storageStory}</p> : null}
         </div>
         <div className="flex gap-2">
-          <CreateDerivedDialog source={dataset} />
+          <ForkDialog source={dataset} queries={queries} />
           <Button variant="outline" size="sm">
             <Star className="h-4 w-4" />
             {dataset.stars}
@@ -213,6 +220,8 @@ export default function DatasetDetailPage() {
                 filter={filter}
                 setFilter={setFilter}
                 estimate={estimate}
+                queries={queries}
+                onQueriesChange={setQueries}
               />
             </TabsContent>
 
