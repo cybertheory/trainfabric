@@ -47,16 +47,13 @@ export default function LandingPage() {
       <LandingNav />
 
       {/* Hero */}
-      <section className="relative isolate min-h-[100svh] overflow-hidden">
+      <section className="relative isolate min-h-[100svh] overflow-x-hidden">
         <div aria-hidden className="pointer-events-none absolute inset-0 landing-atmosphere" />
         <LakehouseVisual />
 
         <div className="relative z-10 mx-auto flex min-h-[100svh] max-w-6xl flex-col px-5 pt-28 pb-28 sm:px-6 sm:pt-32 lg:pt-36">
-          <div className="landing-rise my-auto max-w-[40rem] space-y-6 sm:space-y-7">
-            <p className="font-display text-[clamp(2.75rem,8vw,5.75rem)] font-bold leading-[0.95] tracking-[-0.04em] text-[hsl(210_40%_8%)]">
-              Trainfabric
-            </p>
-            <h1 className="max-w-xl font-display text-[clamp(1.35rem,3.2vw,2.15rem)] font-semibold leading-[1.2] tracking-[-0.02em] text-[hsl(210_22%_22%)]">
+          <div className="landing-rise my-auto max-w-[44rem] space-y-6 sm:space-y-7">
+            <h1 className="font-display text-[clamp(2.5rem,7vw,5.25rem)] font-bold leading-[1.08] tracking-[-0.035em] text-[hsl(210_40%_8%)]">
               The Agentic Multiplayer Data Lakehouse
             </h1>
             <p className="max-w-md text-[0.95rem] leading-relaxed text-[hsl(210_12%_38%)] sm:text-lg sm:leading-relaxed">
