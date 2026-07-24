@@ -563,6 +563,32 @@ export function createD1Registry(db: D1Database) {
           )
           .run();
       }
+      // Seed a couple of community updates so Home isn't empty after seed.
+      const social = await import("./social");
+      const store = social.createD1SocialStore(db);
+      const existingPost = await db.prepare("SELECT id FROM social_posts LIMIT 1").first();
+      if (!existingPost) {
+        await store.ensureConnection("demo", "demo_nyc_taxi", "manual");
+        await store.createPost({
+          authorId: "demo",
+          authorName: "demo",
+          datasetId: "demo_nyc_taxi",
+          body: "Welcome — partition on pickup_date for free Case A slices. Try filter pickup_date = '2024-01-01'.",
+          source: "user",
+          datasetOwner: "demo",
+          datasetName: "nyc-taxi-sample",
+        });
+        await store.createPost({
+          authorId: "agent",
+          authorName: "autoresearch",
+          datasetId: "demo_sensors",
+          body: "Finding: device_id + ts partitions keep most peeks Case A. Humidity nulls cluster on device_id=dev-2.",
+          source: "agent",
+          findings: { partition_hint: ["device_id", "ts"], note: "seed finding" },
+          datasetOwner: "demo",
+          datasetName: "iot-sensors",
+        });
+      }
     },
   };
 }

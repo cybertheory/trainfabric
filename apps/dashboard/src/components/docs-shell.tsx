@@ -26,7 +26,8 @@ export function DocsShell({
           url: "/",
         }}
         links={[
-          { text: "Datasets", url: "/datasets" },
+          { text: "Home", url: "/home" },
+          { text: "Discover", url: "/datasets" },
           { text: "MCP", url: "/docs/mcp" },
           { text: "API", url: "/docs/api" },
           { text: "Agent Skill", url: "/docs/agent-skill" },

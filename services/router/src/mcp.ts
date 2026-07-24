@@ -1,6 +1,12 @@
 /** MCP tool handlers — workflow-oriented agent interface. */
 
-import type { QueryRequest, DerivedSpec, Visibility } from "@trainfabric/shared";
+import type {
+  QueryRequest,
+  DerivedSpec,
+  Visibility,
+  SocialPost,
+  DatasetConnection,
+} from "@trainfabric/shared";
 import type { Identity, ResolverDeps, DatasetRecord } from "./resolver";
 import { resolveQuery, authorizeDataset, AuthError, NotFoundError } from "./resolver";
 import { discoverDatasets, type DiscoverConstraints } from "./discover";
@@ -28,6 +34,24 @@ export interface McpContext {
   }) => Promise<unknown>;
   previewDerived: (spec: DerivedSpec) => Promise<unknown>;
   getLineage: (id: string) => Promise<unknown>;
+  promptQuery: (args: {
+    dataset_id: string;
+    prompt: string;
+    execute?: boolean;
+    snapshot?: string;
+    namespace?: string;
+  }) => Promise<unknown>;
+  /** Auto-connect user after data access (query/sample). */
+  autoConnect?: (datasetId: string, source: "query" | "sample" | "agent") => Promise<void>;
+  postSocialUpdate?: (args: {
+    datasetId: string;
+    body: string;
+    findings?: Record<string, unknown>;
+    authorName?: string;
+  }) => Promise<SocialPost>;
+  connectDataset?: (datasetId: string) => Promise<{ connected: boolean }>;
+  listFeed?: (limit?: number) => Promise<SocialPost[]>;
+  listConnections?: () => Promise<DatasetConnection[]>;
   ai?: unknown;
   vectorize?: unknown;
 }
@@ -181,6 +205,59 @@ export const MCP_TOOLS = [
       required: ["dataset_id"],
     },
   },
+  {
+    name: "prompt_query",
+    description:
+      "Natural-language slice via Hermes DuckDB skill. Inspects schema, estimates cost, generates columns+filter (and optional DuckDB SQL), then optionally executes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        dataset_id: { type: "string" },
+        prompt: { type: "string" },
+        execute: { type: "boolean" },
+        snapshot: { type: "string" },
+        namespace: { type: "string" },
+      },
+      required: ["dataset_id", "prompt"],
+    },
+  },
+  {
+    name: "post_social_update",
+    description:
+      "Publish a social update / research finding to a dataset community feed. Requires user auth (permission). Notifies users connected to that dataset. Use after autoresearch to share findings.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        dataset_id: { type: "string" },
+        body: { type: "string", description: "Human-readable update / finding summary" },
+        findings: {
+          type: "object",
+          description: "Optional structured findings JSON for agents/downstream tools",
+        },
+        author_name: { type: "string", description: "Display name (e.g. agent or user label)" },
+      },
+      required: ["dataset_id", "body"],
+    },
+  },
+  {
+    name: "connect_dataset",
+    description:
+      "Connect (subscribe) the authenticated user to a dataset community — like starring. Connected users see feed updates and get notified.",
+    inputSchema: {
+      type: "object",
+      properties: { dataset_id: { type: "string" } },
+      required: ["dataset_id"],
+    },
+  },
+  {
+    name: "list_social_feed",
+    description:
+      "List recent social updates for datasets the user is connected to (or global public feed).",
+    inputSchema: {
+      type: "object",
+      properties: { limit: { type: "number" } },
+    },
+  },
 ] as const;
 
 export async function handleMcpTool(
@@ -272,9 +349,11 @@ export async function handleMcpTool(
         limit: args.limit as number | undefined,
       };
       const result = await resolveQuery(req, ctx.identity, ctx.deps);
+      await ctx.autoConnect?.(String(args.dataset_id), "agent");
       return ok(result, [
         ...(("affordances" in result && result.affordances) || []),
         "Refine: narrow columns/filter and re-estimate, or create_derived_dataset to reuse this slice.",
+        "Share findings with post_social_update for the dataset community.",
       ]);
     }
     case "sample_dataset": {
@@ -283,6 +362,7 @@ export async function handleMcpTool(
       if (!ds) throw new NotFoundError();
       authorizeDataset(ds, ctx.identity);
       const rows = await ctx.sample(id, Number(args.n ?? 20));
+      await ctx.autoConnect?.(id, "sample");
       return ok({ rows, next: "Use inspect_schema then estimate_query before a full slice." });
     }
     case "publish_dataset": {
@@ -326,6 +406,59 @@ export async function handleMcpTool(
     case "get_lineage": {
       const out = await ctx.getLineage(String(args.dataset_id));
       return ok(out);
+    }
+    case "prompt_query": {
+      const id = String(args.dataset_id);
+      const ds = await ctx.deps.getDataset(id);
+      if (!ds) throw new NotFoundError();
+      authorizeDataset(ds, ctx.identity);
+      const out = await ctx.promptQuery({
+        dataset_id: id,
+        prompt: String(args.prompt ?? ""),
+        execute: args.execute !== false,
+        snapshot: args.snapshot as string | undefined,
+        namespace: (args.namespace as string | undefined) ?? ds.icebergNamespace ?? "default",
+      });
+      if (args.execute !== false) await ctx.autoConnect?.(id, "agent");
+      return ok(out, [
+        "Hermes used duckdb-analytics: schema → estimate → DuckDB plan. Refine with estimate_query / query_slice if needed.",
+        "Share findings with post_social_update for the dataset community.",
+      ]);
+    }
+    case "post_social_update": {
+      if (!ctx.identity) throw new AuthError("Auth required to post social updates (user permission)");
+      if (!ctx.postSocialUpdate) throw new Error("Social store not configured");
+      const body = String(args.body ?? "").trim();
+      if (!body) throw new Error("body required");
+      const ds = await ctx.deps.getDataset(String(args.dataset_id));
+      if (!ds) throw new NotFoundError();
+      authorizeDataset(ds, ctx.identity);
+      const post = await ctx.postSocialUpdate({
+        datasetId: String(args.dataset_id),
+        body,
+        findings: args.findings as Record<string, unknown> | undefined,
+        authorName: args.author_name as string | undefined,
+      });
+      await ctx.autoConnect?.(String(args.dataset_id), "agent");
+      return ok({
+        post,
+        share_url: `/posts/${post.id}`,
+        next: "Connected users were notified. Share the post URL on X for discovery.",
+      });
+    }
+    case "connect_dataset": {
+      if (!ctx.identity) throw new AuthError("Auth required to connect");
+      if (!ctx.connectDataset) throw new Error("Social store not configured");
+      const ds = await ctx.deps.getDataset(String(args.dataset_id));
+      if (!ds) throw new NotFoundError();
+      authorizeDataset(ds, ctx.identity);
+      const out = await ctx.connectDataset(String(args.dataset_id));
+      return ok(out);
+    }
+    case "list_social_feed": {
+      if (!ctx.listFeed) throw new Error("Social store not configured");
+      const posts = await ctx.listFeed(Number(args.limit ?? 40));
+      return ok({ posts });
     }
     default:
       throw new Error(`Unknown tool: ${name}`);

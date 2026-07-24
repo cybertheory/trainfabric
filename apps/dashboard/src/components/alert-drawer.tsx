@@ -85,9 +85,22 @@ export function AlertDrawer() {
     markAllAlertsRead,
     dismissAlert,
     clearFinishedJobs,
+    authToken,
   } = useJobTracker();
 
   const recentJobs = jobs.slice(0, 8);
+
+  async function onMarkRead(id: string) {
+    markAlertRead(id);
+    const { markServerNotificationRead } = await import("@/components/notification-auth-bridge");
+    await markServerNotificationRead(authToken, id);
+  }
+
+  async function onMarkAll() {
+    markAllAlertsRead();
+    const { markAllServerNotificationsRead } = await import("@/components/notification-auth-bridge");
+    await markAllServerNotificationsRead(authToken);
+  }
 
   return (
     <DialogPrimitive.Root open={drawerOpen} onOpenChange={setDrawerOpen}>
@@ -102,10 +115,10 @@ export function AlertDrawer() {
           <div className="flex items-center justify-between border-b px-4 py-3">
             <div>
               <DialogPrimitive.Title className="text-sm font-semibold">
-                Activity
+                Notifications
               </DialogPrimitive.Title>
               <DialogPrimitive.Description className="text-xs text-muted-foreground">
-                Background jobs and alerts — monitor from anywhere.
+                Jobs, community updates, and alerts — monitor from anywhere.
               </DialogPrimitive.Description>
             </div>
             <DialogPrimitive.Close className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground">
@@ -146,7 +159,7 @@ export function AlertDrawer() {
                 <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                   Alerts
                 </h3>
-                <Button type="button" variant="ghost" size="sm" className="h-7 text-xs" onClick={markAllAlertsRead}>
+                <Button type="button" variant="ghost" size="sm" className="h-7 text-xs" onClick={() => void onMarkAll()}>
                   Mark all read
                 </Button>
               </div>
@@ -176,7 +189,7 @@ export function AlertDrawer() {
                           <div className="mt-2 flex flex-wrap gap-2">
                             {a.href ? (
                               <Button asChild variant="outline" size="sm" className="h-7 text-xs">
-                                <Link href={a.href} onClick={() => markAlertRead(a.id)}>
+                                <Link href={a.href} onClick={() => void onMarkRead(a.id)}>
                                   Open
                                 </Link>
                               </Button>
@@ -187,7 +200,7 @@ export function AlertDrawer() {
                               size="sm"
                               className="h-7 text-xs"
                               onClick={() => {
-                                markAlertRead(a.id);
+                                void onMarkRead(a.id);
                                 dismissAlert(a.id);
                               }}
                             >

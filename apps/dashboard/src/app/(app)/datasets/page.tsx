@@ -112,10 +112,10 @@ export default function HomePage() {
       ) : null}
 
       <section className="space-y-3">
-        <h1 className="text-3xl font-semibold tracking-tight">Datasets</h1>
+        <h1 className="text-3xl font-semibold tracking-tight">Discover</h1>
         <p className="max-w-2xl text-muted-foreground">
-          Browse public Iceberg datasets. Agents and humans query exact column + row slices —
-          cache hits and partition-aligned reads cost nothing.
+          Browse public Iceberg datasets. Connect to communities you care about — updates land in
+          your Home feed. Agents and humans query exact column + row slices.
         </p>
         <div className="flex flex-wrap gap-2">
           <div className="relative min-w-[240px] flex-1">

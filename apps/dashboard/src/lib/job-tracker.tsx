@@ -49,6 +49,19 @@ type JobTrackerValue = {
   markAllAlertsRead: () => void;
   dismissAlert: (id: string) => void;
   clearFinishedJobs: () => void;
+  /** Merge server-backed social notifications into the activity feed. */
+  mergeServerNotifications: (
+    items: Array<{
+      id: string;
+      title: string;
+      body: string;
+      href?: string;
+      createdAt: number;
+      read: boolean;
+    }>,
+  ) => void;
+  setAuthToken: (token: string | null) => void;
+  authToken: string | null;
 };
 
 const JOBS_KEY = "tf_tracked_jobs";
@@ -92,6 +105,7 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [authToken, setAuthToken] = useState<string | null>(null);
   const jobsRef = useRef(jobs);
   jobsRef.current = jobs;
 
@@ -146,7 +160,7 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
         body: `${job.name} is uploading in the background.`,
         kind: "info",
         jobId: job.jobId,
-        href: "/datasets",
+        href: "/home",
       });
     },
     [pushAlert],
@@ -200,7 +214,7 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
                 body: `${job.name} is ready.`,
                 kind: "success",
                 jobId: job.jobId,
-                href: "/datasets",
+                href: "/home",
               });
             } else {
               pushAlert({
@@ -241,6 +255,80 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
     setJobs((prev) => prev.filter((j) => j.status === "pending" || j.status === "running"));
   }, []);
 
+  const mergeServerNotifications = useCallback(
+    (
+      items: Array<{
+        id: string;
+        title: string;
+        body: string;
+        href?: string;
+        createdAt: number;
+        read: boolean;
+      }>,
+    ) => {
+      if (!items.length) return;
+      setAlerts((prev) => {
+        const existing = new Set(prev.map((a) => a.id));
+        const incoming: AlertItem[] = [];
+        for (const n of items) {
+          if (existing.has(n.id)) continue;
+          incoming.push({
+            id: n.id,
+            title: n.title,
+            body: n.body,
+            kind: "info",
+            href: n.href,
+            createdAt: n.createdAt,
+            read: n.read,
+          });
+        }
+        if (!incoming.length) {
+          // Sync read state for known ids
+          const readMap = new Map(items.map((i) => [i.id, i.read]));
+          return prev.map((a) =>
+            readMap.has(a.id) ? { ...a, read: readMap.get(a.id)! } : a,
+          );
+        }
+        return [...incoming, ...prev].sort((a, b) => b.createdAt - a.createdAt).slice(0, 80);
+      });
+    },
+    [],
+  );
+
+  // Poll server notifications when authenticated
+  useEffect(() => {
+    if (!hydrated || !authToken) return;
+    let cancelled = false;
+    async function poll() {
+      try {
+        const origin = publicApiOrigin();
+        const res = await fetch(`${origin}/notifications?limit=40`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as {
+          notifications?: Array<{
+            id: string;
+            title: string;
+            body: string;
+            href?: string;
+            createdAt: number;
+            read: boolean;
+          }>;
+        };
+        if (data.notifications) mergeServerNotifications(data.notifications);
+      } catch {
+        /* ignore */
+      }
+    }
+    void poll();
+    const iv = window.setInterval(() => void poll(), 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(iv);
+    };
+  }, [hydrated, authToken, mergeServerNotifications]);
+
   const activeJobs = useMemo(
     () => jobs.filter((j) => j.status === "pending" || j.status === "running"),
     [jobs],
@@ -261,6 +349,9 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
       markAllAlertsRead,
       dismissAlert,
       clearFinishedJobs,
+      mergeServerNotifications,
+      setAuthToken,
+      authToken,
     }),
     [
       jobs,
@@ -273,6 +364,8 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
       markAllAlertsRead,
       dismissAlert,
       clearFinishedJobs,
+      mergeServerNotifications,
+      authToken,
     ],
   );
 

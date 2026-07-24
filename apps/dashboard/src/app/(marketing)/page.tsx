@@ -18,7 +18,7 @@ const START_STEPS = [
     title: "Share or discover",
     body: "Publish private data for your team, or browse what’s already public.",
     href: "/datasets",
-    link: "Browse datasets",
+    link: "Discover datasets",
   },
   {
     n: "03",
@@ -72,10 +72,10 @@ export default function LandingPage() {
                 Connect an agent
               </Link>
               <Link
-                href="/datasets"
+                href="/home"
                 className="landing-btn-secondary inline-flex min-h-11 items-center justify-center rounded-full px-6 py-2.5 text-sm font-medium leading-normal text-[hsl(210_28%_14%)]"
               >
-                Explore datasets
+                Open feed
               </Link>
             </div>
             <ul className="flex flex-wrap gap-x-5 gap-y-2 pt-1 text-[11px] font-medium uppercase tracking-[0.14em] text-[hsl(210_10%_46%)] sm:text-xs">
@@ -322,8 +322,11 @@ export default function LandingPage() {
             <Link href="/docs/agent-skill" className="transition hover:text-white">
               Agent Skill
             </Link>
+            <Link href="/home" className="transition hover:text-white">
+              Home
+            </Link>
             <Link href="/datasets" className="transition hover:text-white">
-              Datasets
+              Discover
             </Link>
           </nav>
         </div>

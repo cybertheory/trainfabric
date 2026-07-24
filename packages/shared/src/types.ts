@@ -185,6 +185,59 @@ export interface SavedQuery {
   updatedAt: number;
 }
 
+/** User↔dataset subscription (star-like sticky connection). */
+export type ConnectionSource = "manual" | "query" | "sample" | "agent";
+
+export interface DatasetConnection {
+  userId: string;
+  datasetId: string;
+  source: ConnectionSource;
+  createdAt: number;
+}
+
+export type SocialPostSource = "user" | "agent";
+
+export interface SocialPost {
+  id: string;
+  authorId: string;
+  authorName?: string;
+  datasetId: string;
+  datasetOwner?: string;
+  datasetName?: string;
+  body: string;
+  source: SocialPostSource;
+  /** Optional structured findings from an agent (JSON-serializable). */
+  findings?: Record<string, unknown>;
+  createdAt: number;
+}
+
+export type NotificationKind =
+  | "social_post"
+  | "connection"
+  | "job"
+  | "info";
+
+export interface AppNotification {
+  id: string;
+  userId: string;
+  kind: NotificationKind;
+  title: string;
+  body: string;
+  href?: string;
+  postId?: string;
+  datasetId?: string;
+  read: boolean;
+  createdAt: number;
+}
+
+export interface CreateSocialPostRequest {
+  datasetId: string;
+  body: string;
+  source?: SocialPostSource;
+  authorName?: string;
+  findings?: Record<string, unknown>;
+}
+
 export const STREAM_SIZE_THRESHOLD_BYTES = 50 * 1024 * 1024;
 export const DEFAULT_SAMPLE_ROWS = 20;
 export const MAX_RESULT_ROWS = 10_000_000;

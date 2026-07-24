@@ -167,4 +167,56 @@ export default defineSchema({
   })
     .index("by_dataset", ["datasetId"])
     .index("by_snapshot", ["snapshotId"]),
+
+  /** User↔dataset subscription (connect / subscribe). */
+  connections: defineTable({
+    userId: v.string(),
+    datasetId: v.string(),
+    source: v.union(
+      v.literal("manual"),
+      v.literal("query"),
+      v.literal("sample"),
+      v.literal("agent"),
+    ),
+    createdAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_dataset", ["datasetId"])
+    .index("by_user_dataset", ["userId", "datasetId"]),
+
+  socialPosts: defineTable({
+    postId: v.string(),
+    authorId: v.string(),
+    authorName: v.optional(v.string()),
+    datasetId: v.string(),
+    body: v.string(),
+    source: v.union(v.literal("user"), v.literal("agent")),
+    findings: v.optional(v.any()),
+    createdAt: v.number(),
+  })
+    .index("by_postId", ["postId"])
+    .index("by_dataset", ["datasetId"])
+    .index("by_author", ["authorId"])
+    .index("by_created", ["createdAt"]),
+
+  notifications: defineTable({
+    notificationId: v.string(),
+    userId: v.string(),
+    kind: v.union(
+      v.literal("social_post"),
+      v.literal("connection"),
+      v.literal("job"),
+      v.literal("info"),
+    ),
+    title: v.string(),
+    body: v.string(),
+    href: v.optional(v.string()),
+    postId: v.optional(v.string()),
+    datasetId: v.optional(v.string()),
+    read: v.boolean(),
+    createdAt: v.number(),
+  })
+    .index("by_notificationId", ["notificationId"])
+    .index("by_user", ["userId"])
+    .index("by_user_unread", ["userId", "read"]),
 });

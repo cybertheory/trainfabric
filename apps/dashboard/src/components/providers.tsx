@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { JobTrackerProvider } from "@/lib/job-tracker";
 import { AlertDrawer } from "@/components/alert-drawer";
+import { NotificationAuthBridge } from "@/components/notification-auth-bridge";
 import { clerkPublishableKey } from "@/lib/clerk";
 
 const ClerkRoot = dynamic(
@@ -18,6 +19,7 @@ function AppProviders({ children }: { children: React.ReactNode }) {
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
       <TooltipProvider>
         <JobTrackerProvider>
+          <NotificationAuthBridge />
           {children}
           <AlertDrawer />
           <Toaster />

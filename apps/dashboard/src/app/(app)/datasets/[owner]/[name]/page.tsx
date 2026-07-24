@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ForkDialog } from "@/components/fork-dialog";
+import { DatasetConnectButton } from "@/components/dataset-connect-button";
 import { DatasetAgentSidebar } from "@/components/dataset-agent-sidebar";
 import { DatasetQueryPanel } from "@/components/dataset-query-panel";
 import { apiFetch } from "@/lib/api";
@@ -149,7 +150,8 @@ export default function DatasetDetailPage() {
         </div>
         <div className="flex gap-2">
           <ForkDialog source={dataset} queries={queries} />
-          <Button variant="outline" size="sm">
+          <DatasetConnectButton datasetId={dataset.id} />
+          <Button variant="outline" size="sm" disabled title="Popularity">
             <Star className="h-4 w-4" />
             {dataset.stars}
           </Button>

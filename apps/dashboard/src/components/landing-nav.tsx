@@ -9,7 +9,8 @@ const LINKS = [
   { href: "/docs/mcp", label: "MCP" },
   { href: "/docs/api", label: "API" },
   { href: "/docs/agent-skill", label: "Agent Skill" },
-  { href: "/datasets", label: "Datasets" },
+  { href: "/home", label: "Home" },
+  { href: "/datasets", label: "Discover" },
 ];
 
 export function LandingNav() {

@@ -19,12 +19,21 @@ import {
 import type { ComputeContainer } from "./ComputeContainer";
 import { verifyClerkJwt } from "./auth";
 import { publicResultUrl, putStaging, objectKeyFromUri } from "./r2";
-import { MCP_TOOLS, handleMcpTool, type McpContext } from "./mcp";
+import {
+  parseSourceUrl,
+  listRemoteFiles,
+  downloadRemoteToR2,
+  RemoteSourceError,
+} from "./remoteSource";
+import { type McpContext } from "./mcp";
+import { handleTrainfabricMcp } from "./mcpHttp";
 import { decideMaterialization, detectCycle, visibilityAllowed } from "./derived";
 import { upsertDatasetEmbedding } from "./discover";
 import { CatalogDO } from "./CatalogDO";
 import { WarmRouterDO } from "./WarmRouterDO";
 import { ComputeContainer as ComputeContainerClass } from "./ComputeContainer";
+import { autoConnect, createSocialStore } from "./social";
+import type { CreateSocialPostRequest } from "@trainfabric/shared";
 
 export { CatalogDO, WarmRouterDO, ComputeContainerClass as ComputeContainer };
 
@@ -60,6 +69,12 @@ export interface Env {
   R2_REGION?: string;
   /** Public Vercel dashboard URL — non-API paths redirect here when set. */
   DASHBOARD_URL?: string;
+  /** Cloudflare AI Gateway (forwarded into compute for Hermes). */
+  CF_ACCOUNT_ID?: string;
+  CF_AI_GATEWAY_ID?: string;
+  CF_AI_GATEWAY_TOKEN?: string;
+  CF_AI_GATEWAY_BASE?: string;
+  CF_AI_MODEL?: string;
 }
 
 function computeUrlFor(env: Env): string {
@@ -81,7 +96,20 @@ type Variables = { identity: Identity | null };
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-app.use("*", cors({ origin: "*", allowHeaders: ["Authorization", "Content-Type"] }));
+app.use(
+  "*",
+  cors({
+    origin: "*",
+    allowHeaders: [
+      "Authorization",
+      "Content-Type",
+      "Accept",
+      "Mcp-Session-Id",
+      "Last-Event-ID",
+    ],
+    exposeHeaders: ["Mcp-Session-Id"],
+  }),
+);
 
 app.use("*", async (c, next) => {
   const identity = await verifyClerkJwt(c.req.header("Authorization"), {
@@ -301,9 +329,12 @@ app.post("/datasets/:id/query", async (c) => {
       /* ignore if DO unavailable in tests */
     }
     const result = await resolveQuery(req, c.get("identity"), depsFrom(c));
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    c.executionCtx.waitUntil(
+      autoConnect(createSocialStore(c.env), identity?.subject, req.datasetId, "query"),
+    );
     let queryId: string | undefined;
     if (body.save !== false && c.env.DB) {
-      const identity = identityOrAnon(c.get("identity"), c.env);
       const owner = identity?.subject ?? "anon";
       const registry = createRegistry(c.env);
       const cached = (await registry.lookupCache(result.queryHash)) as {
@@ -437,6 +468,11 @@ app.post("/datasets/:id/sample", async (c) => {
     const n = Number((await c.req.json().catch(() => ({}))).n ?? 20);
     const registryRows = (ds.schema?.sampleRows ?? []).slice(0, n);
 
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    c.executionCtx.waitUntil(
+      autoConnect(createSocialStore(c.env), identity?.subject, ds.id, "sample"),
+    );
+
     // Prefer fast registry sample; only hit compute briefly when registry is empty.
     if (registryRows.length || !(c.env.COMPUTE || c.env.COMPUTE_URL)) {
       return c.json({ rows: registryRows });
@@ -457,6 +493,206 @@ app.post("/datasets/:id/sample", async (c) => {
   }
 });
 
+// ---- Social: connections, feed, notifications ----
+
+app.post("/datasets/:id/connect", async (c) => {
+  try {
+    const store = createSocialStore(c.env);
+    if (!store) return c.json({ error: "Social store not configured" }, 503);
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const deps = depsFrom(c);
+    const ds = await deps.getDataset(c.req.param("id"));
+    if (!ds) return c.json({ error: "Not found" }, 404);
+    const { authorizeDataset } = await import("./resolver");
+    authorizeDataset(ds, c.get("identity"));
+    const body = (await c.req.json().catch(() => ({}))) as { connected?: boolean };
+    if (typeof body.connected === "boolean") {
+      const current = await store.getConnection(identity.subject, ds.id);
+      if (body.connected && !current) {
+        await store.ensureConnection(identity.subject, ds.id, "manual");
+        return c.json({ connected: true });
+      }
+      if (!body.connected && current) {
+        await store.toggleConnection(identity.subject, ds.id);
+        return c.json({ connected: false });
+      }
+      return c.json({ connected: Boolean(current) });
+    }
+    const out = await store.toggleConnection(identity.subject, ds.id, "manual");
+    return c.json(out);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.get("/datasets/:id/connect", async (c) => {
+  try {
+    const store = createSocialStore(c.env);
+    if (!store) return c.json({ connected: false });
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ connected: false });
+    const conn = await store.getConnection(identity.subject, c.req.param("id"));
+    return c.json({ connected: !!conn, connection: conn });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.get("/me/connections", async (c) => {
+  try {
+    const store = createSocialStore(c.env);
+    if (!store) return c.json({ connections: [] });
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const connections = await store.listConnections(identity.subject);
+    return c.json({ connections });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.post("/social/posts", async (c) => {
+  try {
+    const store = createSocialStore(c.env);
+    if (!store) return c.json({ error: "Social store not configured" }, 503);
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const body = (await c.req.json()) as CreateSocialPostRequest;
+    if (!body.datasetId || !String(body.body ?? "").trim()) {
+      return c.json({ error: "datasetId and body required" }, 400);
+    }
+    const deps = depsFrom(c);
+    const ds = await deps.getDataset(body.datasetId);
+    if (!ds) return c.json({ error: "Dataset not found" }, 404);
+    const { authorizeDataset } = await import("./resolver");
+    authorizeDataset(ds, c.get("identity"));
+    await store.ensureConnection(identity.subject, body.datasetId, "manual");
+    const post = await store.createPost({
+      authorId: identity.subject,
+      authorName: body.authorName,
+      datasetId: body.datasetId,
+      body: String(body.body).trim(),
+      source: body.source ?? "user",
+      findings: body.findings,
+      datasetOwner: ds.owner,
+      datasetName: ds.name,
+    });
+    return c.json({ post });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.get("/social/feed", async (c) => {
+  try {
+    const store = createSocialStore(c.env);
+    if (!store) return c.json({ posts: [] });
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    const posts = await store.listFeed({
+      userId: identity?.subject,
+      datasetId: c.req.query("datasetId") ?? undefined,
+      limit: Number(c.req.query("limit") ?? 40),
+    });
+    return c.json({ posts });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.get("/social/posts/:id", async (c) => {
+  try {
+    const store = createSocialStore(c.env);
+    if (!store) return c.json({ error: "Not found" }, 404);
+    const post = await store.getPost(c.req.param("id"));
+    if (!post) return c.json({ error: "Not found" }, 404);
+    return c.json({ post });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.get("/notifications", async (c) => {
+  try {
+    const store = createSocialStore(c.env);
+    if (!store) return c.json({ notifications: [] });
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const notifications = await store.listNotifications(
+      identity.subject,
+      Number(c.req.query("limit") ?? 50),
+    );
+    return c.json({
+      notifications,
+      unreadCount: notifications.filter((n) => !n.read).length,
+    });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.post("/notifications/:id/read", async (c) => {
+  try {
+    const store = createSocialStore(c.env);
+    if (!store) return c.json({ error: "Social store not configured" }, 503);
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const out = await store.markNotificationRead(identity.subject, c.req.param("id"));
+    return c.json(out);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.post("/notifications/read-all", async (c) => {
+  try {
+    const store = createSocialStore(c.env);
+    if (!store) return c.json({ error: "Social store not configured" }, 503);
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const out = await store.markAllNotificationsRead(identity.subject);
+    return c.json(out);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.post("/datasets/:id/prompt", async (c) => {
+  try {
+    const deps = depsFrom(c);
+    const id = c.req.param("id");
+    const ds = await deps.getDataset(id);
+    if (!ds) return c.json({ error: "Not found" }, 404);
+    const { authorizeDataset } = await import("./resolver");
+    authorizeDataset(ds, c.get("identity"));
+
+    if (!(c.env.COMPUTE || c.env.COMPUTE_URL)) {
+      return c.json({ error: "Compute not configured for Hermes prompt" }, 503);
+    }
+    const body = (await c.req.json()) as {
+      prompt?: string;
+      execute?: boolean;
+      snapshot?: string;
+      namespace?: string;
+      max_steps?: number;
+    };
+    if (!body.prompt?.trim()) return c.json({ error: "prompt required" }, 400);
+
+    const compute = createComputeClientFromEnv(c.env);
+    const out = await compute.prompt({
+      prompt: body.prompt,
+      dataset_id: ds.icebergTable ?? ds.id,
+      namespace: body.namespace ?? ds.icebergNamespace ?? "default",
+      execute: body.execute !== false,
+      snapshot: body.snapshot,
+      max_steps: body.max_steps,
+    });
+    return c.json(out);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
 app.post("/datasets", async (c) => {
   try {
     const identity = identityOrAnon(c.get("identity"), c.env);
@@ -471,49 +707,242 @@ app.post("/datasets", async (c) => {
       partition_hint?: string;
       sort_column?: string;
     };
-    let fileBytes: ArrayBuffer;
-    let filename: string;
 
     if (contentType.includes("multipart/form-data")) {
       const form = await c.req.formData();
       const file = form.get("file");
-      if (!(file instanceof File)) return c.json({ error: "file required" }, 400);
-      fileBytes = await file.arrayBuffer();
-      filename = file.name;
+      if (!file || typeof file === "string") return c.json({ error: "file required" }, 400);
+      const upload = file as unknown as { name: string; arrayBuffer: () => Promise<ArrayBuffer> };
+      const fileBytes = await upload.arrayBuffer();
+      const filename = upload.name || "upload.bin";
       meta = {
-        name: String(form.get("name") ?? file.name),
+        name: String(form.get("name") ?? filename),
         description: form.get("description")?.toString(),
         tags: form.get("tags") ? String(form.get("tags")).split(",").map((t) => t.trim()) : [],
         visibility: (form.get("visibility")?.toString() as Visibility) ?? "private",
         partition_hint: form.get("partition_hint")?.toString(),
         sort_column: form.get("sort_column")?.toString(),
       };
-    } else {
-      const body = await c.req.json();
-      meta = body;
-      if (!body.staging_key && !body.data_ref) {
-        return c.json({ error: "Provide multipart file or staging_key/data_ref" }, 400);
-      }
-      filename = body.filename ?? "data.bin";
-      fileBytes = new ArrayBuffer(0);
-      if (body.staging_key || body.data_ref) {
-        // Already staged
-        return await startIngest(c, identity, meta, String(body.staging_key ?? body.data_ref));
-      }
+      const datasetId = `ds_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+      const stagingKey = await putStaging(
+        c.env.R2,
+        datasetId,
+        filename,
+        fileBytes,
+        "application/octet-stream",
+      );
+      const stagingPath = `s3://${c.env.R2_BUCKET ?? "trainfabric-data"}/${stagingKey}`;
+      return await startIngest(c as never, identity, meta, stagingPath, datasetId);
     }
 
-    const datasetId = `ds_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
-    const stagingKey = await putStaging(c.env.R2, datasetId, filename, fileBytes, "application/octet-stream");
-    // Pass as path the Worker can hand to compute — for Containers, use s3 URI
-    const stagingPath = `s3://trainfabric-data/${stagingKey}`;
-    return await startIngest(c, identity, meta, stagingPath, datasetId);
+    const body = (await c.req.json()) as {
+      name?: string;
+      description?: string;
+      tags?: string[] | string;
+      visibility?: Visibility;
+      partition_hint?: string;
+      sort_column?: string;
+      staging_key?: string;
+      data_ref?: string;
+      filename?: string;
+      source_url?: string;
+    };
+
+    meta = {
+      name: String(body.name ?? "dataset"),
+      description: body.description,
+      tags: Array.isArray(body.tags)
+        ? body.tags
+        : body.tags
+          ? String(body.tags)
+              .split(",")
+              .map((t) => t.trim())
+              .filter(Boolean)
+          : [],
+      visibility: body.visibility ?? "private",
+      partition_hint: body.partition_hint,
+      sort_column: body.sort_column,
+    };
+
+    if (body.source_url !== undefined) {
+      const sourceUrl = String(body.source_url).trim();
+      if (!sourceUrl) {
+        return c.json({ error: "Paste a Hugging Face or GitHub URL" }, 400);
+      }
+      // Validate URL + list matching files before creating a dataset/job
+      let listed: Awaited<ReturnType<typeof listRemoteFiles>>;
+      try {
+        parseSourceUrl(sourceUrl);
+        listed = await listRemoteFiles(sourceUrl);
+      } catch (e) {
+        if (e instanceof RemoteSourceError) {
+          return c.json({ error: e.message }, e.status as 400);
+        }
+        throw e;
+      }
+      if (!meta.name || meta.name === "dataset") {
+        // Derive a rough name from the URL path
+        try {
+          const u = new URL(sourceUrl.startsWith("http") ? sourceUrl : `https://${sourceUrl}`);
+          const parts = u.pathname.split("/").filter(Boolean);
+          meta.name = parts[parts.length - 1] || parts[2] || "remote-dataset";
+        } catch {
+          meta.name = "remote-dataset";
+        }
+      }
+      return await startRemoteIngest(c as never, identity, meta, sourceUrl, listed);
+    }
+
+    if (body.staging_key || body.data_ref) {
+      return await startIngest(c as never, identity, meta, String(body.staging_key ?? body.data_ref));
+    }
+
+    return c.json({ error: "Provide multipart file, source_url, or staging_key/data_ref" }, 400);
   } catch (e) {
+    if (e instanceof RemoteSourceError) {
+      return c.json({ error: e.message }, e.status as 400);
+    }
     return errResponse(e);
   }
 });
 
+/** List + download public HF/GitHub files in the background, then ingest. */
+async function startRemoteIngest(
+  c: {
+    env: Env;
+    executionCtx: { waitUntil: (p: Promise<unknown>) => void };
+  },
+  identity: Identity,
+  meta: {
+    name: string;
+    description?: string;
+    tags?: string[];
+    visibility?: Visibility;
+    partition_hint?: string;
+    sort_column?: string;
+  },
+  _sourceUrl: string,
+  listed: Awaited<ReturnType<typeof listRemoteFiles>>,
+) {
+  const datasetId = `ds_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  const convex = createRegistry(c.env);
+  const jobId = `job_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+  const bucket = c.env.R2_BUCKET ?? "trainfabric-data";
+
+  const kindLabel = listed.kind === "hf" ? "Hugging Face" : "GitHub";
+
+  await convex.createDataset({
+    datasetId,
+    owner: identity.subject,
+    visibility: meta.visibility ?? "private",
+    name: meta.name,
+    description: meta.description,
+    tags: [...(meta.tags ?? []), "remote-import", kindLabel === "Hugging Face" ? "huggingface" : "github"],
+    kind: "base",
+  });
+  await convex.setJob({
+    jobId,
+    datasetId,
+    kind: "ingest",
+    status: "pending",
+  });
+
+  const doId = c.env.CATALOG_DO.idFromName(datasetId);
+  const stub = c.env.CATALOG_DO.get(doId);
+
+  c.executionCtx.waitUntil(
+    (async () => {
+      try {
+        await convex.setJob({ jobId, status: "running", progress: 20 });
+        const { stagingPath, fileCount } = await downloadRemoteToR2(
+          c.env.R2,
+          datasetId,
+          listed.files,
+          bucket,
+        );
+        await convex.setJob({ jobId, status: "running", progress: 50 });
+
+        const ingestAbort = new AbortController();
+        const ingestTimer = setTimeout(() => ingestAbort.abort(), 180_000);
+        let res: Response;
+        try {
+          res = await stub.fetch("https://catalog/commit", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              action: "ingest",
+              computeUrl: computeUrlFor(c.env),
+              payload: {
+                staging_path: stagingPath,
+                dataset_id: datasetId,
+                partition_hint: meta.partition_hint,
+                sort_column: meta.sort_column,
+              },
+            }),
+            signal: ingestAbort.signal,
+          });
+        } catch (e) {
+          const msg =
+            e instanceof Error && e.name === "AbortError"
+              ? "Ingest timed out waiting for compute (try again — cold start can take a minute)"
+              : e instanceof Error
+                ? e.message
+                : String(e);
+          throw new Error(msg);
+        } finally {
+          clearTimeout(ingestTimer);
+        }
+        await convex.setJob({ jobId, status: "running", progress: 75 });
+        const json = (await res.json()) as {
+          error?: string;
+          schemaContract?: Record<string, unknown>;
+          snapshotId?: string;
+          icebergTable?: string;
+          namespace?: string;
+        };
+        if (!res.ok || json.error) throw new Error(json.error ?? "ingest failed");
+        await convex.updateAfterIngest({
+          datasetId,
+          snapshotId: json.snapshotId,
+          rowCount: json.schemaContract?.rowCount,
+          sizeBytes: json.schemaContract?.sizeBytes,
+          schema: json.schemaContract,
+          icebergNamespace: json.namespace,
+          icebergTable: json.icebergTable,
+        });
+        await convex.setJob({
+          jobId,
+          status: "done",
+          progress: 100,
+          resultRef: `${json.snapshotId ?? ""}:${fileCount}files`,
+        });
+
+        const ds = (await convex.getDataset(datasetId)) as DatasetRecord;
+        if (ds) {
+          await upsertDatasetEmbedding(c.env.AI as never, c.env.VECTORIZE as never, ds);
+        }
+      } catch (e) {
+        await convex.setJob({
+          jobId,
+          status: "error",
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    })(),
+  );
+
+  return Response.json({
+    datasetId,
+    jobId,
+    source: kindLabel,
+  });
+}
+
 async function startIngest(
-  c: { env: Env; executionCtx: ExecutionContext; json: Hono["json"] },
+  c: {
+    env: Env;
+    executionCtx: { waitUntil: (p: Promise<unknown>) => void };
+  },
   identity: Identity,
   meta: {
     name: string;
@@ -601,7 +1030,7 @@ async function startIngest(
     })(),
   );
 
-  return (c as unknown as { json: (b: unknown, s?: number) => Response }).json({
+  return Response.json({
     datasetId,
     jobId,
   });
@@ -842,69 +1271,6 @@ app.post("/datasets/:id/query/proxy", async (c) => {
   }
 });
 
-// ---- MCP endpoint ----
-
-app.get("/mcp/tools", (c) => c.json({ tools: MCP_TOOLS }));
-
-app.post("/mcp", async (c) => {
-  try {
-    const body = (await c.req.json()) as {
-      jsonrpc?: string;
-      id?: string | number | null;
-      method: string;
-      params?: Record<string, unknown>;
-    };
-
-    // Cursor / MCP clients require initialize before tools/*
-    if (body.method === "initialize") {
-      const requested = String(
-        (body.params as { protocolVersion?: string } | undefined)?.protocolVersion ??
-          "2024-11-05",
-      );
-      return c.json({
-        jsonrpc: "2.0",
-        id: body.id,
-        result: {
-          protocolVersion: requested,
-          capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: "trainfabric", version: "0.1.0" },
-        },
-      });
-    }
-    if (body.method === "notifications/initialized" || body.method === "initialized") {
-      return c.body(null, 204);
-    }
-    if (body.method === "ping") {
-      return c.json({ jsonrpc: "2.0", id: body.id, result: {} });
-    }
-
-    // JSON-RPC style for remote MCP
-    if (body.method === "tools/list" || body.method === "list_tools") {
-      return c.json({ jsonrpc: "2.0", id: body.id, result: { tools: MCP_TOOLS } });
-    }
-    if (body.method === "tools/call" || body.method === "call_tool") {
-      const params = body.params ?? {};
-      const name = String(params.name ?? "");
-      const args = (params.arguments ?? params.args ?? {}) as Record<string, unknown>;
-      const ctx = buildMcpContext(c);
-      const result = await handleMcpTool(name, args, ctx);
-      return c.json({ jsonrpc: "2.0", id: body.id, result });
-    }
-    // Direct tool call shorthand
-    if (body.method && MCP_TOOLS.some((t) => t.name === body.method)) {
-      const ctx = buildMcpContext(c);
-      const result = await handleMcpTool(body.method, body.params ?? {}, ctx);
-      return c.json({ jsonrpc: "2.0", id: body.id, result });
-    }
-    return c.json(
-      { jsonrpc: "2.0", id: body.id, error: { code: -32601, message: "Method not found" } },
-      404,
-    );
-  } catch (e) {
-    return errResponse(e);
-  }
-});
-
 function buildMcpContext(c: {
   env: Env;
   get: (k: "identity") => Identity | null;
@@ -1049,6 +1415,57 @@ function buildMcpContext(c: {
       if (!ds) throw new NotFoundError();
       return buildLineage(ds, deps.getDataset);
     },
+    promptQuery: async (args) => {
+      if (!(c.env.COMPUTE || c.env.COMPUTE_URL)) {
+        throw new Error("Compute not configured for Hermes prompt");
+      }
+      const ds = await deps.getDataset(args.dataset_id);
+      if (!ds) throw new NotFoundError();
+      const compute = createComputeClientFromEnv(c.env);
+      return compute.prompt({
+        prompt: args.prompt,
+        dataset_id: ds.icebergTable ?? ds.id,
+        namespace: args.namespace ?? ds.icebergNamespace ?? "default",
+        execute: args.execute !== false,
+        snapshot: args.snapshot,
+      });
+    },
+    autoConnect: async (datasetId, source) => {
+      await autoConnect(createSocialStore(c.env), identity?.subject, datasetId, source);
+    },
+    postSocialUpdate: async (args) => {
+      const store = createSocialStore(c.env);
+      if (!store) throw new Error("Social store not configured");
+      if (!identity) throw new AuthError("Auth required");
+      const ds = await deps.getDataset(args.datasetId);
+      return store.createPost({
+        authorId: identity.subject,
+        authorName: args.authorName,
+        datasetId: args.datasetId,
+        body: args.body,
+        source: "agent",
+        findings: args.findings,
+        datasetOwner: ds?.owner,
+        datasetName: ds?.name,
+      });
+    },
+    connectDataset: async (datasetId) => {
+      const store = createSocialStore(c.env);
+      if (!store) throw new Error("Social store not configured");
+      if (!identity) throw new AuthError("Auth required");
+      await store.ensureConnection(identity.subject, datasetId, "manual");
+      return { connected: true };
+    },
+    listFeed: async (limit) => {
+      const store = createSocialStore(c.env);
+      if (!store) return [];
+      return store.listFeed({ userId: identity?.subject, limit });
+    },
+    listConnections: async () => {
+      const store = createSocialStore(c.env);
+      if (!store || !identity) return [];
+      return store.listConnections(identity.subject);
+    },
     ai: c.env.AI,
     vectorize: c.env.VECTORIZE,
   };
@@ -1079,19 +1496,43 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+
+    // Proper MCP (Streamable HTTP) — agents createMcpHandler + MCP SDK
+    if (path === "/mcp" || path.startsWith("/mcp/")) {
+      return handleTrainfabricMcp(request, env, ctx, async (req) => {
+        const identity = identityOrAnon(
+          await verifyClerkJwt(req.headers.get("Authorization"), {
+            CLERK_JWT_ISSUER: env.CLERK_JWT_ISSUER,
+            CLERK_JWT_AUDIENCE: env.CLERK_JWT_AUDIENCE,
+          }),
+          env,
+        );
+        return buildMcpContext({
+          env,
+          get: () => identity,
+          req: { url: req.url },
+        });
+      });
+    }
+
     const isApi =
       path === "/health" ||
       path.startsWith("/admin/") ||
       path.startsWith("/jobs/") ||
       path.startsWith("/results/") ||
-      path.startsWith("/mcp") ||
       path.startsWith("/r2/") ||
+      path.startsWith("/social/") ||
+      path === "/notifications" ||
+      path.startsWith("/notifications/") ||
+      path === "/me/connections" ||
       path === "/datasets" ||
       path === "/datasets/derived" ||
       /^\/datasets\/[^/]+$/.test(path) ||
       path === "/queries" ||
       /^\/queries\/[^/]+$/.test(path) ||
-      /^\/datasets\/[^/]+\/(schema|snapshots|lineage|query|queries|estimate|sample|rebuild)$/.test(path) ||
+      /^\/datasets\/[^/]+\/(schema|snapshots|lineage|query|queries|estimate|sample|rebuild|prompt|connect)$/.test(
+        path,
+      ) ||
       /^\/datasets\/[^/]+\/query\/proxy$/.test(path);
     if (!isApi) {
       const dash = (env.DASHBOARD_URL ?? "").replace(/\/$/, "");
@@ -1103,6 +1544,7 @@ export default {
           service: "trainfabric-router",
           message: "API only — dashboard is hosted on Vercel",
           health: "/health",
+          mcp: "/mcp",
         },
         { status: path === "/" ? 200 : 404 },
       );

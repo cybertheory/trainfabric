@@ -109,4 +109,116 @@ http.route({
   }),
 });
 
+// ---- Social / connections / notifications ----
+
+http.route({
+  path: "/api/social/ensure-connection",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    const out = await ctx.runMutation(api.social.ensureConnectionService, body);
+    return Response.json(out);
+  }),
+});
+
+http.route({
+  path: "/api/social/toggle-connection",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    const out = await ctx.runMutation(api.social.toggleConnectionService, body);
+    return Response.json(out);
+  }),
+});
+
+http.route({
+  path: "/api/social/get-connection",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    const out = await ctx.runQuery(api.social.getConnectionService, body);
+    return Response.json(out);
+  }),
+});
+
+http.route({
+  path: "/api/social/list-connections",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    const out = await ctx.runQuery(api.social.listConnectionsService, body);
+    return Response.json(out);
+  }),
+});
+
+http.route({
+  path: "/api/social/create-post",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    const out = await ctx.runMutation(api.social.createSocialPostService, body);
+    return Response.json(out);
+  }),
+});
+
+http.route({
+  path: "/api/social/get-post",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    const out = await ctx.runQuery(api.social.getSocialPostService, body);
+    return Response.json(out);
+  }),
+});
+
+http.route({
+  path: "/api/social/list-feed",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    const out = await ctx.runQuery(api.social.listFeedService, body);
+    return Response.json(out);
+  }),
+});
+
+http.route({
+  path: "/api/social/list-notifications",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    const out = await ctx.runQuery(api.social.listNotificationsService, body);
+    return Response.json(out);
+  }),
+});
+
+http.route({
+  path: "/api/social/mark-read",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    const out = await ctx.runMutation(api.social.markNotificationReadService, body);
+    return Response.json(out);
+  }),
+});
+
+http.route({
+  path: "/api/social/mark-all-read",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    const out = await ctx.runMutation(api.social.markAllNotificationsReadService, body);
+    return Response.json(out);
+  }),
+});
+
 export default http;

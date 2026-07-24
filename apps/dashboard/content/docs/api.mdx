@@ -33,7 +33,23 @@ GET /health
 | `POST` | `/datasets/:id/query` | Query slice |
 | `POST` | `/datasets/:id/estimate` | Estimate query |
 | `POST` | `/datasets/:id/sample` | Sample rows |
+| `POST` | `/datasets/:id/prompt` | Hermes NL → DuckDB slice |
 | `POST` | `/datasets/:id/rebuild` | Rebuild derived |
+| `GET` / `POST` | `/datasets/:id/connect` | Connection status / toggle (subscribe) |
+| `GET` | `/me/connections` | List connected datasets |
+
+## Social feed & notifications
+
+| Method | Path | Notes |
+|--------|------|-------|
+| `GET` | `/social/feed` | Feed for connected datasets (auth optional; global if none) |
+| `POST` | `/social/posts` | Create update (`datasetId`, `body`, optional `findings`, `source`) — **auth required** |
+| `GET` | `/social/posts/:id` | Single post |
+| `GET` | `/notifications` | Server notifications for connected-community updates |
+| `POST` | `/notifications/:id/read` | Mark one read |
+| `POST` | `/notifications/read-all` | Mark all read |
+
+Querying or sampling a dataset while authenticated **auto-connects** you to that dataset community.
 
 ## Jobs & results
 
