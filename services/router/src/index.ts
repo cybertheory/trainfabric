@@ -232,33 +232,30 @@ app.get("/datasets/:id/snapshots", async (c) => {
     const { authorizeDataset } = await import("./resolver");
     authorizeDataset(ds, c.get("identity"));
 
-    const fallback = () =>
-      c.json({
-        snapshots: ds.latestSnapshotId
-          ? [
-              {
-                snapshotId: ds.latestSnapshotId,
-                summary: { "total-records": String(ds.rowCount ?? 0) },
-              },
-            ]
-          : [],
-      });
+    // Prefer registry metadata (fast, reliable). Enrich from compute when available.
+    const registrySnaps = ds.latestSnapshotId
+      ? [
+          {
+            snapshotId: ds.latestSnapshotId,
+            summary: { "total-records": String(ds.rowCount ?? 0) },
+          },
+        ]
+      : [];
 
     if (!(c.env.COMPUTE || c.env.COMPUTE_URL)) {
-      return fallback();
+      return c.json({ snapshots: registrySnaps });
     }
     try {
       const compute = createComputeClientFromEnv(c.env);
-      const snaps = await compute.snapshots(
-        ds.icebergTable ?? ds.id,
-        ds.icebergNamespace ?? "default",
-      );
-      if (snaps?.length) return c.json({ snapshots: snaps });
-      return fallback();
+      const snaps = await Promise.race([
+        compute.snapshots(ds.icebergTable ?? ds.id, ds.icebergNamespace ?? "default"),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
+      ]);
+      if (Array.isArray(snaps) && snaps.length) return c.json({ snapshots: snaps });
     } catch {
-      // Container/catalog may be cold or misconfigured — registry snapshot is enough for UI.
-      return fallback();
+      /* use registry */
     }
+    return c.json({ snapshots: registrySnaps });
   } catch (e) {
     return errResponse(e);
   }
