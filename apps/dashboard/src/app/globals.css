@@ -101,9 +101,9 @@
    Tight line-heights let the next line paint over descenders (g/y/p look flat-cut).
    Keep generous leading on display type — this is not an overflow issue. */
 .landing h1.landing-hero-title {
-  line-height: 1.45;
+  line-height: 1.12;
   overflow: visible;
-  padding-bottom: 0.1em;
+  padding-bottom: 0.06em;
 }
 
 .landing-hero-body {
