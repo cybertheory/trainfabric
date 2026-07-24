@@ -29,5 +29,9 @@ export async function putStaging(
 
 /** Extract object key from s3/r2 URI or return as-is. */
 export function objectKeyFromUri(uri: string): string {
-  return uri.replace(/^s3:\/\/[^/]+\//, "").replace(/^r2:\/\/[^/]+\//, "");
+  const r2Idx = uri.indexOf("/r2/");
+  if (r2Idx >= 0) {
+    return uri.slice(r2Idx + 4).split("?")[0]!;
+  }
+  return uri.replace(/^s3:\/\/[^/]+\//, "").replace(/^r2:\/\/[^/]+\//, "").replace(/^https?:\/\/[^/]+\//, "");
 }

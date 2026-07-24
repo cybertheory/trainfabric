@@ -1,3 +1,5 @@
+import type { CostTier, SavedQuery, Visibility } from "@trainfabric/shared";
+
 /** D1-backed control plane (replaces Convex HTTP for Cloudflare deploy). */
 
 export interface D1Dataset {
@@ -84,6 +86,58 @@ export async function ensureSchema(db: D1Database): Promise<void> {
     `,
     )
     .run();
+    await db
+      .prepare(
+        `
+        CREATE TABLE IF NOT EXISTS queries (
+          id TEXT PRIMARY KEY,
+          owner TEXT NOT NULL,
+          dataset_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          visibility TEXT NOT NULL DEFAULT 'private',
+          columns_json TEXT,
+          filter TEXT,
+          snapshot_id TEXT,
+          branch TEXT DEFAULT 'main',
+          limit_n INTEGER,
+          query_hash TEXT NOT NULL,
+          r2_url TEXT,
+          cost_tier TEXT,
+          row_count INTEGER,
+          size_bytes INTEGER,
+          last_run_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `,
+      )
+      .run();
+    await db.prepare(`CREATE INDEX IF NOT EXISTS idx_queries_dataset ON queries(dataset_id)`).run();
+    await db.prepare(`CREATE INDEX IF NOT EXISTS idx_queries_owner ON queries(owner)`).run();
+    await db.prepare(`CREATE INDEX IF NOT EXISTS idx_queries_visibility ON queries(visibility)`).run();
+}
+
+function rowToQuery(r: Record<string, unknown>): SavedQuery {
+  return {
+    id: String(r.id),
+    owner: String(r.owner),
+    datasetId: String(r.dataset_id),
+    name: String(r.name),
+    visibility: r.visibility as Visibility,
+    columns: r.columns_json ? JSON.parse(String(r.columns_json)) : undefined,
+    filter: r.filter ? String(r.filter) : undefined,
+    snapshotId: r.snapshot_id ? String(r.snapshot_id) : undefined,
+    branch: r.branch ? String(r.branch) : undefined,
+    limit: r.limit_n != null ? Number(r.limit_n) : undefined,
+    queryHash: String(r.query_hash),
+    r2Url: r.r2_url ? String(r.r2_url) : undefined,
+    costTier: r.cost_tier ? (r.cost_tier as CostTier) : undefined,
+    rowCount: r.row_count != null ? Number(r.row_count) : undefined,
+    sizeBytes: r.size_bytes != null ? Number(r.size_bytes) : undefined,
+    lastRunAt: Number(r.last_run_at),
+    createdAt: Number(r.created_at),
+    updatedAt: Number(r.updated_at),
+  };
 }
 
 function rowToDataset(r: Record<string, unknown>): D1Dataset {
@@ -330,6 +384,110 @@ export function createD1Registry(db: D1Database) {
       };
     },
 
+
+    async upsertQuery(input: {
+      owner: string;
+      datasetId: string;
+      name: string;
+      visibility?: Visibility;
+      columns?: string[];
+      filter?: string;
+      snapshotId?: string;
+      branch?: string;
+      limit?: number;
+      queryHash: string;
+      r2Url?: string;
+      costTier?: CostTier;
+      rowCount?: number;
+      sizeBytes?: number;
+    }): Promise<SavedQuery> {
+      await ensureSchema(db);
+      const existing = await db
+        .prepare(
+          `SELECT id, created_at FROM queries WHERE dataset_id = ? AND owner = ? AND query_hash = ?`,
+        )
+        .bind(input.datasetId, input.owner, input.queryHash)
+        .first<{ id: string; created_at: number }>();
+      const now = Date.now();
+      const id = existing?.id ?? `q_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+      const createdAt = existing?.created_at ?? now;
+      await db
+        .prepare(
+          `INSERT OR REPLACE INTO queries
+          (id, owner, dataset_id, name, visibility, columns_json, filter, snapshot_id, branch, limit_n, query_hash, r2_url, cost_tier, row_count, size_bytes, last_run_at, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          id,
+          input.owner,
+          input.datasetId,
+          input.name,
+          input.visibility ?? "private",
+          input.columns ? JSON.stringify(input.columns) : null,
+          input.filter ?? null,
+          input.snapshotId ?? null,
+          input.branch ?? "main",
+          input.limit ?? null,
+          input.queryHash,
+          input.r2Url ?? null,
+          input.costTier ?? null,
+          input.rowCount ?? null,
+          input.sizeBytes ?? null,
+          now,
+          createdAt,
+          now,
+        )
+        .run();
+      const row = await db.prepare("SELECT * FROM queries WHERE id = ?").bind(id).first();
+      return rowToQuery(row as Record<string, unknown>);
+    },
+    async listQueries(opts: {
+      datasetId?: string;
+      owner: string;
+      includePublic?: boolean;
+    }): Promise<SavedQuery[]> {
+      await ensureSchema(db);
+      let sql = "SELECT * FROM queries WHERE 1=1";
+      const binds: unknown[] = [];
+      if (opts.datasetId) {
+        sql += " AND dataset_id = ?";
+        binds.push(opts.datasetId);
+      }
+      if (opts.includePublic) {
+        sql += " AND (owner = ? OR visibility = 'public')";
+        binds.push(opts.owner);
+      } else {
+        sql += " AND owner = ?";
+        binds.push(opts.owner);
+      }
+      sql += " ORDER BY last_run_at DESC";
+      const rows = await db.prepare(sql).bind(...binds).all();
+      return (rows.results ?? []).map((r) => rowToQuery(r as Record<string, unknown>));
+    },
+    async getQuery(id: string): Promise<SavedQuery | null> {
+      await ensureSchema(db);
+      const row = await db.prepare("SELECT * FROM queries WHERE id = ?").bind(id).first();
+      return row ? rowToQuery(row as Record<string, unknown>) : null;
+    },
+    async setQueryVisibility(
+      id: string,
+      visibility: Visibility,
+      owner: string,
+    ): Promise<SavedQuery | null> {
+      await ensureSchema(db);
+      const existing = await db
+        .prepare("SELECT id FROM queries WHERE id = ? AND owner = ?")
+        .bind(id, owner)
+        .first();
+      if (!existing) return null;
+      const now = Date.now();
+      await db
+        .prepare("UPDATE queries SET visibility = ?, updated_at = ? WHERE id = ?")
+        .bind(visibility, now, id)
+        .run();
+      const row = await db.prepare("SELECT * FROM queries WHERE id = ?").bind(id).first();
+      return row ? rowToQuery(row as Record<string, unknown>) : null;
+    },
     async seedDemo() {
       await ensureSchema(db);
       const demos = [

@@ -55,8 +55,8 @@ GET /health
 curl -X POST https://trainfabric-router.rishabhspro.workers.dev/datasets/<id>/query \
   -H 'content-type: application/json' \
   -d '{
-    "columns": ["pickup_date", "fare"],
-    "filters": [{ "column": "pickup_date", "op": "eq", "value": "2024-01-01" }]
+    "columns": ["pickup_date", "fare_amount"],
+    "filter": "pickup_date = '\''2024-01-01'\''"
   }'
 ```
 

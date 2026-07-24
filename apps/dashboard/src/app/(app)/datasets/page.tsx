@@ -2,11 +2,14 @@
 
 import { useEffect, useState } from "react";
 import type { DatasetMeta } from "@trainfabric/shared";
-import { Search } from "lucide-react";
+import { Loader2, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { DatasetCard } from "@/components/dataset-card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Progress } from "@/components/ui/progress";
+import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
+import { useJobTracker } from "@/lib/job-tracker";
 
 const DEMO: DatasetMeta[] = [
   {
@@ -46,6 +49,7 @@ export default function HomePage() {
   const [q, setQ] = useState("");
   const [tag, setTag] = useState("");
   const [loading, setLoading] = useState(false);
+  const { activeJobs, setDrawerOpen } = useJobTracker();
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -78,6 +82,35 @@ export default function HomePage() {
 
   return (
     <div className="space-y-8">
+      {activeJobs.length > 0 ? (
+        <div className="rounded-xl border border-primary/25 bg-primary/5 px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-sm">
+              <Loader2 className="h-4 w-4 animate-spin text-primary" />
+              <span>
+                {activeJobs.length === 1
+                  ? `Ingesting ${activeJobs[0]!.name}…`
+                  : `${activeJobs.length} ingest jobs running`}
+              </span>
+            </div>
+            <Button type="button" variant="outline" size="sm" onClick={() => setDrawerOpen(true)}>
+              Open activity
+            </Button>
+          </div>
+          <div className="mt-3 space-y-2">
+            {activeJobs.slice(0, 3).map((j) => (
+              <div key={j.jobId} className="space-y-1">
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span className="truncate">{j.name}</span>
+                  <span>{Math.round(j.progress)}%</span>
+                </div>
+                <Progress value={j.progress} className="h-1.5" />
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       <section className="space-y-3">
         <h1 className="text-3xl font-semibold tracking-tight">Datasets</h1>
         <p className="max-w-2xl text-muted-foreground">

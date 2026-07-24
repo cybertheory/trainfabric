@@ -4,6 +4,8 @@ import Link from "next/link";
 import { Database, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { AuthControls } from "@/components/auth-controls";
+import { AlertBellButton, JobProgressChip } from "@/components/alert-drawer";
 
 export function SiteHeader() {
   return (
@@ -31,6 +33,8 @@ export function SiteHeader() {
           </Link>
         </nav>
         <div className="ml-auto flex items-center gap-2">
+          <JobProgressChip />
+          <AlertBellButton />
           <ThemeToggle />
           <Button asChild size="sm">
             <Link href="/new">
@@ -38,6 +42,7 @@ export function SiteHeader() {
               Publish
             </Link>
           </Button>
+          <AuthControls />
         </div>
       </div>
     </header>

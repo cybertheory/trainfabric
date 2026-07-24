@@ -1,14 +1,17 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { CostTier, DatasetMeta, QueryEstimate, SchemaContract } from "@trainfabric/shared";
+import type { CostTier, DatasetMeta, QueryEstimate, SavedQuery, SchemaContract } from "@trainfabric/shared";
 import {
   Check,
   Copy,
   Download,
   ExternalLink,
+  Globe,
+  History,
   Loader2,
   Play,
+  RotateCcw,
   Sparkles,
   Square,
 } from "lucide-react";
@@ -30,7 +33,11 @@ type QueryResult = {
   url?: string;
   rowCount?: number;
   affordances?: string[];
+  queryId?: string;
+  queryHash?: string;
 };
+
+type QueryRow = SavedQuery & { resultUrl?: string };
 
 type RunPhase = "idle" | "planning" | "executing" | "done" | "error";
 
@@ -61,6 +68,8 @@ export function DatasetQueryPanel({
   filter,
   setFilter,
   estimate,
+  queries,
+  onQueriesChange,
 }: {
   dataset: DatasetDetail;
   columns: SchemaContract["columns"];
@@ -69,6 +78,8 @@ export function DatasetQueryPanel({
   filter: string;
   setFilter: (v: string) => void;
   estimate: QueryEstimate | null;
+  queries: QueryRow[];
+  onQueriesChange: (queries: QueryRow[]) => void;
 }) {
   const [phase, setPhase] = useState<RunPhase>("idle");
   const [progress, setProgress] = useState(0);
@@ -82,6 +93,20 @@ export function DatasetQueryPanel({
     [columns],
   );
 
+  async function refreshHistory() {
+    try {
+      const r = await apiFetch<{ queries: QueryRow[] }>(`/datasets/${dataset.id}/queries`);
+      onQueriesChange(r.queries);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  useEffect(() => {
+    void refreshHistory();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataset.id]);
+
   useEffect(() => {
     if (phase !== "planning" && phase !== "executing") return;
     const id = window.setInterval(() => {
@@ -92,6 +117,25 @@ export function DatasetQueryPanel({
     }, 180);
     return () => window.clearInterval(id);
   }, [phase]);
+
+  function applyQuery(q: QueryRow) {
+    setSelected(q.columns?.length ? q.columns : columns.map((c) => c.name));
+    setFilter(q.filter ?? "");
+    toast.message("Loaded query into builder");
+  }
+
+  async function publishQuery(q: QueryRow) {
+    try {
+      await apiFetch(`/queries/${q.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ visibility: q.visibility === "public" ? "private" : "public" }),
+      });
+      toast.success(q.visibility === "public" ? "Unpublished" : "Published query");
+      await refreshHistory();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Publish failed");
+    }
+  }
 
   async function runQuery() {
     if (!dataset || phase === "planning" || phase === "executing") return;
@@ -120,16 +164,18 @@ export function DatasetQueryPanel({
           filter: filter || undefined,
           mode: "stream",
           limit: 1000,
+          save: true,
         }),
       });
 
       setProgress(100);
       setPhase("done");
-      setStatusText("Done");
+      setStatusText("Done — saved to query history");
       setResult(out);
       setElapsedMs(Math.round(performance.now() - started));
       if (out.affordances?.length) toast.message(out.affordances[0]);
       toast.success(`Query finished · ${out.costTier}`);
+      await refreshHistory();
     } catch (e) {
       setPhase("error");
       setProgress(0);
@@ -150,7 +196,7 @@ export function DatasetQueryPanel({
           <div className="space-y-1">
             <h2 className="text-sm font-semibold tracking-tight">Slice builder</h2>
             <p className="text-xs text-muted-foreground">
-              Pick columns + a filter. Partition filters stay on Case A when possible.
+              Pick columns + a filter. Runs are saved as queries (R2 artifact when available).
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -303,6 +349,7 @@ export function DatasetQueryPanel({
               <p className="text-xs text-muted-foreground">
                 {formatRows(result.rowCount ?? 0)} rows · tier {result.costTier}
                 {elapsedMs != null ? ` · ${elapsedMs} ms` : ""}
+                {result.queryId ? ` · ${result.queryId}` : ""}
               </p>
             </div>
             <CostBadge tier={result.costTier} />
@@ -312,7 +359,7 @@ export function DatasetQueryPanel({
             {resultHref ? (
               <div className="space-y-2">
                 <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Artifact URL
+                  Artifact URL (R2)
                 </p>
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                   <a
@@ -345,20 +392,66 @@ export function DatasetQueryPanel({
               </div>
             ) : (
               <p className="text-sm text-muted-foreground">
-                Inline result returned (no downloadable artifact URL).
+                Inline / Case A result — query definition saved; re-run to hit cache when possible.
               </p>
             )}
-
-            {result.affordances?.length ? (
-              <ul className="space-y-1 text-xs text-muted-foreground">
-                {result.affordances.map((a) => (
-                  <li key={a}>→ {a}</li>
-                ))}
-              </ul>
-            ) : null}
           </div>
         </div>
       ) : null}
+
+      <div className="rounded-xl border border-border/80 bg-card/40 p-4 sm:p-5">
+        <div className="mb-3 flex items-center gap-2">
+          <History className="h-4 w-4 text-primary" />
+          <h2 className="text-sm font-semibold tracking-tight">Query history</h2>
+          <span className="text-xs text-muted-foreground">yours + public · rerun or publish</span>
+        </div>
+        {queries.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No queries yet. Run one above.</p>
+        ) : (
+          <ul className="space-y-2">
+            {queries.map((q) => {
+              const href = q.resultUrl || (q.r2Url ? absoluteResultUrl(q.r2Url) : null);
+              return (
+                <li
+                  key={q.id}
+                  className="flex flex-col gap-2 rounded-lg border border-border/70 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-sm font-medium">{q.name}</span>
+                      {q.visibility === "public" ? <Badge variant="outline">public</Badge> : null}
+                      {q.costTier ? <CostBadge tier={q.costTier} /> : null}
+                    </div>
+                    <p className="truncate font-mono text-[11px] text-muted-foreground">
+                      {q.filter || "(no filter)"}
+                      {q.rowCount != null ? ` · ${formatRows(q.rowCount)} rows` : ""}
+                      {" · "}
+                      {new Date(q.lastRunAt).toLocaleString()}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 flex-wrap gap-1.5">
+                    <Button type="button" variant="outline" size="sm" onClick={() => applyQuery(q)}>
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      Rerun
+                    </Button>
+                    <Button type="button" variant="ghost" size="sm" onClick={() => void publishQuery(q)}>
+                      <Globe className="h-3.5 w-3.5" />
+                      {q.visibility === "public" ? "Unpublish" : "Publish"}
+                    </Button>
+                    {href ? (
+                      <Button variant="ghost" size="sm" asChild>
+                        <a href={href} target="_blank" rel="noreferrer">
+                          <ExternalLink className="h-3.5 w-3.5" />
+                        </a>
+                      </Button>
+                    ) : null}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }

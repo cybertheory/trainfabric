@@ -11,6 +11,7 @@ import {
   type ResolverDeps,
 } from "./resolver";
 import { createRegistry } from "./registry";
+import { createD1Registry } from "./d1";
 import {
   createComputeClientFromEnv,
   CONTAINER_COMPUTE,
@@ -277,7 +278,11 @@ app.get("/datasets/:id/lineage", async (c) => {
 
 app.post("/datasets/:id/query", async (c) => {
   try {
-    const body = (await c.req.json()) as Partial<QueryRequest>;
+    const body = (await c.req.json()) as Partial<QueryRequest> & {
+      save?: boolean;
+      name?: string;
+      visibility?: Visibility;
+    };
     const req: QueryRequest = {
       datasetId: c.req.param("id"),
       columns: body.columns,
@@ -296,7 +301,108 @@ app.post("/datasets/:id/query", async (c) => {
       /* ignore if DO unavailable in tests */
     }
     const result = await resolveQuery(req, c.get("identity"), depsFrom(c));
-    return c.json(result);
+    let queryId: string | undefined;
+    if (body.save !== false && c.env.DB) {
+      const identity = identityOrAnon(c.get("identity"), c.env);
+      const owner = identity?.subject ?? "anon";
+      const registry = createRegistry(c.env);
+      const cached = (await registry.lookupCache(result.queryHash)) as {
+        r2Url?: string;
+        rowCount?: number;
+        sizeBytes?: number;
+      } | null;
+      // Prefer durable cache key; fall back to result URL (Case A partition / Case B artifact)
+      const base = c.env.R2_PUBLIC_BASE || new URL(c.req.url).origin;
+      const rawR2 = cached?.r2Url ?? result.url;
+      const r2Url = rawR2
+        ? rawR2.startsWith("http")
+          ? rawR2
+          : publicResultUrl(base, rawR2)
+        : undefined;
+      const d1 = createD1Registry(c.env.DB);
+      const saved = await d1.upsertQuery({
+        owner,
+        datasetId: req.datasetId,
+        name: body.name ?? `Query ${result.queryHash.slice(0, 8)}`,
+        visibility: body.visibility ?? "private",
+        columns: req.columns,
+        filter: req.filter,
+        snapshotId: req.snapshot,
+        branch: req.branch,
+        limit: req.limit,
+        queryHash: result.queryHash,
+        r2Url,
+        costTier: result.costTier,
+        rowCount: result.rowCount ?? cached?.rowCount,
+        sizeBytes: result.sizeBytes ?? cached?.sizeBytes,
+      });
+      queryId = saved.id;
+    }
+    return c.json({ ...result, queryId });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+function attachQueryResultUrls<T extends { r2Url?: string }>(
+  queries: T[],
+  env: Env,
+  reqUrl: string,
+): (T & { resultUrl?: string })[] {
+  const base = new URL(reqUrl).origin;
+  const pubBase = env.R2_PUBLIC_BASE || base;
+  return queries.map((q) => ({
+    ...q,
+    resultUrl: q.r2Url ? publicResultUrl(pubBase, q.r2Url) : undefined,
+  }));
+}
+
+app.get("/datasets/:id/queries", async (c) => {
+  try {
+    if (!c.env.DB) return c.json({ queries: [] });
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    const owner = identity?.subject ?? "anon";
+    const deps = depsFrom(c);
+    const ds = await deps.getDataset(c.req.param("id"));
+    if (!ds) return c.json({ error: "Not found" }, 404);
+    const { authorizeDataset } = await import("./resolver");
+    authorizeDataset(ds, c.get("identity"));
+    const d1 = createD1Registry(c.env.DB);
+    const list = await d1.listQueries({
+      datasetId: c.req.param("id"),
+      owner,
+      includePublic: true,
+    });
+    return c.json({ queries: attachQueryResultUrls(list, c.env, c.req.url) });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.get("/queries", async (c) => {
+  try {
+    if (!c.env.DB) return c.json({ queries: [] });
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const d1 = createD1Registry(c.env.DB);
+    const list = await d1.listQueries({ owner: identity.subject, includePublic: false });
+    return c.json({ queries: attachQueryResultUrls(list, c.env, c.req.url) });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.patch("/queries/:id", async (c) => {
+  try {
+    if (!c.env.DB) return c.json({ error: "D1 not configured" }, 503);
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const body = (await c.req.json()) as { visibility?: Visibility };
+    if (!body.visibility) return c.json({ error: "visibility required" }, 400);
+    const d1 = createD1Registry(c.env.DB);
+    const updated = await d1.setQueryVisibility(c.req.param("id"), body.visibility, identity.subject);
+    if (!updated) return c.json({ error: "Not found" }, 404);
+    return c.json(updated);
   } catch (e) {
     return errResponse(e);
   }
@@ -560,14 +666,24 @@ app.post("/datasets/derived", async (c) => {
             }
             const compute = createComputeClientFromEnv(c.env);
             // For MVP materialize: execute the source query and register as new table via ingest of result
-            const q = await compute.query({
-              datasetId: src.datasetId,
-              columns: src.query.columns,
-              filter: src.query.filter,
-              snapshot: src.snapshotPin ?? src.query.snapshot,
-              queryHash: `mat_${datasetId}`,
-              mode: "link",
-            });
+            let stagingPath: string | undefined;
+            if (src.resultR2Url) {
+              stagingPath = objectKeyFromUri(src.resultR2Url);
+            } else if (src.queryId && c.env.DB) {
+              const d1 = createD1Registry(c.env.DB);
+              const sq = await d1.getQuery(src.queryId);
+              if (sq?.r2Url) stagingPath = objectKeyFromUri(sq.r2Url);
+            }
+            const q = stagingPath
+              ? { mode: "link" as const, r2Path: stagingPath, rowCount: 0, sizeBytes: 0 }
+              : await compute.query({
+                  datasetId: src.datasetId,
+                  columns: src.query.columns,
+                  filter: src.query.filter,
+                  snapshot: src.snapshotPin ?? src.query.snapshot,
+                  queryHash: `mat_${datasetId}`,
+                  mode: "link",
+                });
             if (q.r2Path) {
               const ingest = await stub.fetch("https://catalog/commit", {
                 method: "POST",
@@ -734,10 +850,33 @@ app.post("/mcp", async (c) => {
   try {
     const body = (await c.req.json()) as {
       jsonrpc?: string;
-      id?: string | number;
+      id?: string | number | null;
       method: string;
       params?: Record<string, unknown>;
     };
+
+    // Cursor / MCP clients require initialize before tools/*
+    if (body.method === "initialize") {
+      const requested = String(
+        (body.params as { protocolVersion?: string } | undefined)?.protocolVersion ??
+          "2024-11-05",
+      );
+      return c.json({
+        jsonrpc: "2.0",
+        id: body.id,
+        result: {
+          protocolVersion: requested,
+          capabilities: { tools: { listChanged: false } },
+          serverInfo: { name: "trainfabric", version: "0.1.0" },
+        },
+      });
+    }
+    if (body.method === "notifications/initialized" || body.method === "initialized") {
+      return c.body(null, 204);
+    }
+    if (body.method === "ping") {
+      return c.json({ jsonrpc: "2.0", id: body.id, result: {} });
+    }
 
     // JSON-RPC style for remote MCP
     if (body.method === "tools/list" || body.method === "list_tools") {
@@ -792,8 +931,18 @@ function buildMcpContext(c: {
     },
     sample: async (id, n) => {
       const ds = await deps.getDataset(id);
-      if (!compute) return (ds?.schema?.sampleRows ?? []).slice(0, n);
-      return compute.sample(id, n, ds?.icebergNamespace ?? "default");
+      const registryRows = (ds?.schema?.sampleRows ?? []).slice(0, n);
+      // Prefer registry samples (demo + recently published); match REST /sample.
+      if (registryRows.length || !compute) return registryRows;
+      try {
+        return await compute.sample(
+          ds?.icebergTable ?? id,
+          n,
+          ds?.icebergNamespace ?? "default",
+        );
+      } catch {
+        return registryRows;
+      }
     },
     publish: async (args) => {
       // Simplified: expect data_ref already staged
@@ -940,7 +1089,9 @@ export default {
       path === "/datasets" ||
       path === "/datasets/derived" ||
       /^\/datasets\/[^/]+$/.test(path) ||
-      /^\/datasets\/[^/]+\/(schema|snapshots|lineage|query|estimate|sample|rebuild)$/.test(path) ||
+      path === "/queries" ||
+      /^\/queries\/[^/]+$/.test(path) ||
+      /^\/datasets\/[^/]+\/(schema|snapshots|lineage|query|queries|estimate|sample|rebuild)$/.test(path) ||
       /^\/datasets\/[^/]+\/query\/proxy$/.test(path);
     if (!isApi) {
       const dash = (env.DASHBOARD_URL ?? "").replace(/\/$/, "");

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { AuthControls } from "@/components/auth-controls";
 
 const LINKS = [
   { href: "/docs", label: "Docs" },
@@ -42,7 +43,7 @@ export function LandingNav() {
               <Link
                 key={link.href}
                 href={link.href}
-                className="rounded-full px-2.5 py-1.5 text-sm text-[hsl(210_12%_36%)] transition hover:bg-black/[0.04] hover:text-[hsl(210_28%_12%)]"
+                className="rounded-full px-2.5 py-2 text-sm leading-normal text-[hsl(210_12%_36%)] transition hover:bg-black/[0.04] hover:text-[hsl(210_28%_12%)]"
               >
                 {link.label}
               </Link>
@@ -56,10 +57,13 @@ export function LandingNav() {
           </Link>
           <Link
             href="/new"
-            className="landing-btn-primary ml-1 inline-flex h-8 shrink-0 items-center rounded-full px-3.5 text-sm font-medium text-white sm:h-9 sm:px-4"
+            className="landing-btn-primary ml-1 inline-flex min-h-8 shrink-0 items-center rounded-full px-3.5 py-1.5 text-sm font-medium leading-normal text-white sm:min-h-9 sm:px-4"
           >
             Publish
           </Link>
+          <div className="ml-1 hidden sm:block">
+            <AuthControls />
+          </div>
         </nav>
       </div>
     </header>
