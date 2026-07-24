@@ -14,7 +14,7 @@ export function SiteHeader() {
           Trainfabric
         </Link>
         <nav className="flex items-center gap-3 text-sm text-muted-foreground">
-          <Link href="/" className="hover:text-foreground">
+          <Link href="/datasets" className="hover:text-foreground">
             Datasets
           </Link>
           <Link href="/me" className="hover:text-foreground">
