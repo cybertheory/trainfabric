@@ -1,9 +1,14 @@
-const API = process.env.NEXT_PUBLIC_API_URL ?? "/api/proxy";
+// Prefer Cloudflare Worker API in production; /api/proxy is for local only.
+const API =
+  process.env.NEXT_PUBLIC_API_URL ??
+  (process.env.NODE_ENV === "production"
+    ? "https://trainfabric-router.rishabhspro.workers.dev"
+    : "/api/proxy");
 
 function apiBase(): string {
   const configured = API.replace(/\/$/, "");
   if (typeof window === "undefined") return configured;
-  // Prefer same-origin proxy when configured for localhost Worker
+  // Localhost Worker → same-origin proxy (avoids private-network browser blocks)
   if (
     configured.startsWith("http") &&
     (configured.includes("127.0.0.1") || configured.includes("localhost"))
