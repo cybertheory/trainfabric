@@ -17,6 +17,7 @@ export interface AutoStore {
   upsertAutoRun(body: Partial<AutoRun> & { id: string; status: AutoRunStatus }): Promise<void>;
   getAutoRun(id: string): Promise<AutoRun | null>;
   listAutoRuns(datasetId: string): Promise<AutoRun[]>;
+  listAutoRunsByOwner(ownerId: string): Promise<AutoRun[]>;
   upsertAutoTrial(
     body: Partial<AutoTrial> & { id: string; status: AutoTrialStatus; autoRunId?: string },
   ): Promise<void>;
@@ -204,6 +205,18 @@ export function createD1AutoStore(db: D1Database): AutoStore {
       return (results ?? []).map((r) => rowToRun(r as Record<string, unknown>));
     },
 
+    async listAutoRunsByOwner(ownerId) {
+      await ensureAutoSchema(db);
+      await db
+        .prepare(`CREATE INDEX IF NOT EXISTS idx_auto_runs_owner ON auto_runs(owner_id)`)
+        .run();
+      const { results } = await db
+        .prepare("SELECT * FROM auto_runs WHERE owner_id = ? ORDER BY created_at DESC")
+        .bind(ownerId)
+        .all();
+      return (results ?? []).map((r) => rowToRun(r as Record<string, unknown>));
+    },
+
     async upsertAutoTrial(body) {
       await ensureAutoSchema(db);
       const existing = await db.prepare("SELECT * FROM auto_trials WHERE id = ?").bind(body.id).first();
@@ -385,6 +398,7 @@ function createConvexAutoStore(baseUrl: string, serviceKey: string): AutoStore {
     },
     getAutoRun: (id) => post("/api/auto/runs/get", { id }),
     listAutoRuns: (datasetId) => post("/api/auto/runs/list", { datasetId }),
+    listAutoRunsByOwner: (ownerId) => post("/api/auto/runs/list-by-owner", { ownerId }),
     async upsertAutoTrial(body) {
       await post("/api/auto/trials/upsert", {
         trialId: body.id,

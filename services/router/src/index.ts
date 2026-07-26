@@ -1289,6 +1289,27 @@ app.get("/datasets/:id/auto", async (c) => {
   }
 });
 
+app.get("/auto", async (c) => {
+  try {
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const store = createAutoStore(c.env);
+    const runs = await store.listAutoRunsByOwner(identity.subject);
+    return c.json({
+      runs,
+      prerequisites: {
+        boxConfigured: Boolean(c.env.BOX_API_KEY),
+        modalConfigured: Boolean(c.env.MODAL_TOKEN && c.env.MODAL_APP_REF),
+        note: c.env.BOX_API_KEY
+          ? "Box API key is set on the Worker — new agents provision real sandboxes."
+          : "No BOX_API_KEY on the Worker — agents start in stub mode (control plane only). Set BOX_API_KEY in router secrets for live Box sandboxes.",
+      },
+    });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
 app.get("/auto/:id", async (c) => {
   try {
     const store = createAutoStore(c.env);
@@ -1817,6 +1838,7 @@ export default {
       path === "/health" ||
       path.startsWith("/admin/") ||
       path.startsWith("/jobs/") ||
+      path === "/auto" ||
       path.startsWith("/auto/") ||
       path.startsWith("/runners") ||
       path.startsWith("/results/") ||

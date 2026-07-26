@@ -19,6 +19,9 @@ function memoryStore(seed?: { run?: AutoRun; trial?: AutoTrial }): AutoStore {
     async listAutoRuns() {
       return [...runs.values()];
     },
+    async listAutoRunsByOwner(ownerId) {
+      return [...runs.values()].filter((r) => r.ownerId === ownerId);
+    },
     async upsertAutoTrial(body) {
       const cur = trials.get(body.id);
       trials.set(body.id, {

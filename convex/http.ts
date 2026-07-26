@@ -257,6 +257,17 @@ http.route({
 });
 
 http.route({
+  path: "/api/auto/runs/list-by-owner",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const { ownerId } = await req.json();
+    const rows = await ctx.runQuery(api.autoRuns.listAutoRunsByOwner, { ownerId });
+    return Response.json(rows);
+  }),
+});
+
+http.route({
   path: "/api/auto/trials/upsert",
   method: "POST",
   handler: httpAction(async (ctx, req) => {

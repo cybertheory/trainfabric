@@ -104,6 +104,17 @@ export const listAutoRunsByDataset = query({
   },
 });
 
+export const listAutoRunsByOwner = query({
+  args: { ownerId: v.string() },
+  handler: async (ctx, { ownerId }) => {
+    const rows = await ctx.db
+      .query("autoRuns")
+      .withIndex("by_ownerId", (q) => q.eq("ownerId", ownerId))
+      .collect();
+    return rows.map(mapRun).sort((a, b) => b.createdAt - a.createdAt);
+  },
+});
+
 export const upsertAutoRun = mutation({
   args: {
     autoRunId: v.string(),

@@ -113,6 +113,12 @@ export default function AutoRunMonitorPage() {
   return (
     <div className="mx-auto max-w-4xl space-y-8 px-4 py-8 sm:px-6">
       <header className="space-y-3">
+        <Link
+          href="/agents"
+          className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+        >
+          ← Agents
+        </Link>
         <div className="flex flex-wrap items-center gap-2">
           <Bot className="h-5 w-5 text-primary" />
           <h1 className="text-xl font-semibold tracking-tight">Autoresearch monitor</h1>

@@ -102,8 +102,12 @@ export function AutoConfigurePanel({
         Autoresearch (/auto)
       </div>
       <p className="text-xs text-muted-foreground">
-        Long-running campaign on Box. Not started until you configure a repo + protocol below.
-        GPU trials go to Modal or a registered HTTP runner.
+        Long-running campaign. Configure repo + protocol here, then start. Prefer the full wizard at{" "}
+        <Link href="/agents/new" className="text-primary hover:underline">
+          Agents → Configure
+        </Link>
+        . Box keys are set on the Worker (<code className="text-[10px]">BOX_API_KEY</code>), not in
+        this form.
       </p>
 
       <div className="space-y-2">

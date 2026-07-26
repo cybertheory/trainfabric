@@ -1,9 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-import type { DatasetMeta, QueryEstimate, SavedQuery, SchemaContract } from "@trainfabric/shared";
-import { Star, GitBranch } from "lucide-react";
+import type { AutoRun, DatasetMeta, QueryEstimate, SavedQuery, SchemaContract } from "@trainfabric/shared";
+import { Bot, Star, GitBranch } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,6 +14,7 @@ import { ForkDialog } from "@/components/fork-dialog";
 import { DatasetConnectButton } from "@/components/dataset-connect-button";
 import { DatasetAgentSidebar } from "@/components/dataset-agent-sidebar";
 import { DatasetQueryPanel } from "@/components/dataset-query-panel";
+import { AutoConfigurePanel } from "@/components/auto-configure-panel";
 import { apiFetch } from "@/lib/api";
 import { formatBytes, formatRows } from "@/lib/utils";
 
@@ -37,6 +39,7 @@ export default function DatasetDetailPage() {
   const [snapshots, setSnapshots] = useState<unknown[]>([]);
   const [lineage, setLineage] = useState<unknown>(null);
   const [queries, setQueries] = useState<QueryRow[]>([]);
+  const [autoRuns, setAutoRuns] = useState<AutoRun[]>([]);
 
   useEffect(() => {
     if (!owner || !name) return;
@@ -81,6 +84,9 @@ export default function DatasetDetailPage() {
         apiFetch<{ queries: QueryRow[] }>(`/datasets/${found.id}/queries`)
           .then((q) => setQueries(q.queries))
           .catch(() => setQueries([]));
+        apiFetch<{ runs: AutoRun[] }>(`/datasets/${found.id}/auto`)
+          .then((a) => setAutoRuns(a.runs ?? []))
+          .catch(() => setAutoRuns([]));
       })
       .catch(() => setNotFound(true));
   }, [owner, name]);
@@ -165,6 +171,7 @@ export default function DatasetDetailPage() {
               <TabsTrigger value="data">Data</TabsTrigger>
               <TabsTrigger value="schema">Schema</TabsTrigger>
               <TabsTrigger value="query">Query</TabsTrigger>
+              <TabsTrigger value="agents">Agents</TabsTrigger>
               <TabsTrigger value="versions">Versions</TabsTrigger>
               {dataset.kind === "derived" ? <TabsTrigger value="lineage">Lineage</TabsTrigger> : null}
             </TabsList>
@@ -224,6 +231,52 @@ export default function DatasetDetailPage() {
                 queries={queries}
                 onQueriesChange={setQueries}
               />
+            </TabsContent>
+
+            <TabsContent value="agents" className="space-y-4 pt-2">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <h2 className="flex items-center gap-2 text-sm font-medium">
+                    <Bot className="h-4 w-4 text-primary" />
+                    Autoresearch agents
+                  </h2>
+                  <p className="max-w-lg text-xs text-muted-foreground">
+                    Configure before you start. Box API keys are Worker secrets — not pasted here.
+                    Full wizard:{" "}
+                    <Link href="/agents/new" className="text-primary hover:underline">
+                      /agents/new
+                    </Link>
+                    .
+                  </p>
+                </div>
+                <Button asChild size="sm" variant="outline">
+                  <Link href="/agents">All agents</Link>
+                </Button>
+              </div>
+              <AutoConfigurePanel
+                datasetId={dataset.id}
+                snapshotId={dataset.latestSnapshotId || dataset.schema?.snapshotId}
+              />
+              {autoRuns.length > 0 ? (
+                <ul className="divide-y rounded-lg border text-sm">
+                  {autoRuns.map((run) => (
+                    <li key={run.id} className="flex items-center justify-between gap-2 px-3 py-2">
+                      <div className="min-w-0">
+                        <p className="truncate font-medium">{run.status}</p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {run.repo.url} · trial {run.progress.trial}/
+                          {run.protocol.budget.maxTrials}
+                        </p>
+                      </div>
+                      <Button asChild size="sm" variant="ghost">
+                        <Link href={`/auto/${run.id}`}>Open</Link>
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-xs text-muted-foreground">No AutoRuns on this dataset yet.</p>
+              )}
             </TabsContent>
 
             <TabsContent value="versions" className="space-y-2 pt-2">
