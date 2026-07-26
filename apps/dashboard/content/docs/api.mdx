@@ -58,6 +58,20 @@ Querying or sampling a dataset while authenticated **auto-connects** you to that
 | `GET` | `/jobs/:id` |
 | `GET` | `/results/:hash` |
 
+## Autoresearch & GPU runners
+
+| Method | Path |
+|--------|------|
+| `POST` | `/auto` | Create AutoRun (repo-first) |
+| `GET` | `/auto/:id` | Status, trials, activity |
+| `POST` | `/auto/:id/bind-dataset` | Bind dataset / freeze snapshot |
+| `POST` | `/runners/register` | Register self-hosted HTTP GPU runner → `{ runnerId, token }` |
+| `GET` | `/runners` | List your runners |
+| `POST` | `/runners/claim` | Runner claims a pending trial (Bearer runner token) |
+| `POST` | `/runners/heartbeat` | Runner heartbeat |
+
+Self-hosted GPU worker: [trainfabric-gpu-runner](https://github.com/cybertheory/trainfabric-gpu-runner). Guide: [Agents](/docs/agents).
+
 ## MCP
 
 | Method | Path |

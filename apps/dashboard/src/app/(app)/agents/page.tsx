@@ -67,9 +67,20 @@ export default function AgentsPage() {
           </div>
           <p className="max-w-xl text-sm text-muted-foreground">
             Long-running autoresearch campaigns. Connect a GitHub repo first — goals and instructions
-            live in that repo — then set protocol and compute. The agent discovers datasets from the
-            repo brief; chat with it while it runs. GPU trials run on Modal or a self-hosted runner;
-            the agent loop runs on Box when a platform Box API key is configured.
+            live in that repo — then set protocol and compute. GPU trials run on Modal or a{" "}
+            <a
+              href="https://github.com/cybertheory/trainfabric-gpu-runner"
+              target="_blank"
+              rel="noreferrer"
+              className="text-primary hover:underline"
+            >
+              self-hosted HTTP runner
+            </a>
+            . See{" "}
+            <Link href="/docs/agents" className="text-primary hover:underline">
+              agents docs
+            </Link>
+            .
           </p>
         </div>
         <Button asChild>

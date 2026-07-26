@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
 """
-Trainfabric GPU worker — poll/claim trials from the router (NAT-friendly).
+Trainfabric HTTP GPU runner — poll/claim trials from the Trainfabric control plane.
 
-Not the long-running agent (that's Box). This only executes GPU trials.
+This is *only* the GPU trial worker. The long-running agent loop lives in Box;
+your machine (Spark box, rented GPU, lab workstation) just claims and runs trials.
 
-  docker run ... -e TF_API_URL=... -e RUNNER_TOKEN=tfr_... trainfabric/gpu-runner
+Quick start:
+  1. Register:  ./register.sh my-gpu
+  2. Run:       docker run --rm -e TF_API_URL=... -e RUNNER_TOKEN=tfr_... \
+                  $(docker build -q .)
+
+Env:
+  TF_API_URL       Trainfabric API base (required)
+  RUNNER_TOKEN     Token from POST /runners/register (required)
+  POLL_SEC         Claim poll interval (default 10)
+  WORKDIR          Scratch directory (default /tmp/tf-runner)
+  TRIAL_ENTRYPOINT Shell command to run in the trial repo (default: python train.py)
 """
 
 from __future__ import annotations
@@ -31,6 +42,8 @@ def api(base: str, token: str, method: str, path: str, body: Optional[dict] = No
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "trainfabric-gpu-runner/1.0",
         },
     )
     try:
@@ -73,9 +86,16 @@ def run_entrypoint(repo: Path, entrypoint: str, budget_sec: int) -> dict[str, An
 
 
 def claim_loop(base: str, token: str, poll_sec: float, workdir: Path) -> None:
+    print(f"polling {base} every {poll_sec}s — Ctrl+C to stop")
     while True:
-        api(base, token, "POST", "/runners/heartbeat", {})
-        claimed = api(base, token, "POST", "/runners/claim", {})
+        try:
+            api(base, token, "POST", "/runners/heartbeat", {})
+            claimed = api(base, token, "POST", "/runners/claim", {})
+        except Exception as e:  # noqa: BLE001
+            print(f"claim error: {e}")
+            time.sleep(poll_sec)
+            continue
+
         trial = claimed.get("trial")
         run = claimed.get("run")
         if not trial or not run:
@@ -91,6 +111,7 @@ def claim_loop(base: str, token: str, poll_sec: float, workdir: Path) -> None:
         budget = int((protocol.get("budget") or {}).get("maxGpuSec") or 600)
         entrypoint = os.environ.get("TRIAL_ENTRYPOINT", "python train.py")
 
+        print(f"claimed {trial_id} repo={repo_url} sha={sha or branch}")
         with tempfile.TemporaryDirectory(dir=str(workdir)) as tmp:
             repo = Path(tmp) / "repo"
             subprocess.run(
@@ -101,33 +122,42 @@ def claim_loop(base: str, token: str, poll_sec: float, workdir: Path) -> None:
                 subprocess.run(["git", "checkout", sha], cwd=str(repo), check=False)
             result = run_entrypoint(repo, entrypoint, budget)
 
-        api(
-            base,
-            token,
-            "POST",
-            f"/auto/{auto_run_id}/trials/{trial_id}/complete",
-            {
-                "status": result["status"],
-                "score": result.get("score"),
-                "error": result.get("error"),
-                "commitSha": sha,
-            },
-        )
-        print(f"completed {trial_id} status={result['status']} score={result.get('score')}")
+        try:
+            api(
+                base,
+                token,
+                "POST",
+                f"/auto/{auto_run_id}/trials/{trial_id}/complete",
+                {
+                    "status": result["status"],
+                    "score": result.get("score"),
+                    "error": result.get("error"),
+                    "commitSha": sha,
+                },
+            )
+            print(f"completed {trial_id} status={result['status']} score={result.get('score')}")
+        except Exception as e:  # noqa: BLE001
+            print(f"complete error for {trial_id}: {e}")
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Trainfabric GPU runner")
+    p = argparse.ArgumentParser(
+        description="Trainfabric HTTP GPU runner — claim and execute AutoRun trials",
+    )
     p.add_argument("--api", default=os.environ.get("TF_API_URL", ""))
     p.add_argument("--token", default=os.environ.get("RUNNER_TOKEN", ""))
     p.add_argument("--poll", type=float, default=float(os.environ.get("POLL_SEC", "10")))
     p.add_argument("--workdir", default=os.environ.get("WORKDIR", "/tmp/tf-runner"))
     args = p.parse_args()
     if not args.api or not args.token:
-        raise SystemExit("--api and --token (or TF_API_URL / RUNNER_TOKEN) required")
+        raise SystemExit(
+            "TF_API_URL and RUNNER_TOKEN required.\n"
+            "  1. Register: ./register.sh my-gpu\n"
+            "  2. docker run --rm -e TF_API_URL=... -e RUNNER_TOKEN=tfr_... $(docker build -q .)\n"
+            "See https://github.com/cybertheory/trainfabric-gpu-runner"
+        )
     workdir = Path(args.workdir)
     workdir.mkdir(parents=True, exist_ok=True)
-    print(f"gpu-runner polling {args.api}")
     claim_loop(args.api, args.token, args.poll, workdir)
 
 

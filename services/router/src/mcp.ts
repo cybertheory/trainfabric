@@ -77,6 +77,19 @@ export interface McpContext {
     message: string,
   ) => Promise<{ userMessage: AutoMessage; assistantMessage: AutoMessage }>;
   listAutoMessages?: (auto_run_id: string, limit?: number) => Promise<AutoMessage[]>;
+  registerGpuRunner?: (args: {
+    name: string;
+    capacity?: string;
+  }) => Promise<{ runnerId: string; token: string; docker_run: string; docs: string }>;
+  listGpuRunners?: () => Promise<
+    Array<{
+      id: string;
+      name: string;
+      capacity?: string;
+      lastHeartbeatAt?: number;
+      createdAt: number;
+    }>
+  >;
   ai?: unknown;
   vectorize?: unknown;
 }
@@ -349,6 +362,28 @@ export const MCP_TOOLS = [
         limit: { type: "number" },
       },
       required: ["auto_run_id"],
+    },
+  },
+  {
+    name: "register_gpu_runner",
+    description:
+      "Register a self-hosted HTTP GPU runner for /auto trials. Returns runnerId + one-time token and the docker run command. Public runner image/docs: https://github.com/cybertheory/trainfabric-gpu-runner — then pass compute.provider=\"runner\" and compute.runnerId to start_auto.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Friendly name, e.g. home-gpu" },
+        capacity: { type: "string", description: "Optional capacity tag, e.g. gpu:1" },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "list_gpu_runners",
+    description:
+      "List GPU runners registered for the signed-in user (id, name, last heartbeat). Use a runner id with start_auto compute.provider=\"runner\".",
+    inputSchema: {
+      type: "object",
+      properties: {},
     },
   },
   {
@@ -646,6 +681,29 @@ export async function handleMcpTool(
         args.limit as number | undefined,
       );
       return ok({ messages });
+    }
+    case "register_gpu_runner": {
+      if (!ctx.identity) throw new AuthError("Auth required to register a GPU runner");
+      if (!ctx.registerGpuRunner) throw new Error("Auto store not configured");
+      const name = String(args.name ?? "").trim();
+      if (!name) throw new Error("name required");
+      const out = await ctx.registerGpuRunner({
+        name,
+        capacity: args.capacity ? String(args.capacity) : undefined,
+      });
+      return ok({
+        ...out,
+        next: `Save the token (shown once). On your GPU machine clone https://github.com/cybertheory/trainfabric-gpu-runner and run docker_run. Then start_auto with compute.provider=\"runner\" and compute.runnerId=\"${out.runnerId}\".`,
+      });
+    }
+    case "list_gpu_runners": {
+      if (!ctx.identity) throw new AuthError("Auth required");
+      if (!ctx.listGpuRunners) throw new Error("Auto store not configured");
+      const runners = await ctx.listGpuRunners();
+      return ok({
+        runners,
+        docs: "https://github.com/cybertheory/trainfabric-gpu-runner",
+      });
     }
     case "check_auto": {
       if (!ctx.checkAuto) throw new Error("Auto store not configured");

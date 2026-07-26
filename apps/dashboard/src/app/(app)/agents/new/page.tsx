@@ -67,6 +67,18 @@ function NewAgentWizard() {
   const [provider, setProvider] = useState<"modal" | "runner">("modal");
   const [modalRef, setModalRef] = useState("");
   const [runnerId, setRunnerId] = useState("");
+  const [runners, setRunners] = useState<
+    Array<{ id: string; name: string; capacity?: string; lastHeartbeatAt?: number }>
+  >([]);
+  const [registering, setRegistering] = useState(false);
+  const [newRunnerName, setNewRunnerName] = useState("home-gpu");
+  const [freshRunner, setFreshRunner] = useState<{
+    runnerId: string;
+    token: string;
+    docker: string;
+  } | null>(null);
+
+  const GPU_RUNNER_REPO = "https://github.com/cybertheory/trainfabric-gpu-runner";
 
   useEffect(() => {
     Promise.all([
@@ -81,6 +93,44 @@ function NewAgentWizard() {
       if (auto.prerequisites) setPrereq(auto.prerequisites);
     });
   }, [authToken]);
+
+  useEffect(() => {
+    if (!authToken) return;
+    apiFetch<{ runners: Array<{ id: string; name: string; capacity?: string; lastHeartbeatAt?: number }> }>(
+      "/runners",
+      { token: authToken },
+    )
+      .then((r) => setRunners(r.runners ?? []))
+      .catch(() => setRunners([]));
+  }, [authToken]);
+
+  async function registerRunner() {
+    if (!authToken) {
+      toast.error("Sign in to register a GPU runner");
+      return;
+    }
+    setRegistering(true);
+    try {
+      const out = await apiFetch<{ runnerId: string; token: string }>("/runners/register", {
+        method: "POST",
+        token: authToken,
+        body: JSON.stringify({ name: newRunnerName.trim() || "gpu-runner", capacity: "gpu:1" }),
+      });
+      setRunnerId(out.runnerId);
+      setRunners((prev) => [{ id: out.runnerId, name: newRunnerName.trim() || "gpu-runner" }, ...prev]);
+      const docker = [
+        `git clone ${GPU_RUNNER_REPO}.git && cd trainfabric-gpu-runner`,
+        "docker build -t trainfabric/gpu-runner .",
+        `docker run --rm -e TF_API_URL=https://trainfabric-router.rishabhspro.workers.dev -e RUNNER_TOKEN=${out.token} trainfabric/gpu-runner`,
+      ].join("\n");
+      setFreshRunner({ runnerId: out.runnerId, token: out.token, docker });
+      toast.success("Runner registered — copy the token (shown once)");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Register failed");
+    } finally {
+      setRegistering(false);
+    }
+  }
 
   const selectedHint = useMemo(
     () => datasets.find((d) => d.id === datasetHint) ?? null,
@@ -376,17 +426,92 @@ function NewAgentWizard() {
                 </p>
               </div>
             ) : (
-              <div className="space-y-1">
-                <Label className="text-xs">Runner id</Label>
-                <Input
-                  value={runnerId}
-                  onChange={(e) => setRunnerId(e.target.value)}
-                  placeholder="runner_…"
-                />
-                <p className="text-[11px] text-muted-foreground">
-                  Register with <code>POST /runners/register</code>, then run{" "}
-                  <code>trainfabric/gpu-runner</code> with the returned token.
+              <div className="space-y-3">
+                <p className="text-xs text-muted-foreground">
+                  Connect any GPU machine over HTTPS — no SSH. Public runner:{" "}
+                  <a
+                    href={GPU_RUNNER_REPO}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-medium text-primary hover:underline"
+                  >
+                    cybertheory/trainfabric-gpu-runner
+                  </a>
+                  . Docs:{" "}
+                  <Link href="/docs/agents" className="text-primary hover:underline">
+                    /docs/agents
+                  </Link>
+                  .
                 </p>
+                {runners.length > 0 ? (
+                  <div className="space-y-1">
+                    <Label className="text-xs">Your runners</Label>
+                    <select
+                      className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                      value={runnerId}
+                      onChange={(e) => setRunnerId(e.target.value)}
+                    >
+                      <option value="">Select a registered runner…</option>
+                      {runners.map((r) => (
+                        <option key={r.id} value={r.id}>
+                          {r.name} · {r.id}
+                          {r.lastHeartbeatAt
+                            ? ` · seen ${new Date(r.lastHeartbeatAt).toLocaleString()}`
+                            : " · never seen"}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
+                <div className="space-y-1">
+                  <Label className="text-xs">Runner id</Label>
+                  <Input
+                    value={runnerId}
+                    onChange={(e) => setRunnerId(e.target.value)}
+                    placeholder="runner_…"
+                  />
+                </div>
+                <div className="rounded-md border border-dashed bg-muted/20 p-3 space-y-2">
+                  <p className="text-xs font-medium">Register a new runner</p>
+                  <div className="flex flex-wrap gap-2">
+                    <Input
+                      className="h-9 max-w-[12rem]"
+                      value={newRunnerName}
+                      onChange={(e) => setNewRunnerName(e.target.value)}
+                      placeholder="home-gpu"
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      disabled={registering || !authToken}
+                      onClick={() => void registerRunner()}
+                    >
+                      {registering ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                      Register runner
+                    </Button>
+                  </div>
+                  {freshRunner ? (
+                    <div className="space-y-1.5 text-[11px]">
+                      <p>
+                        <span className="text-muted-foreground">runnerId</span>{" "}
+                        <code className="break-all">{freshRunner.runnerId}</code>
+                      </p>
+                      <p>
+                        <span className="text-muted-foreground">token (once)</span>{" "}
+                        <code className="break-all">{freshRunner.token}</code>
+                      </p>
+                      <pre className="overflow-x-auto rounded bg-background p-2 text-[10px] leading-relaxed">
+                        {freshRunner.docker}
+                      </pre>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground">
+                      After register, run the docker command on your GPU box, then continue with the
+                      runner id selected above.
+                    </p>
+                  )}
+                </div>
               </div>
             )}
           </div>

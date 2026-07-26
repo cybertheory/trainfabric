@@ -24,7 +24,7 @@ CF_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 # Clerk Frontend API issuer (session JWT iss). Audience left unset for default session tokens.
 CLERK_JWT_ISSUER = "https://desired-seal-5.clerk.accounts.dev"
 PUBLIC_API_BASE = "https://trainfabric-router.rishabhspro.workers.dev"
-# Secrets: CF_AI_GATEWAY_TOKEN, AGENT_TOKEN_SECRET (wrangler secret put)
+# Secrets: CF_AI_GATEWAY_TOKEN, AGENT_TOKEN_SECRET, BOX_API_KEY, MODAL_TOKEN (wrangler secret put)
 
 [[r2_buckets]]
 binding = "R2"

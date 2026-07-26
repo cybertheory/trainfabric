@@ -1,0 +1,93 @@
+---
+title: Agents
+description: Repo-first autoresearch campaigns — Box agent loop, Modal or self-hosted HTTP GPU runners.
+---
+
+# Agents (`/auto`)
+
+Long-running autoresearch campaigns. You connect a **GitHub research repo** (goals and instructions live there), freeze an experiment protocol, and choose GPU compute. The cloud agent discovers datasets from the repo brief and runs comparable trials.
+
+Dashboard: **Agents → Configure agent**. Monitor + chat: `/auto/:id`.
+
+## Architecture
+
+| Layer | Where | Role |
+|-------|-------|------|
+| Control plane | Trainfabric API / MCP | Create AutoRun, bind datasets, enqueue trials, chat |
+| Agent loop | [Box](https://box.ascii.dev/) sandbox | Clone repo, load brief, discover data, propose, ratchet git |
+| GPU trials | **Modal** *or* **HTTP runner** | Train/eval only — claim a trial, run entrypoint, report score |
+
+No SSH. Self-hosted GPUs connect over HTTPS with a runner token.
+
+## Custom GPU (HTTP runner)
+
+Point any machine with a GPU (lab box, Spark node, rented cloud GPU) at Trainfabric using the public runner:
+
+**Repo:** [github.com/cybertheory/trainfabric-gpu-runner](https://github.com/cybertheory/trainfabric-gpu-runner)
+
+### 1. Register
+
+**Dashboard** — Agents → Configure → Compute → Self-hosted HTTP runner → **Register runner** (copies `runnerId` + shows the docker command).
+
+**MCP / skill:**
+
+```
+register_gpu_runner({ name: "home-gpu", capacity: "gpu:1" })
+# → { runnerId, token, docker_run }
+list_gpu_runners()
+```
+
+**REST:**
+
+```bash
+curl -X POST https://trainfabric-router.rishabhspro.workers.dev/runners/register \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"home-gpu","capacity":"gpu:1"}'
+# → { "runnerId": "runner_…", "token": "tfr_…" }
+```
+
+### 2. Run on the GPU machine
+
+```bash
+git clone https://github.com/cybertheory/trainfabric-gpu-runner.git
+cd trainfabric-gpu-runner
+docker build -t trainfabric/gpu-runner .
+docker run --rm \
+  -e TF_API_URL=https://trainfabric-router.rishabhspro.workers.dev \
+  -e RUNNER_TOKEN=tfr_… \
+  trainfabric/gpu-runner
+```
+
+The process heartbeats, claims pending trials, clones the campaign commit, runs `python train.py` (override with `TRIAL_ENTRYPOINT`), reads `metrics.json` `{ "score": … }`, and completes the trial.
+
+### 3. Attach to a campaign
+
+**Wizard:** paste the `runnerId` under Compute.
+
+**MCP:**
+
+```
+start_auto({
+  repo_url: "https://github.com/you/research-repo",
+  protocol: {
+    metric: { name: "val_bpb", direction: "min" },
+    budget: { maxTrials: 20, maxWallClockSec: 3600 },
+    mutablePaths: ["train.py"],
+    immutablePaths: ["prepare.py", "protocol.yaml"]
+  },
+  compute: { provider: "runner", runnerId: "runner_…" }
+})
+```
+
+**REST:** `POST /auto` with `"compute": { "provider": "runner", "runnerId": "runner_…" }`.
+
+Managed alternative: `compute.provider: "modal"` (platform `MODAL_TOKEN`).
+
+## Repo-first brief
+
+Put the research brief in the connected repo (`TRAINFABRIC.md` → `AGENTS.md` → `README.md`). Keep the eval contract in `protocol.yaml`. The agent loads that after clone — you don't paste a free-form goal in the wizard.
+
+## Chat
+
+Dashboard chat and MCP `message_auto_agent` / `list_auto_messages` share one thread per AutoRun so humans and other agents can steer the same campaign.

@@ -62,11 +62,16 @@ Runs Hermes + duckdb-analytics skill in compute (schema → estimate → DuckDB)
 
 ### Autoresearch (`/auto`)
 
-Long-running campaign. Agent sandbox = [Box](https://box.ascii.dev/). GPU trials = Modal or a self-hosted HTTP runner image (`services/autorunner`).
+Long-running campaign. Agent sandbox = [Box](https://box.ascii.dev/). GPU trials = Modal **or** a self-hosted [HTTP GPU runner](https://github.com/cybertheory/trainfabric-gpu-runner).
 
 **Repo-first**: pass a `repo_url` whose tree contains the research brief (`TRAINFABRIC.md` → `AGENTS.md` → `README.md`) and prefer encoding the eval contract in `protocol.yaml`. The cloud agent loads that brief after clone, then runs `discover_datasets` / `bind_auto_dataset`. Pass `dataset_id` only as a starting hint; `goal` is an optional override.
 
+**Custom GPU**: register once, run the public image on your machine, pass `runnerId` into `start_auto`.
+
 ```
+register_gpu_runner({ name: "home-gpu", capacity: "gpu:1" })
+# → { runnerId, token, docker_run }  — clone https://github.com/cybertheory/trainfabric-gpu-runner
+
 start_auto({
   repo_url: "https://github.com/org/autoresearch-repo",
   protocol: {
@@ -76,12 +81,14 @@ start_auto({
     mutablePaths: ["train.py"],
     immutablePaths: ["prepare.py", "protocol.yaml"]
   },
-  compute: { provider: "modal", modalRef: "user/app" }
-  // or: compute: { provider: "runner", runnerId: "runner_..." }
+  compute: { provider: "runner", runnerId: "runner_..." }
+  // or: compute: { provider: "modal", modalRef: "user/app" }
 })
 ```
 
-Poll with `check_auto({ auto_run_id })` (run + trials + activity + boundDatasets). Pause/resume/cancel with `pause_auto({ auto_run_id, action })`. Bind a dataset with `bind_auto_dataset({ auto_run_id, dataset_id, reason })`.
+`list_gpu_runners()` lists your registered runners. Poll with `check_auto({ auto_run_id })`. Pause/resume/cancel with `pause_auto({ auto_run_id, action })`. Bind a dataset with `bind_auto_dataset({ auto_run_id, dataset_id, reason })`.
+
+Docs: `/docs/agents`. Runner repo: https://github.com/cybertheory/trainfabric-gpu-runner
 
 ### Talk to a cloud agent
 
@@ -92,7 +99,7 @@ message_auto_agent({ auto_run_id, message: "prefer the multilingual dataset and 
 list_auto_messages({ auto_run_id })   // poll for replies
 ```
 
-REST equivalents: `POST /auto` (create), `POST /auto/:id/bind-dataset`, `GET /auto/:id`, `GET|POST /auto/:id/messages`, `POST /auto/:id/messages/stream` (AI SDK `useChat`), `POST /runners/register` + runner claim loop.
+REST equivalents: `POST /auto` (create), `POST /auto/:id/bind-dataset`, `GET /auto/:id`, `GET|POST /auto/:id/messages`, `POST /auto/:id/messages/stream` (AI SDK `useChat`), `POST /runners/register` + [HTTP GPU runner](https://github.com/cybertheory/trainfabric-gpu-runner).
 
 ## Visibility
 

@@ -2097,6 +2097,42 @@ function buildMcpContext(c: {
       const messages = await store.listMessages(run.id);
       return messages.slice(-Math.max(1, limit ?? 50));
     },
+    registerGpuRunner: async (args) => {
+      if (!identity) throw new AuthError("Auth required");
+      const store = createAutoStore(c.env);
+      const out = await registerRunner({
+        store,
+        ownerId: identity.subject,
+        body: { name: args.name, capacity: args.capacity },
+      });
+      const api =
+        c.env.PUBLIC_API_BASE ||
+        c.env.PUBLIC_API_URL ||
+        "https://trainfabric-router.rishabhspro.workers.dev";
+      const docker_run = [
+        "git clone https://github.com/cybertheory/trainfabric-gpu-runner.git && cd trainfabric-gpu-runner",
+        "docker build -t trainfabric/gpu-runner .",
+        `docker run --rm -e TF_API_URL=${api} -e RUNNER_TOKEN=${out.token} trainfabric/gpu-runner`,
+      ].join(" && ");
+      return {
+        runnerId: out.runnerId,
+        token: out.token,
+        docker_run,
+        docs: "https://github.com/cybertheory/trainfabric-gpu-runner",
+      };
+    },
+    listGpuRunners: async () => {
+      if (!identity) throw new AuthError("Auth required");
+      const store = createAutoStore(c.env);
+      const runners = await store.listAutoRunners(identity.subject);
+      return runners.map((r) => ({
+        id: r.id,
+        name: r.name,
+        capacity: r.capacity,
+        lastHeartbeatAt: r.lastHeartbeatAt,
+        createdAt: r.createdAt,
+      }));
+    },
     ai: c.env.AI,
     vectorize: c.env.VECTORIZE,
   };

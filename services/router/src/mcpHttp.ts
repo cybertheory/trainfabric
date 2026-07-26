@@ -198,6 +198,28 @@ function registerTools(server: McpServer, ctx: McpContext) {
   );
 
   server.registerTool(
+    "register_gpu_runner",
+    {
+      description:
+        "Register a self-hosted HTTP GPU runner. Returns runnerId + one-time token and docker_run. Public runner: https://github.com/cybertheory/trainfabric-gpu-runner",
+      inputSchema: {
+        name: z.string(),
+        capacity: z.string().optional(),
+      },
+    },
+    async (args) => run("register_gpu_runner", args as Record<string, unknown>),
+  );
+
+  server.registerTool(
+    "list_gpu_runners",
+    {
+      description: "List GPU runners for the signed-in user (use id with start_auto compute.runnerId).",
+      inputSchema: {},
+    },
+    async (args) => run("list_gpu_runners", args as Record<string, unknown>),
+  );
+
+  server.registerTool(
     "bind_auto_dataset",
     {
       description:

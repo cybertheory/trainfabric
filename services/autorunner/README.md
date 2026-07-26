@@ -1,34 +1,24 @@
-# Trainfabric autorunner
+# Trainfabric autorunner (Box daemon)
 
-Two processes:
+The **long `/auto` agent loop** (`autorunner_daemon.py`) runs inside a [Box](https://box.ascii.dev/) sandbox.
 
-| Artifact | Where it runs | Role |
-|----------|---------------|------|
-| `autorunner_daemon.py` | Box (ascii.dev) sandbox | Long `/auto` loop: git, `/prompt`, enqueue trials, ratchet |
-| `gpu_runner.py` (+ Docker image) | Your GPU machine / Modal | Claim & execute GPU trials only |
+The **GPU trial worker** lives in a separate public repo (clone and run on any GPU machine):
 
-## GPU runner (self-hosted)
+→ **[github.com/cybertheory/trainfabric-gpu-runner](https://github.com/cybertheory/trainfabric-gpu-runner)**
 
-```bash
-# Register once (authenticated against Trainfabric)
-curl -X POST "$TF_API/runners/register" \
-  -H "Authorization: Bearer $CLERK_JWT" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"home-gpu","capacity":"gpu:1"}'
-# → { runnerId, token }
+| Artifact | Where | Role |
+|----------|-------|------|
+| `autorunner_daemon.py` (this folder) | Box sandbox | Clone research repo, load brief, discover datasets, enqueue trials, ratchet git |
+| [trainfabric-gpu-runner](https://github.com/cybertheory/trainfabric-gpu-runner) | Your GPU / Spark / rented box | Heartbeat, claim, run entrypoint, report score |
 
-docker build -t trainfabric/gpu-runner .
-docker run --rm -e TF_API_URL=https://your-router \
-  -e RUNNER_TOKEN=tfr_... \
-  trainfabric/gpu-runner
-```
+Docs: `/docs/agents`. MCP: `register_gpu_runner` / `list_gpu_runners` / `start_auto` with `compute.provider: "runner"`.
 
-## Box daemon
+## Box daemon env
 
-Baked into a Box template (or scp'd). Started with env from the router on `POST /datasets/:id/auto`:
+Started with env from the router on `POST /auto`:
 
-`AUTORUN_ID`, `TF_API_URL`, `TF_TOKEN`, `TF_DATASET_ID`, `PROTOCOL_JSON`, `REPO_URL`, `REPO_BRANCH`.
+`AUTORUN_ID`, `TF_API_URL`, `TF_TOKEN`, `TF_DATASET_ID` (optional), `AUTORUN_GOAL` (optional override), `PROTOCOL_JSON`, `REPO_URL`, `REPO_BRANCH`.
 
 ## Modal
 
-Point `compute.provider: "modal"` + `MODAL_TOKEN` / `MODAL_APP_REF` on the Worker. Trials complete via `POST /auto/:id/trials/:trialId/complete`.
+Point `compute.provider: "modal"` + `MODAL_TOKEN` / `MODAL_APP_REF` on the Worker.
