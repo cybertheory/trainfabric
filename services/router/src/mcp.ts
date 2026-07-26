@@ -6,6 +6,8 @@ import type {
   Visibility,
   SocialPost,
   DatasetConnection,
+  CreateAutoRunRequest,
+  AutoRun,
 } from "@trainfabric/shared";
 import type { Identity, ResolverDeps, DatasetRecord } from "./resolver";
 import { resolveQuery, authorizeDataset, AuthError, NotFoundError } from "./resolver";
@@ -52,6 +54,17 @@ export interface McpContext {
   connectDataset?: (datasetId: string) => Promise<{ connected: boolean }>;
   listFeed?: (limit?: number) => Promise<SocialPost[]>;
   listConnections?: () => Promise<DatasetConnection[]>;
+  startAuto?: (args: {
+    dataset_id: string;
+    repo_url: string;
+    default_branch?: string;
+    protocol: CreateAutoRunRequest["protocol"];
+    compute: CreateAutoRunRequest["compute"];
+    template_id?: string;
+  }) => Promise<AutoRun>;
+  checkAuto?: (auto_run_id: string) => Promise<unknown>;
+  listAutoRuns?: (dataset_id: string) => Promise<AutoRun[]>;
+  pauseAuto?: (auto_run_id: string, action?: "pause" | "resume" | "cancel") => Promise<AutoRun>;
   ai?: unknown;
   vectorize?: unknown;
 }
@@ -258,6 +271,60 @@ export const MCP_TOOLS = [
       properties: { limit: { type: "number" } },
     },
   },
+  {
+    name: "start_auto",
+    description:
+      "Start a long-running autoresearch AutoRun on a dataset (Box sandbox + Modal/HTTP GPU). Requires GitHub repo + immutable experiment protocol. Does not replace prompt_query.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        dataset_id: { type: "string" },
+        repo_url: { type: "string" },
+        default_branch: { type: "string" },
+        protocol: {
+          type: "object",
+          description:
+            "{ snapshotId, metric:{name,direction}, budget:{maxTrials,maxWallClockSec}, mutablePaths, immutablePaths }",
+        },
+        compute: {
+          type: "object",
+          description: "{ provider: 'modal'|'runner', modalRef?, runnerId? }",
+        },
+        template_id: { type: "string" },
+      },
+      required: ["dataset_id", "repo_url", "protocol", "compute"],
+    },
+  },
+  {
+    name: "check_auto",
+    description: "Poll AutoRun status, trials, and recent Box events.",
+    inputSchema: {
+      type: "object",
+      properties: { auto_run_id: { type: "string" } },
+      required: ["auto_run_id"],
+    },
+  },
+  {
+    name: "list_auto_runs",
+    description: "List AutoRuns for a dataset.",
+    inputSchema: {
+      type: "object",
+      properties: { dataset_id: { type: "string" } },
+      required: ["dataset_id"],
+    },
+  },
+  {
+    name: "pause_auto",
+    description: "Pause, resume, or cancel an AutoRun (Box stop/resume).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        auto_run_id: { type: "string" },
+        action: { type: "string", enum: ["pause", "resume", "cancel"] },
+      },
+      required: ["auto_run_id"],
+    },
+  },
 ] as const;
 
 export async function handleMcpTool(
@@ -459,6 +526,48 @@ export async function handleMcpTool(
       if (!ctx.listFeed) throw new Error("Social store not configured");
       const posts = await ctx.listFeed(Number(args.limit ?? 40));
       return ok({ posts });
+    }
+    case "start_auto": {
+      if (!ctx.identity) throw new AuthError("Auth required to start AutoRun");
+      if (!ctx.startAuto) throw new Error("Auto store not configured");
+      const id = String(args.dataset_id);
+      const ds = await ctx.deps.getDataset(id);
+      if (!ds) throw new NotFoundError();
+      authorizeDataset(ds, ctx.identity);
+      const run = await ctx.startAuto({
+        dataset_id: id,
+        repo_url: String(args.repo_url),
+        default_branch: args.default_branch as string | undefined,
+        protocol: args.protocol as CreateAutoRunRequest["protocol"],
+        compute: args.compute as CreateAutoRunRequest["compute"],
+        template_id: args.template_id as string | undefined,
+      });
+      await ctx.autoConnect?.(id, "agent");
+      return ok({
+        run,
+        next: `Poll check_auto with auto_run_id="${run.id}". Share findings with post_social_update.`,
+      });
+    }
+    case "check_auto": {
+      if (!ctx.checkAuto) throw new Error("Auto store not configured");
+      const out = await ctx.checkAuto(String(args.auto_run_id));
+      return ok(out);
+    }
+    case "list_auto_runs": {
+      if (!ctx.listAutoRuns) throw new Error("Auto store not configured");
+      const id = String(args.dataset_id);
+      const ds = await ctx.deps.getDataset(id);
+      if (!ds) throw new NotFoundError();
+      authorizeDataset(ds, ctx.identity);
+      const runs = await ctx.listAutoRuns(id);
+      return ok({ runs });
+    }
+    case "pause_auto": {
+      if (!ctx.identity) throw new AuthError("Auth required");
+      if (!ctx.pauseAuto) throw new Error("Auto store not configured");
+      const action = (args.action as "pause" | "resume" | "cancel") ?? "pause";
+      const run = await ctx.pauseAuto(String(args.auto_run_id), action);
+      return ok({ run });
     }
     default:
       throw new Error(`Unknown tool: ${name}`);

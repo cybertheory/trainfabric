@@ -241,3 +241,140 @@ export interface CreateSocialPostRequest {
 export const STREAM_SIZE_THRESHOLD_BYTES = 50 * 1024 * 1024;
 export const DEFAULT_SAMPLE_ROWS = 20;
 export const MAX_RESULT_ROWS = 10_000_000;
+
+/* ── Autoresearch /auto ─────────────────────────────────────────── */
+
+export type AutoRunStatus =
+  | "pending"
+  | "provisioning"
+  | "running"
+  | "paused"
+  | "done"
+  | "error"
+  | "cancelled";
+
+export type AutoTrialStatus =
+  | "pending"
+  | "claimed"
+  | "running"
+  | "done"
+  | "error"
+  | "cancelled";
+
+export type AutoComputeProvider = "modal" | "runner";
+
+export interface AutoMetric {
+  name: string;
+  direction: "min" | "max";
+}
+
+export interface AutoBudget {
+  maxTrials: number;
+  maxWallClockSec: number;
+  maxGpuSec?: number;
+}
+
+/** Immutable after AutoRun start — agent cannot soften the test. */
+export interface AutoProtocol {
+  snapshotId: string;
+  metric: AutoMetric;
+  budget: AutoBudget;
+  mutablePaths: string[];
+  immutablePaths: string[];
+}
+
+export interface AutoRepoBind {
+  url: string;
+  defaultBranch: string;
+  boxRepoSelected?: boolean;
+  lastSyncedSha?: string;
+}
+
+export interface AutoBoxState {
+  boxId?: string;
+  templateId?: string;
+  desktopUrl?: string;
+  daemonHostUrl?: string;
+  lastEventCursor?: string;
+}
+
+export interface AutoComputeConfig {
+  provider: AutoComputeProvider;
+  modalRef?: string;
+  runnerId?: string;
+}
+
+export interface AutoProgress {
+  trial: number;
+  bestScore?: number;
+  lastCommitSha?: string;
+  updatedAt: number;
+}
+
+export interface AutoRun {
+  id: string;
+  datasetId: string;
+  ownerId: string;
+  status: AutoRunStatus;
+  repo: AutoRepoBind;
+  protocol: AutoProtocol;
+  box: AutoBoxState;
+  compute: AutoComputeConfig;
+  progress: AutoProgress;
+  resultRef?: string;
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AutoTrial {
+  id: string;
+  autoRunId: string;
+  status: AutoTrialStatus;
+  hypothesis?: string;
+  commitSha?: string;
+  externalId?: string;
+  score?: number;
+  kept?: boolean;
+  artifactRef?: string;
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AutoRunner {
+  id: string;
+  ownerId: string;
+  name: string;
+  tokenHash: string;
+  capacity?: string;
+  lastHeartbeatAt?: number;
+  createdAt: number;
+}
+
+export interface CreateAutoRunRequest {
+  repoUrl: string;
+  defaultBranch?: string;
+  protocol: AutoProtocol;
+  compute: AutoComputeConfig;
+  templateId?: string;
+}
+
+export interface CompleteAutoTrialRequest {
+  status: "done" | "error";
+  score?: number;
+  artifactRef?: string;
+  error?: string;
+  commitSha?: string;
+  kept?: boolean;
+}
+
+export interface RegisterRunnerRequest {
+  name: string;
+  capacity?: string;
+}
+
+export interface RegisterRunnerResponse {
+  runnerId: string;
+  token: string;
+}

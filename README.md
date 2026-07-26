@@ -78,7 +78,7 @@ Golden path (§13.9): publish → discover → estimate (A) → slice → estima
 
 `POST /mcp` on the router exposes:
 
-`discover_datasets` · `inspect_schema` · `estimate_query` · `query_slice` · `sample_dataset` · `publish_dataset` · `check_job` · `create_derived_dataset` · `preview_derived` · `get_lineage`
+`discover_datasets` · `inspect_schema` · `estimate_query` · `query_slice` · `sample_dataset` · `publish_dataset` · `check_job` · `create_derived_dataset` · `preview_derived` · `get_lineage` · `prompt_query` · `start_auto` · `check_auto` · `list_auto_runs` · `pause_auto`
 
 ## Deploy
 

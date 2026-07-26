@@ -221,4 +221,116 @@ http.route({
   }),
 });
 
+// ---- Autoresearch /auto ----
+
+http.route({
+  path: "/api/auto/runs/upsert",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    await ctx.runMutation(api.autoRuns.upsertAutoRun, body);
+    return Response.json({ ok: true });
+  }),
+});
+
+http.route({
+  path: "/api/auto/runs/get",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const { id } = await req.json();
+    const row = await ctx.runQuery(api.autoRuns.getAutoRun, { id });
+    return Response.json(row);
+  }),
+});
+
+http.route({
+  path: "/api/auto/runs/list",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const { datasetId } = await req.json();
+    const rows = await ctx.runQuery(api.autoRuns.listAutoRunsByDataset, { datasetId });
+    return Response.json(rows);
+  }),
+});
+
+http.route({
+  path: "/api/auto/trials/upsert",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    await ctx.runMutation(api.autoRuns.upsertAutoTrial, body);
+    return Response.json({ ok: true });
+  }),
+});
+
+http.route({
+  path: "/api/auto/trials/get",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const { id } = await req.json();
+    const row = await ctx.runQuery(api.autoRuns.getAutoTrial, { id });
+    return Response.json(row);
+  }),
+});
+
+http.route({
+  path: "/api/auto/trials/list",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const { autoRunId } = await req.json();
+    const rows = await ctx.runQuery(api.autoRuns.listAutoTrials, { autoRunId });
+    return Response.json(rows);
+  }),
+});
+
+http.route({
+  path: "/api/auto/trials/claim",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const { runnerId } = await req.json();
+    const row = await ctx.runMutation(api.autoRuns.claimPendingTrial, { runnerId });
+    return Response.json(row);
+  }),
+});
+
+http.route({
+  path: "/api/auto/runners/upsert",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    const row = await ctx.runMutation(api.autoRuns.upsertAutoRunner, body);
+    return Response.json(row);
+  }),
+});
+
+http.route({
+  path: "/api/auto/runners/by-token",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const { tokenHash } = await req.json();
+    const row = await ctx.runQuery(api.autoRuns.getAutoRunnerByTokenHash, { tokenHash });
+    return Response.json(row);
+  }),
+});
+
+http.route({
+  path: "/api/auto/runners/list",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const { ownerId } = await req.json();
+    const rows = await ctx.runQuery(api.autoRuns.listAutoRunnersByOwner, { ownerId });
+    return Response.json(rows);
+  }),
+});
+
 export default http;

@@ -9,10 +9,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Hermes NL agent + duckdb-analytics skill live under app/hermes/
 COPY app ./app
 
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8080
+ENV HERMES_SKILLS_DIR=/app/app/hermes/skills
+ENV TRAINFABRIC_HERMES_VERSION=4
 
 EXPOSE 8080
 

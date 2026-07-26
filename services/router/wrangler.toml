@@ -2,6 +2,7 @@ name = "trainfabric-router"
 main = "src/index.ts"
 compatibility_date = "2025-03-01"
 compatibility_flags = ["nodejs_compat"]
+account_id = "e5793b12d9dd58ea18bde1fbbed5262b"
 
 [vars]
 STREAM_SIZE_THRESHOLD_BYTES = "52428800"
@@ -17,6 +18,10 @@ R2_REGION = "auto"
 R2_ENDPOINT = "https://e5793b12d9dd58ea18bde1fbbed5262b.r2.cloudflarestorage.com"
 ICEBERG_REST_URI = "https://catalog.cloudflarestorage.com/e5793b12d9dd58ea18bde1fbbed5262b/trainfabric-data"
 ICEBERG_WAREHOUSE_ID = "e5793b12d9dd58ea18bde1fbbed5262b_trainfabric-data"
+CF_ACCOUNT_ID = "e5793b12d9dd58ea18bde1fbbed5262b"
+CF_AI_GATEWAY_ID = "default"
+CF_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+# Secret: CF_AI_GATEWAY_TOKEN (wrangler secret put CF_AI_GATEWAY_TOKEN)
 
 [[r2_buckets]]
 binding = "R2"

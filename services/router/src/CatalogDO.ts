@@ -64,7 +64,7 @@ export class CatalogDO implements DurableObject {
       if (!this.env.COMPUTE) {
         throw new Error("COMPUTE container binding missing");
       }
-      const stub = getContainer(this.env.COMPUTE);
+      const stub = getContainer(this.env.COMPUTE, "hermes-aigw-v2");
       return stub.fetch(
         new Request(`http://compute${path}`, {
           method: "POST",

@@ -219,4 +219,69 @@ export default defineSchema({
     .index("by_notificationId", ["notificationId"])
     .index("by_user", ["userId"])
     .index("by_user_unread", ["userId", "read"]),
+
+  autoRuns: defineTable({
+    autoRunId: v.string(),
+    datasetId: v.string(),
+    ownerId: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("provisioning"),
+      v.literal("running"),
+      v.literal("paused"),
+      v.literal("done"),
+      v.literal("error"),
+      v.literal("cancelled"),
+    ),
+    repo: v.any(),
+    protocol: v.any(),
+    box: v.any(),
+    compute: v.any(),
+    progress: v.any(),
+    resultRef: v.optional(v.string()),
+    error: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_autoRunId", ["autoRunId"])
+    .index("by_datasetId", ["datasetId"])
+    .index("by_ownerId", ["ownerId"]),
+
+  autoTrials: defineTable({
+    trialId: v.string(),
+    autoRunId: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("claimed"),
+      v.literal("running"),
+      v.literal("done"),
+      v.literal("error"),
+      v.literal("cancelled"),
+    ),
+    hypothesis: v.optional(v.string()),
+    commitSha: v.optional(v.string()),
+    externalId: v.optional(v.string()),
+    score: v.optional(v.number()),
+    kept: v.optional(v.boolean()),
+    artifactRef: v.optional(v.string()),
+    error: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_trialId", ["trialId"])
+    .index("by_autoRunId", ["autoRunId"])
+    .index("by_status", ["status"]),
+
+  autoRunners: defineTable({
+    runnerId: v.string(),
+    ownerId: v.string(),
+    name: v.string(),
+    tokenHash: v.string(),
+    capacity: v.optional(v.string()),
+    lastHeartbeatAt: v.optional(v.number()),
+    createdAt: v.number(),
+  })
+    .index("by_runnerId", ["runnerId"])
+    .index("by_ownerId", ["ownerId"])
+    .index("by_tokenHash", ["tokenHash"]),
 });

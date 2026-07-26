@@ -8,3 +8,4 @@
 4. **Hybrid derived materialization** — materialize only Case-B subtrees; MVP is whole-spec pointer-or-materialize.
 5. **Multi-writer hardening beyond CatalogDO** — DO serializes commits; further optimistic-retry tuning as needed.
 6. **Auto-rebuild materialized views on source change** — MVP has manual rebuild + "sources advanced" indicator.
+7. **Autoresearch `/auto`** — AutoRun primitive + Box orchestrator + Modal/HTTP GPU runners shipped in MVP control plane; harden GitHub App UX, multi-fork parallel trials, and budget enforcement next.

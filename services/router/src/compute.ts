@@ -11,6 +11,14 @@ export interface ComputeClient {
   query(req: QueryRequest & { namespace?: string; queryHash: string }): Promise<ComputeQueryResult>;
   sample(datasetId: string, n: number, namespace?: string): Promise<Record<string, unknown>[]>;
   snapshots(datasetId: string, namespace?: string): Promise<unknown[]>;
+  prompt(body: {
+    prompt: string;
+    dataset_id: string;
+    namespace?: string;
+    execute?: boolean;
+    snapshot?: string;
+    max_steps?: number;
+  }): Promise<Record<string, unknown>>;
   health(): Promise<boolean>;
 }
 
@@ -84,6 +92,7 @@ function makeClient(doFetch: FetchLike): ComputeClient {
       const raw = (await res.json()) as { snapshots: unknown[] };
       return raw.snapshots;
     },
+    prompt: (body) => post("/prompt", body),
     health: async () => {
       const res = await doFetch("/health");
       return res.ok;
@@ -111,7 +120,8 @@ export function createComputeClientFromEnv(env: {
   }
   if (env.COMPUTE) {
     return makeClient(async (path, init) => {
-      const stub = getContainer(env.COMPUTE!);
+      // Named instance so AI Gateway secret/env rollouts start a fresh container.
+      const stub = getContainer(env.COMPUTE!, "hermes-aigw-v2");
       return stub.fetch(new Request(`http://compute${path}`, init));
     });
   }

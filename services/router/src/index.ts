@@ -33,7 +33,24 @@ import { CatalogDO } from "./CatalogDO";
 import { WarmRouterDO } from "./WarmRouterDO";
 import { ComputeContainer as ComputeContainerClass } from "./ComputeContainer";
 import { autoConnect, createSocialStore } from "./social";
-import type { CreateSocialPostRequest } from "@trainfabric/shared";
+import type {
+  CompleteAutoTrialRequest,
+  CreateAutoRunRequest,
+  CreateSocialPostRequest,
+  RegisterRunnerRequest,
+} from "@trainfabric/shared";
+import { createAutoStore } from "./autoStore";
+import { boxClientFromEnv } from "./box";
+import {
+  authRunner,
+  cancelAutoRun,
+  completeTrial,
+  createAutoRun,
+  enqueueTrial,
+  pauseAutoRun,
+  registerRunner,
+  resumeAutoRun,
+} from "./auto";
 
 export { CatalogDO, WarmRouterDO, ComputeContainerClass as ComputeContainer };
 
@@ -75,6 +92,16 @@ export interface Env {
   CF_AI_GATEWAY_TOKEN?: string;
   CF_AI_GATEWAY_BASE?: string;
   CF_AI_MODEL?: string;
+  /** Box by ASCII — long-running /auto agent sandboxes */
+  BOX_API_KEY?: string;
+  BOX_TEMPLATE_ID?: string;
+  BOX_API_BASE?: string;
+  /** Modal GPU trials */
+  MODAL_TOKEN?: string;
+  MODAL_APP_REF?: string;
+  MODAL_API_BASE?: string;
+  /** Public router origin for trial callbacks / Box env */
+  PUBLIC_API_URL?: string;
 }
 
 function computeUrlFor(env: Env): string {
@@ -1214,6 +1241,232 @@ app.get("/jobs/:id", async (c) => {
   }
 });
 
+/* ── Autoresearch /auto ─────────────────────────────────────────── */
+
+app.post("/datasets/:id/auto", async (c) => {
+  try {
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const deps = depsFrom(c);
+    const ds = await deps.getDataset(c.req.param("id"));
+    if (!ds) return c.json({ error: "Not found" }, 404);
+    const { authorizeDataset } = await import("./resolver");
+    authorizeDataset(ds, identity);
+
+    const body = (await c.req.json()) as CreateAutoRunRequest;
+    const store = createAutoStore(c.env);
+    const box = boxClientFromEnv(c.env);
+    const origin = c.env.PUBLIC_API_URL || new URL(c.req.url).origin;
+    const run = await createAutoRun({
+      store,
+      box,
+      datasetId: ds.id,
+      ownerId: identity.subject,
+      body,
+      tfApiUrl: origin,
+      campaignToken: c.req.header("Authorization")?.replace(/^Bearer\s+/i, "") || "anon",
+      env: c.env,
+    });
+    return c.json(run, 201);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.get("/datasets/:id/auto", async (c) => {
+  try {
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    const deps = depsFrom(c);
+    const ds = await deps.getDataset(c.req.param("id"));
+    if (!ds) return c.json({ error: "Not found" }, 404);
+    const { authorizeDataset } = await import("./resolver");
+    authorizeDataset(ds, identity);
+    const store = createAutoStore(c.env);
+    const runs = await store.listAutoRuns(ds.id);
+    return c.json({ runs });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.get("/auto/:id", async (c) => {
+  try {
+    const store = createAutoStore(c.env);
+    const run = await store.getAutoRun(c.req.param("id"));
+    if (!run) return c.json({ error: "Not found" }, 404);
+    const trials = await store.listAutoTrials(run.id);
+    let events: unknown[] = [];
+    const box = boxClientFromEnv(c.env);
+    if (box && run.box.boxId && !run.box.boxId.startsWith("stub_")) {
+      try {
+        const ev = await box.events(run.box.boxId, run.box.lastEventCursor);
+        events = ev.events;
+        if (ev.cursor) {
+          await store.upsertAutoRun({
+            ...run,
+            box: { ...run.box, lastEventCursor: ev.cursor },
+          });
+        }
+      } catch {
+        /* optional */
+      }
+    }
+    return c.json({ run, trials, events });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.post("/auto/:id/pause", async (c) => {
+  try {
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const store = createAutoStore(c.env);
+    const run = await store.getAutoRun(c.req.param("id"));
+    if (!run) return c.json({ error: "Not found" }, 404);
+    if (run.ownerId !== identity.subject && identity.subject !== "anon") {
+      return c.json({ error: "Forbidden" }, 403);
+    }
+    const next = await pauseAutoRun(store, boxClientFromEnv(c.env), run);
+    return c.json(next);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.post("/auto/:id/resume", async (c) => {
+  try {
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const store = createAutoStore(c.env);
+    const run = await store.getAutoRun(c.req.param("id"));
+    if (!run) return c.json({ error: "Not found" }, 404);
+    if (run.ownerId !== identity.subject && identity.subject !== "anon") {
+      return c.json({ error: "Forbidden" }, 403);
+    }
+    const next = await resumeAutoRun(store, boxClientFromEnv(c.env), run);
+    return c.json(next);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.post("/auto/:id/cancel", async (c) => {
+  try {
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const store = createAutoStore(c.env);
+    const run = await store.getAutoRun(c.req.param("id"));
+    if (!run) return c.json({ error: "Not found" }, 404);
+    if (run.ownerId !== identity.subject && identity.subject !== "anon") {
+      return c.json({ error: "Forbidden" }, 403);
+    }
+    const next = await cancelAutoRun(store, boxClientFromEnv(c.env), run);
+    return c.json(next);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.post("/auto/:id/trials", async (c) => {
+  try {
+    const store = createAutoStore(c.env);
+    const run = await store.getAutoRun(c.req.param("id"));
+    if (!run) return c.json({ error: "Not found" }, 404);
+    if (run.status !== "running") return c.json({ error: `run is ${run.status}` }, 409);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      hypothesis?: string;
+      commitSha?: string;
+    };
+    const origin = c.env.PUBLIC_API_URL || new URL(c.req.url).origin;
+    const trial = await enqueueTrial({
+      store,
+      run,
+      hypothesis: body.hypothesis,
+      commitSha: body.commitSha,
+      callbackBaseUrl: origin,
+      env: c.env,
+    });
+    return c.json(trial, 201);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.post("/auto/:id/trials/:trialId/complete", async (c) => {
+  try {
+    const store = createAutoStore(c.env);
+    const run = await store.getAutoRun(c.req.param("id"));
+    if (!run) return c.json({ error: "Not found" }, 404);
+    const trial = await store.getAutoTrial(c.req.param("trialId"));
+    if (!trial || trial.autoRunId !== run.id) return c.json({ error: "Trial not found" }, 404);
+    const body = (await c.req.json()) as CompleteAutoTrialRequest;
+    const out = await completeTrial({ store, run, trial, body });
+    return c.json(out);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.post("/runners/register", async (c) => {
+  try {
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const body = (await c.req.json()) as RegisterRunnerRequest;
+    if (!body.name?.trim()) return c.json({ error: "name required" }, 400);
+    const store = createAutoStore(c.env);
+    const out = await registerRunner({ store, ownerId: identity.subject, body });
+    return c.json(out, 201);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.get("/runners", async (c) => {
+  try {
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const store = createAutoStore(c.env);
+    const runners = await store.listAutoRunners(identity.subject);
+    return c.json({
+      runners: runners.map((r) => ({
+        id: r.id,
+        name: r.name,
+        capacity: r.capacity,
+        lastHeartbeatAt: r.lastHeartbeatAt,
+        createdAt: r.createdAt,
+      })),
+    });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.post("/runners/heartbeat", async (c) => {
+  try {
+    const store = createAutoStore(c.env);
+    const runner = await authRunner(store, c.req.header("Authorization"));
+    if (!runner) return c.json({ error: "Unauthorized" }, 401);
+    return c.json({ ok: true, runnerId: runner.id });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.post("/runners/claim", async (c) => {
+  try {
+    const store = createAutoStore(c.env);
+    const runner = await authRunner(store, c.req.header("Authorization"));
+    if (!runner) return c.json({ error: "Unauthorized" }, 401);
+    const trial = await store.claimPendingTrial(runner.id);
+    if (!trial) return c.json({ trial: null });
+    const run = await store.getAutoRun(trial.autoRunId);
+    return c.json({ trial, run });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
 /** Proxied R2 GET (and ranged GET for Case A). */
 app.get("/r2/*", async (c) => {
   const key = c.req.path.replace(/^\/r2\//, "");
@@ -1466,6 +1719,51 @@ function buildMcpContext(c: {
       if (!store || !identity) return [];
       return store.listConnections(identity.subject);
     },
+    startAuto: async (args) => {
+      if (!identity) throw new AuthError("Auth required");
+      const store = createAutoStore(c.env);
+      const origin = c.env.PUBLIC_API_URL || new URL(c.req.url).origin;
+      return createAutoRun({
+        store,
+        box: boxClientFromEnv(c.env),
+        datasetId: args.dataset_id,
+        ownerId: identity.subject,
+        body: {
+          repoUrl: args.repo_url,
+          defaultBranch: args.default_branch,
+          protocol: args.protocol,
+          compute: args.compute,
+          templateId: args.template_id,
+        },
+        tfApiUrl: origin,
+        campaignToken: "mcp",
+        env: c.env,
+      });
+    },
+    checkAuto: async (autoRunId) => {
+      const store = createAutoStore(c.env);
+      const run = await store.getAutoRun(autoRunId);
+      if (!run) throw new NotFoundError();
+      const trials = await store.listAutoTrials(run.id);
+      return { run, trials };
+    },
+    listAutoRuns: async (datasetId) => {
+      const store = createAutoStore(c.env);
+      return store.listAutoRuns(datasetId);
+    },
+    pauseAuto: async (autoRunId, action = "pause") => {
+      if (!identity) throw new AuthError("Auth required");
+      const store = createAutoStore(c.env);
+      const run = await store.getAutoRun(autoRunId);
+      if (!run) throw new NotFoundError();
+      if (run.ownerId !== identity.subject && identity.subject !== "anon") {
+        throw new AuthError("Forbidden");
+      }
+      const box = boxClientFromEnv(c.env);
+      if (action === "resume") return resumeAutoRun(store, box, run);
+      if (action === "cancel") return cancelAutoRun(store, box, run);
+      return pauseAutoRun(store, box, run);
+    },
     ai: c.env.AI,
     vectorize: c.env.VECTORIZE,
   };
@@ -1519,6 +1817,8 @@ export default {
       path === "/health" ||
       path.startsWith("/admin/") ||
       path.startsWith("/jobs/") ||
+      path.startsWith("/auto/") ||
+      path.startsWith("/runners") ||
       path.startsWith("/results/") ||
       path.startsWith("/r2/") ||
       path.startsWith("/social/") ||
@@ -1530,7 +1830,7 @@ export default {
       /^\/datasets\/[^/]+$/.test(path) ||
       path === "/queries" ||
       /^\/queries\/[^/]+$/.test(path) ||
-      /^\/datasets\/[^/]+\/(schema|snapshots|lineage|query|queries|estimate|sample|rebuild|prompt|connect)$/.test(
+      /^\/datasets\/[^/]+\/(schema|snapshots|lineage|query|queries|estimate|sample|rebuild|prompt|connect|auto)$/.test(
         path,
       ) ||
       /^\/datasets\/[^/]+\/query\/proxy$/.test(path);

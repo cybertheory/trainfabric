@@ -57,16 +57,46 @@ def _read_staged(path: str) -> pa.Table:
     con = open_connection()
     lower = path.lower()
     uri = path.replace("r2://", "s3://")
-    if lower.endswith(".parquet") or lower.endswith(".parq"):
-        if path.startswith("s3://") or path.startswith("r2://") or path.startswith("http"):
-            return _as_table(con.execute(f"SELECT * FROM read_parquet('{uri}')").arrow())
-        return pq.read_table(path)
-    if lower.endswith(".json") or lower.endswith(".jsonl") or lower.endswith(".ndjson"):
-        return _as_table(con.execute(f"SELECT * FROM read_json_auto('{uri}')").arrow())
-    return _as_table(
-        con.execute(
-            f"SELECT * FROM read_csv_auto('{uri}', HEADER=true, SAMPLE_SIZE=-1)"
-        ).arrow()
+
+    tabular_exts = (".parquet", ".parq", ".csv", ".json", ".jsonl", ".ndjson")
+    if any(lower.rstrip("/").endswith(e) for e in tabular_exts):
+        if lower.endswith(".parquet") or lower.endswith(".parq"):
+            if path.startswith("s3://") or path.startswith("r2://") or path.startswith("http"):
+                return _as_table(
+                    con.execute(
+                        f"SELECT * FROM read_parquet('{uri}', union_by_name=true)"
+                    ).arrow()
+                )
+            return pq.read_table(path)
+        if lower.endswith(".json") or lower.endswith(".jsonl") or lower.endswith(".ndjson"):
+            return _as_table(con.execute(f"SELECT * FROM read_json_auto('{uri}')").arrow())
+        return _as_table(
+            con.execute(
+                f"SELECT * FROM read_csv_auto('{uri}', HEADER=true, SAMPLE_SIZE=-1)"
+            ).arrow()
+        )
+
+    # Directory / staging prefix — glob allowed types (parquet preferred)
+    prefix = uri.rstrip("/")
+    attempts = [
+        f"SELECT * FROM read_parquet('{prefix}/**/*.parquet', union_by_name=true)",
+        f"SELECT * FROM read_parquet('{prefix}/*.parquet', union_by_name=true)",
+        f"SELECT * FROM read_csv_auto('{prefix}/**/*.csv', HEADER=true, SAMPLE_SIZE=-1, union_by_name=true)",
+        f"SELECT * FROM read_csv_auto('{prefix}/*.csv', HEADER=true, SAMPLE_SIZE=-1, union_by_name=true)",
+        f"SELECT * FROM read_json_auto('{prefix}/**/*.json', union_by_name=true)",
+        f"SELECT * FROM read_json_auto('{prefix}/*.json', union_by_name=true)",
+        f"SELECT * FROM read_json_auto('{prefix}/**/*.jsonl', union_by_name=true)",
+        f"SELECT * FROM read_json_auto('{prefix}/*.jsonl', union_by_name=true)",
+    ]
+    last_err: Exception | None = None
+    for sql in attempts:
+        try:
+            return _as_table(con.execute(sql).arrow())
+        except Exception as e:  # noqa: BLE001 — try next glob
+            last_err = e
+            continue
+    raise RuntimeError(
+        f"No tabular files found under staging prefix {prefix}: {last_err}"
     )
 
 

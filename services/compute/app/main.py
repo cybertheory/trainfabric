@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from .ingest import IngestRequest, ingest
 from .scan_plan import ScanPlanRequest, scan_plan
 from .query import QueryRequest, execute_query, sample
+from .hermes import PromptRequest, run_hermes_prompt
 from . import catalog as catalog_mod
 
 logging.basicConfig(level=logging.INFO)
@@ -52,6 +53,15 @@ class BranchBody(BaseModel):
     branch: str
     from_ref: str = "main"
     namespace: str = "default"
+
+
+class PromptBody(BaseModel):
+    prompt: str
+    dataset_id: str
+    namespace: str = "default"
+    execute: bool = True
+    snapshot: Optional[str] = None
+    max_steps: int = 8
 
 
 @app.get("/health")
@@ -143,6 +153,48 @@ def post_sample(body: SampleBody) -> dict[str, Any]:
         rows = sample(body.dataset_id, body.n, body.namespace)
         return {"rows": rows}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.post("/prompt")
+def post_prompt(body: PromptBody) -> dict[str, Any]:
+    """Natural-language slice via Hermes DuckDB skill + Cloudflare AI Gateway."""
+    try:
+        result = run_hermes_prompt(
+            PromptRequest(
+                prompt=body.prompt,
+                dataset_id=body.dataset_id,
+                namespace=body.namespace,
+                execute=body.execute,
+                snapshot=body.snapshot,
+                max_steps=body.max_steps,
+            )
+        )
+        from .hermes.gateway import gateway_config
+
+        gw = gateway_config()
+        return {
+            "columns": result.columns,
+            "filter": result.filter,
+            "limit": result.limit,
+            "sql": result.sql,
+            "estimate": result.estimate,
+            "explanation": result.explanation,
+            "executed": result.executed,
+            "result": result.result,
+            "trace": result.trace,
+            "model": result.model,
+            "agent": "hermes",
+            "skill": "duckdb-analytics",
+            "gateway": {
+                "configured": bool(gw.get("token") and gw.get("base_url")),
+                "gatewayId": gw.get("gateway_id"),
+                "model": gw.get("model"),
+                "accountSet": bool(gw.get("account_id")),
+            },
+        }
+    except Exception as e:
+        logger.exception("prompt failed")
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 

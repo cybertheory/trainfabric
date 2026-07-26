@@ -29,6 +29,12 @@ export class ComputeContainer extends Container<Env> {
       R2_REGION: env.R2_REGION || "auto",
       AWS_ACCESS_KEY_ID: env.R2_ACCESS_KEY_ID || "",
       AWS_SECRET_ACCESS_KEY: env.R2_SECRET_ACCESS_KEY || "",
+      // Cloudflare AI Gateway (Hermes NL prompts)
+      CF_ACCOUNT_ID: env.CF_ACCOUNT_ID || "",
+      CF_AI_GATEWAY_ID: env.CF_AI_GATEWAY_ID || "default",
+      CF_AI_GATEWAY_TOKEN: env.CF_AI_GATEWAY_TOKEN || "",
+      CF_AI_GATEWAY_BASE: env.CF_AI_GATEWAY_BASE || "",
+      CF_AI_MODEL: env.CF_AI_MODEL || "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     };
   }
 
@@ -57,4 +63,9 @@ interface Env {
   R2_SECRET_ACCESS_KEY?: string;
   R2_BUCKET?: string;
   R2_REGION?: string;
+  CF_ACCOUNT_ID?: string;
+  CF_AI_GATEWAY_ID?: string;
+  CF_AI_GATEWAY_TOKEN?: string;
+  CF_AI_GATEWAY_BASE?: string;
+  CF_AI_MODEL?: string;
 }

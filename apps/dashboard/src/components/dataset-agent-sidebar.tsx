@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { CodeHighlight } from "@/components/code-highlight";
+import { AutoConfigurePanel } from "@/components/auto-configure-panel";
 import { apiFetch, publicApiOrigin } from "@/lib/api";
 import { cn, formatBytes, formatRows } from "@/lib/utils";
 
@@ -356,6 +357,11 @@ export function DatasetAgentSidebar({ dataset }: { dataset: DatasetDetail }) {
           <code className="text-[11px]">query_slice</code>
         </p>
       </section>
+
+      <AutoConfigurePanel
+        datasetId={dataset.id}
+        snapshotId={dataset.latestSnapshotId || dataset.schema?.snapshotId}
+      />
 
       <section className="space-y-2">
         <div className="flex items-center gap-2 text-sm font-medium">

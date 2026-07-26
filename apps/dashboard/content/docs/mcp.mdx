@@ -55,6 +55,10 @@ Works with Cursor, Claude, MCP Inspector, and any Streamable HTTP MCP client. No
 | `preview_derived` | Preview a derived spec |
 | `get_lineage` | Upstream / downstream lineage |
 | `prompt_query` | Natural-language slice via Hermes + DuckDB skill |
+| `start_auto` | Start long-running autoresearch (Box + Modal/HTTP GPU) |
+| `check_auto` | Poll AutoRun status + trials |
+| `list_auto_runs` | List AutoRuns for a dataset |
+| `pause_auto` | Pause / resume / cancel an AutoRun |
 | `post_social_update` | Publish a research finding / update to a dataset community (**auth required**) |
 | `connect_dataset` | Connect (subscribe) the user to a dataset |
 | `list_social_feed` | Recent community updates for connected datasets |
@@ -77,3 +81,15 @@ Hermes runs inside the compute container with the `duckdb-analytics` skill. It:
 LLM calls go through **Cloudflare AI Gateway** (`CF_ACCOUNT_ID` + `CF_AI_GATEWAY_TOKEN`). Without gateway credentials, a schema-grounded heuristic planner is used.
 
 REST equivalent: `POST /datasets/:id/prompt` with `{ "prompt": "...", "execute": true }`.
+
+## Autoresearch (`start_auto`)
+
+Long campaigns are a separate primitive from `prompt_query`:
+
+1. Control plane creates an **AutoRun** with an immutable experiment protocol (frozen snapshot, metric, budget, mutable/immutable paths).
+2. A [Box](https://box.ascii.dev/) sandbox is forked from a template and runs the Trainfabric autorunner daemon (git + `/prompt` + trial enqueue).
+3. GPU trials go to **Modal** or a self-hosted **HTTP runner** (`POST /runners/register`, poll `/runners/claim`). No SSH.
+
+REST: `POST /datasets/:id/auto`, `GET /auto/:id`, dashboard monitor at `/auto/:id`.
+
+See `services/autorunner/README.md` for the daemon and GPU worker image.

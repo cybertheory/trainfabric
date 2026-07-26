@@ -24,6 +24,8 @@ export type TrackedJob = {
   updatedAt: number;
   /** Set once a terminal alert has been emitted for this job. */
   alerted?: boolean;
+  /** lakehouse ingest vs long-running AutoRun */
+  kind?: "job" | "auto";
 };
 
 export type AlertItem = {
@@ -45,6 +47,7 @@ type JobTrackerValue = {
   drawerOpen: boolean;
   setDrawerOpen: (open: boolean) => void;
   trackJob: (job: { jobId: string; datasetId?: string; name: string }) => void;
+  trackAutoRun: (run: { autoRunId: string; datasetId?: string; name: string }) => void;
   markAlertRead: (id: string) => void;
   markAllAlertsRead: () => void;
   dismissAlert: (id: string) => void;
@@ -100,6 +103,40 @@ async function fetchJob(jobId: string): Promise<{
   return res.json();
 }
 
+async function fetchAutoRun(autoRunId: string): Promise<{
+  status?: string;
+  progress?: number;
+  error?: string;
+  datasetId?: string;
+}> {
+  const origin = publicApiOrigin();
+  const res = await fetch(`${origin}/auto/${autoRunId}`);
+  if (!res.ok) throw new Error(`auto ${res.status}`);
+  const data = (await res.json()) as {
+    run?: {
+      status?: string;
+      error?: string;
+      datasetId?: string;
+      progress?: { trial?: number; bestScore?: number };
+      protocol?: { budget?: { maxTrials?: number } };
+    };
+  };
+  const run = data.run;
+  const trial = run?.progress?.trial ?? 0;
+  const max = run?.protocol?.budget?.maxTrials ?? 1;
+  const status = run?.status ?? "running";
+  const progress =
+    status === "done" || status === "cancelled"
+      ? 100
+      : Math.min(95, Math.round((trial / Math.max(max, 1)) * 100));
+  return {
+    status,
+    progress,
+    error: run?.error,
+    datasetId: run?.datasetId,
+  };
+}
+
 export function JobTrackerProvider({ children }: { children: ReactNode }) {
   const [jobs, setJobs] = useState<TrackedJob[]>([]);
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
@@ -152,6 +189,7 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
           startedAt: now,
           updatedAt: now,
           alerted: false,
+          kind: "job",
         };
         return [next, ...prev.filter((j) => j.jobId !== job.jobId)];
       });
@@ -166,7 +204,41 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
     [pushAlert],
   );
 
-  const activeCount = jobs.filter((j) => j.status === "pending" || j.status === "running").length;
+  const trackAutoRun = useCallback(
+    (run: { autoRunId: string; datasetId?: string; name: string }) => {
+      const now = Date.now();
+      setJobs((prev) => {
+        const next: TrackedJob = {
+          jobId: run.autoRunId,
+          datasetId: run.datasetId,
+          name: run.name,
+          status: "provisioning",
+          progress: 5,
+          startedAt: now,
+          updatedAt: now,
+          alerted: false,
+          kind: "auto",
+        };
+        return [next, ...prev.filter((j) => j.jobId !== run.autoRunId)];
+      });
+      pushAlert({
+        title: "Autoresearch started",
+        body: `${run.name} is provisioning on Box.`,
+        kind: "info",
+        jobId: run.autoRunId,
+        href: `/auto/${run.autoRunId}`,
+      });
+    },
+    [pushAlert],
+  );
+
+  const activeCount = jobs.filter(
+    (j) =>
+      j.status === "pending" ||
+      j.status === "running" ||
+      j.status === "provisioning" ||
+      j.status === "paused",
+  ).length;
 
   useEffect(() => {
     if (!hydrated || activeCount === 0) return;
@@ -174,22 +246,29 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
 
     async function poll() {
       const active = jobsRef.current.filter(
-        (j) => (j.status === "pending" || j.status === "running") && !j.alerted,
+        (j) =>
+          (j.status === "pending" ||
+            j.status === "running" ||
+            j.status === "provisioning" ||
+            j.status === "paused") &&
+          !j.alerted,
       );
       for (const job of active) {
         try {
-          const remote = await fetchJob(job.jobId);
+          const remote =
+            job.kind === "auto" ? await fetchAutoRun(job.jobId) : await fetchJob(job.jobId);
           if (cancelled) return;
           const status = remote.status ?? job.status;
           const progress =
             typeof remote.progress === "number"
               ? remote.progress
-              : status === "done"
+              : status === "done" || status === "cancelled"
                 ? 100
-                : status === "running"
+                : status === "running" || status === "provisioning"
                   ? Math.max(job.progress, 35)
                   : job.progress;
-          const terminal = status === "done" || status === "error";
+          const terminal =
+            status === "done" || status === "error" || status === "cancelled";
 
           setJobs((prev) =>
             prev.map((j) =>
@@ -208,20 +287,30 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
           );
 
           if (terminal && !job.alerted) {
+            const isAuto = job.kind === "auto";
             if (status === "done") {
               pushAlert({
-                title: "Ingest complete",
-                body: `${job.name} is ready.`,
+                title: isAuto ? "Autoresearch complete" : "Ingest complete",
+                body: isAuto ? `${job.name} finished its trial budget.` : `${job.name} is ready.`,
                 kind: "success",
                 jobId: job.jobId,
-                href: "/home",
+                href: isAuto ? `/auto/${job.jobId}` : "/home",
+              });
+            } else if (status === "cancelled") {
+              pushAlert({
+                title: "Autoresearch cancelled",
+                body: `${job.name} was cancelled.`,
+                kind: "info",
+                jobId: job.jobId,
+                href: `/auto/${job.jobId}`,
               });
             } else {
               pushAlert({
-                title: "Ingest failed",
+                title: isAuto ? "Autoresearch failed" : "Ingest failed",
                 body: remote.error || `${job.name} failed.`,
                 kind: "error",
                 jobId: job.jobId,
+                href: isAuto ? `/auto/${job.jobId}` : undefined,
               });
             }
           }
@@ -252,7 +341,15 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const clearFinishedJobs = useCallback(() => {
-    setJobs((prev) => prev.filter((j) => j.status === "pending" || j.status === "running"));
+    setJobs((prev) =>
+      prev.filter(
+        (j) =>
+          j.status === "pending" ||
+          j.status === "running" ||
+          j.status === "provisioning" ||
+          j.status === "paused",
+      ),
+    );
   }, []);
 
   const mergeServerNotifications = useCallback(
@@ -330,7 +427,14 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
   }, [hydrated, authToken, mergeServerNotifications]);
 
   const activeJobs = useMemo(
-    () => jobs.filter((j) => j.status === "pending" || j.status === "running"),
+    () =>
+      jobs.filter(
+        (j) =>
+          j.status === "pending" ||
+          j.status === "running" ||
+          j.status === "provisioning" ||
+          j.status === "paused",
+      ),
     [jobs],
   );
 
@@ -345,6 +449,7 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
       drawerOpen,
       setDrawerOpen,
       trackJob,
+      trackAutoRun,
       markAlertRead,
       markAllAlertsRead,
       dismissAlert,
@@ -360,6 +465,7 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
       activeJobs,
       drawerOpen,
       trackJob,
+      trackAutoRun,
       markAlertRead,
       markAllAlertsRead,
       dismissAlert,
