@@ -286,13 +286,17 @@ export const MCP_TOOLS = [
   {
     name: "start_auto",
     description:
-      "Start a long-running autoresearch AutoRun (Box sandbox + Modal/HTTP GPU). Goal-first: pass a `goal` and the agent discovers + binds datasets itself (dataset_id optional). Requires a GitHub repo + experiment protocol (metric, budget, mutable/immutable paths). Does not replace prompt_query.",
+      "Start a long-running autoresearch AutoRun (Box sandbox + Modal/HTTP GPU). Repo-first: connect a GitHub repo that contains the research brief (TRAINFABRIC.md / AGENTS.md / README.md) and protocol.yaml. The agent loads goals/instructions from the repo after clone and discovers datasets from that brief (dataset_id optional hint). Requires repo_url + experiment protocol (metric, budget, mutable/immutable paths). Does not replace prompt_query.",
     inputSchema: {
       type: "object",
       properties: {
-        goal: { type: "string", description: "Research goal — the agent chooses datasets to pursue it" },
+        goal: {
+          type: "string",
+          description:
+            "Optional brief override. Prefer encoding the goal in the repo (TRAINFABRIC.md / AGENTS.md / README.md)",
+        },
         dataset_id: { type: "string", description: "Optional starting-dataset hint" },
-        repo_url: { type: "string" },
+        repo_url: { type: "string", description: "GitHub repo that owns the research brief and code" },
         default_branch: { type: "string" },
         protocol: {
           type: "object",
@@ -317,7 +321,7 @@ export const MCP_TOOLS = [
       properties: {
         auto_run_id: { type: "string" },
         dataset_id: { type: "string" },
-        reason: { type: "string", description: "Why this dataset fits the goal" },
+        reason: { type: "string", description: "Why this dataset fits the repo brief" },
       },
       required: ["auto_run_id", "dataset_id"],
     },
@@ -584,7 +588,7 @@ export async function handleMcpTool(
       if (!ctx.startAuto) throw new Error("Auto store not configured");
       const goal = args.goal as string | undefined;
       const datasetId = args.dataset_id ? String(args.dataset_id) : undefined;
-      if (!goal && !datasetId) throw new Error("Provide a goal (goal-first) or a dataset_id hint");
+      if (!args.repo_url) throw new Error("repo_url required — Autoresearch is repo-driven");
       if (datasetId) {
         const ds = await ctx.deps.getDataset(datasetId);
         if (!ds) throw new NotFoundError();
@@ -603,8 +607,8 @@ export async function handleMcpTool(
       return ok({
         run,
         next: datasetId
-          ? `Poll check_auto with auto_run_id="${run.id}". The agent will run trials.`
-          : `Poll check_auto with auto_run_id="${run.id}". The agent will discover_datasets and bind_auto_dataset for goal "${goal}".`,
+          ? `Poll check_auto with auto_run_id="${run.id}". The agent clones the repo and runs trials.`
+          : `Poll check_auto with auto_run_id="${run.id}". The agent loads TRAINFABRIC.md / AGENTS.md / README.md from the repo, then discovers and binds a dataset.`,
       });
     }
     case "bind_auto_dataset": {

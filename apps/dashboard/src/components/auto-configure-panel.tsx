@@ -4,9 +4,9 @@ import Link from "next/link";
 import { Bot, ArrowRight } from "lucide-react";
 
 /**
- * Optional dataset hint for autoresearch. The primary, goal-first path is the
+ * Optional dataset hint for autoresearch. The primary, repo-first path is the
  * wizard at /agents/new — here we only offer "prefer this dataset" so the agent
- * can start bound to it (it may still discover and bind others).
+ * can start bound to it (it still loads goals from the connected Git repo).
  */
 export function AutoConfigurePanel({
   datasetId,
@@ -24,8 +24,8 @@ export function AutoConfigurePanel({
         Autoresearch (/auto)
       </div>
       <p className="text-xs text-muted-foreground">
-        Kick off a long-running campaign with a goal — the agent discovers and binds datasets itself.
-        You can prefer this dataset as a starting hint.
+        Connect a GitHub repo first — goals and instructions live there. You can prefer this dataset
+        as a starting hint while the agent loads the repo brief.
       </p>
       <Link
         href={`/agents/new?dataset=${encodeURIComponent(datasetId)}`}

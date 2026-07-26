@@ -183,7 +183,7 @@ function registerTools(server: McpServer, ctx: McpContext) {
     "start_auto",
     {
       description:
-        "Start a long-running autoresearch AutoRun (Box + Modal/HTTP GPU). Goal-first: pass `goal` and the agent binds datasets itself (dataset_id optional). Requires repo + protocol.",
+        "Start a long-running autoresearch AutoRun (Box + Modal/HTTP GPU). Repo-first: connect a GitHub repo that contains the research brief (TRAINFABRIC.md / AGENTS.md / README.md). The agent loads goals from the repo after clone and binds datasets from that brief (dataset_id optional). Requires repo_url + protocol.",
       inputSchema: {
         goal: z.string().optional(),
         dataset_id: z.string().optional(),

@@ -12,6 +12,7 @@ import type {
   CreateAutoRunRequest,
   RegisterRunnerRequest,
   RegisterRunnerResponse,
+  ReportAutoInstructionsRequest,
 } from "@trainfabric/shared";
 import type { AutoStore } from "./autoStore";
 import type { BoxClient } from "./box";
@@ -86,10 +87,8 @@ export async function createAutoRun(opts: {
   }
 
   const datasetId = opts.datasetId ?? opts.body.datasetId;
+  // Goal is optional at create — prefer loading from the connected repo after clone.
   const goal = opts.body.goal;
-  if (!goal && !datasetId) {
-    throw new Error("Provide a goal (goal-first) or a datasetId hint");
-  }
 
   const id = randomId("auto");
   const now = Date.now();
@@ -162,7 +161,7 @@ export async function createAutoRun(opts: {
       "status",
       datasetId
         ? "Running — agent starting trials"
-        : "Awaiting dataset — agent is discovering candidates",
+        : "Awaiting dataset — agent will load the repo brief and discover candidates",
     );
   } catch (e) {
     run.status = "error";
@@ -173,6 +172,42 @@ export async function createAutoRun(opts: {
   }
 
   return run;
+}
+
+/**
+ * Persist the research brief the daemon loaded from the connected repo
+ * (TRAINFABRIC.md / AGENTS.md / README.md). Surfaces on the monitor header.
+ */
+export async function reportInstructions(opts: {
+  store: AutoStore;
+  run: AutoRun;
+  body: ReportAutoInstructionsRequest;
+}): Promise<AutoRun> {
+  const content = opts.body.content.trim();
+  if (!content) throw new Error("content required");
+  const next: AutoRun = {
+    ...opts.run,
+    goal: content.slice(0, 4000),
+    updatedAt: Date.now(),
+  };
+  await opts.store.upsertAutoRun(next);
+  await logActivity(
+    opts.store,
+    next.id,
+    "note",
+    `Loaded instructions from ${opts.body.sourceFile ?? "repo"}`,
+    { sourceFile: opts.body.sourceFile, chars: content.length },
+  );
+  await opts.store.appendMessage({
+    id: randomId("msg"),
+    autoRunId: next.id,
+    role: "assistant",
+    source: "daemon",
+    content: `Loaded research brief from ${opts.body.sourceFile ?? "repo"}:\n\n${content.slice(0, 1500)}`,
+    createdAt: Date.now(),
+    meta: { sourceFile: opts.body.sourceFile },
+  });
+  return next;
 }
 
 /**

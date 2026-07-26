@@ -2,14 +2,16 @@
 """
 Trainfabric autorunner daemon — runs inside a Box sandbox.
 
-Goal-first loop: bind a dataset the agent discovers (if none was given) →
-pull repo → propose (optional /prompt) → enqueue GPU trial → await score →
-keep/revert → report progress / social findings. Reads steer messages the user
-or an external agent sends via /auto/:id/messages.
+Repo-first loop: clone the bound GitHub repo → load goal/instructions from
+TRAINFABRIC.md / AGENTS.md / README.md → discover + bind a dataset (if none
+was given) → propose (optional /prompt) → enqueue GPU trial → await score →
+keep/revert → report progress / social findings. Steer messages arrive via
+/auto/:id/messages.
 
 Env:
   AUTORUN_ID, TF_API_URL, TF_TOKEN, TF_DATASET_ID (optional),
-  AUTORUN_GOAL (goal-first), PROTOCOL_JSON, REPO_URL, REPO_BRANCH, COMPUTE_PROVIDER
+  AUTORUN_GOAL (optional override; otherwise loaded from the repo),
+  PROTOCOL_JSON, REPO_URL, REPO_BRANCH, COMPUTE_PROVIDER
 """
 
 from __future__ import annotations
@@ -116,12 +118,71 @@ def propose_via_prompt(dataset_id: str, hypothesis_hint: str) -> Optional[str]:
         return None
 
 
-def discover_and_bind(auto_run_id: str, goal: str) -> Optional[str]:
-    """Goal-first: search the lakehouse for a dataset and bind it to the run."""
+INSTRUCTION_FILES = (
+    "TRAINFABRIC.md",
+    "AGENTS.md",
+    "AGENT.md",
+    "README.md",
+    "readme.md",
+)
+
+
+def load_repo_instructions(override: str = "") -> tuple[str, str]:
+    """
+    Load the research brief from the cloned repo.
+    Prefer TRAINFABRIC.md → AGENTS.md → README.md. Optional env override wins.
+    Returns (goal_text, source_label).
+    """
+    if override.strip():
+        return override.strip(), "AUTORUN_GOAL"
+    for name in INSTRUCTION_FILES:
+        path = REPO_DIR / name
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        if not text:
+            continue
+        # Use a compact brief for discovery search; keep enough for hypotheses.
+        return text[:4000], name
+    # Fall back to repo remote URL fragment so discovery still has a query.
+    url = env("REPO_URL")
+    short = url.rstrip("/").split("/")[-1].removesuffix(".git") if url else ""
+    return (short or "autoresearch", "repo-name")
+
+
+def report_instructions(auto_run_id: str, goal: str, source: str) -> None:
+    """Persist the repo-derived brief on the AutoRun so the monitor can show it."""
+    try:
+        api(
+            "POST",
+            f"/auto/{auto_run_id}/instructions",
+            {"content": goal[:4000], "sourceFile": source},
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"instructions report skipped: {e}", file=sys.stderr)
+        send_message(
+            auto_run_id,
+            f"Loaded instructions from {source}:\n\n{goal[:1200]}",
+        )
+
+
+def discover_and_bind(auto_run_id: str, goal: str, source: str = "repo") -> Optional[str]:
+    """Repo-brief discovery: search the lakehouse and bind the top match."""
     if not goal:
         return None
+    # Prefer the first meaningful line / heading as the search query.
+    query = goal
+    for line in goal.splitlines():
+        stripped = line.strip().lstrip("#").strip()
+        if len(stripped) >= 8:
+            query = stripped
+            break
+    query = query[:240]
     try:
-        listing = api("GET", f"/datasets?search={urllib.parse.quote(goal)}")
+        listing = api("GET", f"/datasets?search={urllib.parse.quote(query)}")
         datasets = listing.get("datasets") or []
     except Exception as e:  # noqa: BLE001
         print(f"discover failed: {e}", file=sys.stderr)
@@ -139,10 +200,10 @@ def discover_and_bind(auto_run_id: str, goal: str) -> Optional[str]:
             f"/auto/{auto_run_id}/bind-dataset",
             {
                 "datasetId": dataset_id,
-                "reason": f"Top discovery match for goal: {goal[:160]}",
+                "reason": f"Top discovery match for repo brief ({source}): {query[:160]}",
             },
         )
-        send_message(auto_run_id, f"Bound dataset {dataset_id} for goal: {goal[:120]}")
+        send_message(auto_run_id, f"Bound dataset {dataset_id} from repo brief ({source})")
         return dataset_id
     except Exception as e:  # noqa: BLE001
         print(f"bind failed: {e}", file=sys.stderr)
@@ -224,18 +285,23 @@ def post_finding(dataset_id: str, body: str, findings: dict[str, Any]) -> None:
 def run_loop() -> None:
     auto_run_id = env("AUTORUN_ID")
     dataset_id = env("TF_DATASET_ID")
-    goal = env("AUTORUN_GOAL")
     if not auto_run_id:
         raise RuntimeError("AUTORUN_ID required")
 
-    # Goal-first: if no dataset was pre-bound, discover + bind one.
+    protocol = load_protocol()
+    # Repo-first: clone, then load goal/instructions from the tree.
+    ensure_repo()
+    goal, goal_source = load_repo_instructions(env("AUTORUN_GOAL"))
+    report_instructions(auto_run_id, goal, goal_source)
+    assert_immutable(protocol)
+
+    # If no dataset was pre-bound, discover + bind from the repo brief.
     if not dataset_id:
-        send_message(auto_run_id, f"Discovering datasets for goal: {goal or '(unspecified)'}")
-        dataset_id = discover_and_bind(auto_run_id, goal) or ""
+        dataset_id = discover_and_bind(auto_run_id, goal, goal_source) or ""
     if not dataset_id:
         send_message(
             auto_run_id,
-            "No dataset match found — awaiting a dataset bind from the user. "
+            "No dataset match for the repo brief — awaiting a dataset bind. "
             "Reply here or bind one in the monitor to continue.",
         )
         # Wait for a human/agent to bind via /auto/:id/bind-dataset.
@@ -250,10 +316,6 @@ def run_loop() -> None:
             time.sleep(POLL_SEC)
     if not dataset_id:
         raise RuntimeError("no dataset bound; exiting")
-
-    protocol = load_protocol()
-    ensure_repo()
-    assert_immutable(protocol)
 
     budget = protocol.get("budget") or {}
     max_trials = int(budget.get("maxTrials") or 10)
@@ -285,6 +347,8 @@ def run_loop() -> None:
             f"Autoresearch trial {trial_n + 1}: improve {metric.get('name')} "
             f"({direction}) within mutable paths {protocol.get('mutablePaths')}"
         )
+        if goal:
+            hypothesis = f"{hypothesis} | brief: {goal[:180]}"
         if steer:
             hypothesis = f"{hypothesis} | steer: {' '.join(steer)[:200]}"
         insight = propose_via_prompt(dataset_id, hypothesis)

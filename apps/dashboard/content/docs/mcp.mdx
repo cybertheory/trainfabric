@@ -55,7 +55,7 @@ Works with Cursor, Claude, MCP Inspector, and any Streamable HTTP MCP client. No
 | `preview_derived` | Preview a derived spec |
 | `get_lineage` | Upstream / downstream lineage |
 | `prompt_query` | Natural-language slice via Hermes + DuckDB skill |
-| `start_auto` | Start long-running autoresearch — goal-first, agent binds datasets (Box + Modal/HTTP GPU) |
+| `start_auto` | Start long-running autoresearch — repo-first, agent loads brief from GitHub and binds datasets (Box + Modal/HTTP GPU) |
 | `check_auto` | Poll AutoRun status + trials + activity + bound datasets |
 | `list_auto_runs` | List AutoRuns for a dataset |
 | `pause_auto` | Pause / resume / cancel an AutoRun |
@@ -89,8 +89,8 @@ REST equivalent: `POST /datasets/:id/prompt` with `{ "prompt": "...", "execute":
 
 Long campaigns are a separate primitive from `prompt_query`:
 
-1. Control plane creates an **AutoRun** from a **goal** + repo + compute. The experiment protocol (metric, budget, mutable/immutable paths) is fixed up front; the dataset snapshot is frozen when the agent binds a dataset.
-2. A [Box](https://box.ascii.dev/) sandbox is forked from a template and runs the Trainfabric autorunner daemon: it `discover_datasets` → `bind_auto_dataset` → git + `/prompt` + trial enqueue → keep/revert.
+1. Control plane creates an **AutoRun** from a connected **GitHub repo** + protocol + compute. Goals and instructions live in the repo (`TRAINFABRIC.md` / `AGENTS.md` / `README.md`); the experiment protocol (metric, budget, mutable/immutable paths) is fixed up front; the dataset snapshot is frozen when the agent binds a dataset.
+2. A [Box](https://box.ascii.dev/) sandbox is forked from a template and runs the Trainfabric autorunner daemon: it clones the repo → loads the brief → `discover_datasets` → `bind_auto_dataset` → git + `/prompt` + trial enqueue → keep/revert.
 3. GPU trials go to **Modal** or a self-hosted **HTTP runner** (`POST /runners/register`, poll `/runners/claim`). No SSH.
 
 ### Chat with a cloud agent
@@ -103,6 +103,6 @@ Humans (dashboard) and external/dev agents (MCP/REST) share **one** conversation
 
 Messages are injected into the running Box agent (daemon chat endpoint or steer inbox) and every reply is persisted, so all clients see the same history.
 
-REST: `POST /auto` (goal-first create), `POST /auto/:id/bind-dataset`, `GET /auto/:id`, dashboard monitor at `/auto/:id`.
+REST: `POST /auto` (repo-first create), `POST /auto/:id/instructions`, `POST /auto/:id/bind-dataset`, `GET /auto/:id`, dashboard monitor at `/auto/:id`.
 
 See `services/autorunner/README.md` for the daemon and GPU worker image.

@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Bot, Check, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import { Bot, Check, ChevronLeft, ChevronRight, GitBranch, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import type { AutoRun, DatasetMeta } from "@trainfabric/shared";
 import { Button } from "@/components/ui/button";
@@ -14,13 +14,29 @@ import { apiFetch } from "@/lib/api";
 import { useJobTracker } from "@/lib/job-tracker";
 import { cn } from "@/lib/utils";
 
-const STEPS = ["Goal", "Repo & protocol", "Compute", "Review"] as const;
+const STEPS = ["Repo", "Protocol", "Compute", "Review"] as const;
 
 type Prereq = {
   boxConfigured: boolean;
   modalConfigured: boolean;
   note: string;
 };
+
+function isLikelyGitUrl(url: string): boolean {
+  const u = url.trim();
+  if (!u) return false;
+  if (/^git@[\w.-]+:[\w./-]+(\.git)?$/.test(u)) return true;
+  try {
+    const parsed = new URL(u);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" || parsed.protocol === "ssh:";
+  } catch {
+    return false;
+  }
+}
+
+function repoShortName(url: string): string {
+  return url.trim().replace(/^https?:\/\/(www\.)?github\.com\//, "").replace(/\.git$/, "") || url;
+}
 
 export default function NewAgentPage() {
   return (
@@ -39,10 +55,9 @@ function NewAgentWizard() {
   const [prereq, setPrereq] = useState<Prereq | null>(null);
   const [starting, setStarting] = useState(false);
 
-  const [goal, setGoal] = useState("");
-  const [datasetHint, setDatasetHint] = useState(searchParams.get("dataset") ?? ""); // optional — "" means agent chooses
   const [repoUrl, setRepoUrl] = useState("");
   const [branch, setBranch] = useState("main");
+  const [datasetHint, setDatasetHint] = useState(searchParams.get("dataset") ?? "");
   const [metric, setMetric] = useState("val_bpb");
   const [direction, setDirection] = useState<"min" | "max">("min");
   const [maxTrials, setMaxTrials] = useState(20);
@@ -69,10 +84,9 @@ function NewAgentWizard() {
   );
 
   function canNext(): boolean {
-    if (step === 0) return goal.trim().length >= 8;
+    if (step === 0) return isLikelyGitUrl(repoUrl);
     if (step === 1) {
       return (
-        Boolean(repoUrl.trim()) &&
         Boolean(metric.trim()) &&
         mutablePaths.split(",").some((s) => s.trim()) &&
         Number(maxTrials) >= 1
@@ -91,7 +105,6 @@ function NewAgentWizard() {
       const run = await apiFetch<AutoRun>(`/auto`, {
         method: "POST",
         body: JSON.stringify({
-          goal: goal.trim(),
           repoUrl: repoUrl.trim(),
           defaultBranch: branch.trim() || "main",
           datasetId: datasetHint || undefined,
@@ -120,12 +133,10 @@ function NewAgentWizard() {
       trackAutoRun({
         autoRunId: run.id,
         datasetId: run.datasetId,
-        name: `Auto · ${repoUrl.split("/").slice(-2).join("/") || goal.slice(0, 24)}`,
+        name: `Auto · ${repoShortName(repoUrl)}`,
       });
       toast.success("Agent started", {
-        description: datasetHint
-          ? "Starting trials on your dataset hint."
-          : "The agent will discover and bind a dataset for your goal.",
+        description: "Cloning the repo for goals and instructions, then binding a dataset.",
       });
       router.push(`/auto/${run.id}`);
     } catch (e) {
@@ -150,9 +161,9 @@ function NewAgentWizard() {
           <h1 className="text-2xl font-semibold tracking-tight">Configure agent</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Set a research <span className="font-medium text-foreground">goal</span>, bind a repo and
-          compute — the agent discovers and binds datasets itself. Nothing runs until you confirm on
-          the last step.
+          Connect a <span className="font-medium text-foreground">GitHub repo</span> first — research
+          goals and instructions live in that repo (README, AGENTS.md, protocol.yaml). Then set the
+          experiment protocol and compute. The agent discovers datasets from the repo brief.
         </p>
       </div>
 
@@ -173,7 +184,7 @@ function NewAgentWizard() {
           <p className="mt-1 text-muted-foreground">
             Box keys are <span className="font-medium text-foreground">not</span> entered here.
             Operators set <code>BOX_API_KEY</code> (and optionally <code>BOX_TEMPLATE_ID</code>) as
-            Worker secrets. You configure the goal, repo, protocol, and GPU provider below.
+            Worker secrets. You connect the repo and protocol below.
           </p>
         </div>
       ) : null}
@@ -205,17 +216,44 @@ function NewAgentWizard() {
       <div className="min-h-[280px] space-y-4 rounded-lg border p-4">
         {step === 0 ? (
           <div className="space-y-3">
-            <h2 className="text-sm font-semibold">1. Research goal</h2>
+            <h2 className="text-sm font-semibold">1. Connect Git repo</h2>
             <p className="text-xs text-muted-foreground">
-              Describe the outcome — the agent uses discovery to find and bind the most relevant
-              dataset(s). You don&apos;t need to pick data here.
+              Autoresearch is driven by the repo. Put the research brief in{" "}
+              <code className="text-[11px]">TRAINFABRIC.md</code>,{" "}
+              <code className="text-[11px]">AGENTS.md</code>, or{" "}
+              <code className="text-[11px]">README.md</code>, and keep the eval contract in{" "}
+              <code className="text-[11px]">protocol.yaml</code>. The agent reads those after clone —
+              you don&apos;t paste a free-form goal here.
             </p>
-            <Textarea
-              value={goal}
-              onChange={(e) => setGoal(e.target.value)}
-              placeholder="e.g. Lower validation bits-per-byte on multilingual web text by tuning the tokenizer and data mixture."
-              className="min-h-[96px]"
-            />
+            <div className="space-y-1">
+              <Label className="text-xs">Repo URL</Label>
+              <Input
+                value={repoUrl}
+                onChange={(e) => setRepoUrl(e.target.value)}
+                placeholder="https://github.com/org/autoresearch-repo"
+                autoFocus
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Default branch</Label>
+              <Input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" />
+            </div>
+            <div className="rounded-md border border-dashed bg-muted/20 px-3 py-2.5 text-[11px] text-muted-foreground">
+              <p className="flex items-center gap-1.5 font-medium text-foreground">
+                <GitBranch className="h-3.5 w-3.5" />
+                What the agent loads from the repo
+              </p>
+              <ul className="mt-1.5 list-inside list-disc space-y-0.5">
+                <li>
+                  Goal / brief: <code>TRAINFABRIC.md</code> → <code>AGENTS.md</code> →{" "}
+                  <code>README.md</code>
+                </li>
+                <li>
+                  Eval contract: <code>protocol.yaml</code> (immutable by default)
+                </li>
+                <li>Mutable code paths you list in the next step</li>
+              </ul>
+            </div>
             <div className="space-y-1">
               <Label className="text-xs">Dataset hint (optional)</Label>
               <select
@@ -223,7 +261,7 @@ function NewAgentWizard() {
                 value={datasetHint}
                 onChange={(e) => setDatasetHint(e.target.value)}
               >
-                <option value="">Let the agent choose (recommended)</option>
+                <option value="">Let the agent choose from the repo brief</option>
                 {datasets.map((d) => (
                   <option key={d.id} value={d.id}>
                     {d.owner}/{d.name}
@@ -233,7 +271,7 @@ function NewAgentWizard() {
               <p className="text-[11px] text-muted-foreground">
                 {selectedHint
                   ? "Starts bound to this dataset; the agent may still bind others."
-                  : "The agent runs discover_datasets, then binds the best match (or asks you in chat)."}
+                  : "After clone, the agent searches the lakehouse using the repo brief."}
               </p>
             </div>
           </div>
@@ -241,26 +279,17 @@ function NewAgentWizard() {
 
         {step === 1 ? (
           <div className="space-y-3">
-            <h2 className="text-sm font-semibold">2. GitHub repo & protocol</h2>
-            <div className="space-y-1">
-              <Label className="text-xs">Repo URL</Label>
-              <Input
-                value={repoUrl}
-                onChange={(e) => setRepoUrl(e.target.value)}
-                placeholder="https://github.com/org/autoresearch-repo"
-              />
-            </div>
+            <h2 className="text-sm font-semibold">2. Experiment protocol</h2>
+            <p className="text-xs text-muted-foreground">
+              Soft defaults for the control plane. Prefer encoding the real contract in the repo&apos;s{" "}
+              <code className="text-[11px]">protocol.yaml</code> — these fields are the comparable
+              budget the platform enforces.
+            </p>
             <div className="grid grid-cols-2 gap-2">
-              <div className="space-y-1">
-                <Label className="text-xs">Branch</Label>
-                <Input value={branch} onChange={(e) => setBranch(e.target.value)} />
-              </div>
               <div className="space-y-1">
                 <Label className="text-xs">Metric name</Label>
                 <Input value={metric} onChange={(e) => setMetric(e.target.value)} />
               </div>
-            </div>
-            <div className="grid grid-cols-3 gap-2">
               <div className="space-y-1">
                 <Label className="text-xs">Direction</Label>
                 <select
@@ -272,6 +301,8 @@ function NewAgentWizard() {
                   <option value="max">max (higher better)</option>
                 </select>
               </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
                 <Label className="text-xs">Max trials</Label>
                 <Input
@@ -360,16 +391,19 @@ function NewAgentWizard() {
           <div className="space-y-3">
             <h2 className="text-sm font-semibold">4. Review & start</h2>
             <dl className="space-y-2 rounded-md bg-muted/30 p-3 text-xs">
-              <Row k="Goal" v={goal} />
+              <Row k="Repo" v={`${repoShortName(repoUrl)} @ ${branch || "main"}`} />
+              <Row
+                k="Instructions"
+                v="Loaded from TRAINFABRIC.md / AGENTS.md / README.md after clone"
+              />
               <Row
                 k="Dataset"
                 v={
                   selectedHint
                     ? `${selectedHint.owner}/${selectedHint.name} (hint)`
-                    : "Agent chooses at runtime"
+                    : "Agent chooses from repo brief"
                 }
               />
-              <Row k="Repo" v={`${repoUrl} @ ${branch}`} />
               <Row k="Metric" v={`${metric} · ${direction}`} />
               <Row k="Budget" v={`${maxTrials} trials · ${wallSec}s`} />
               <Row k="Mutable" v={mutablePaths} />
@@ -392,8 +426,8 @@ function NewAgentWizard() {
               />
             </dl>
             <p className="text-xs text-muted-foreground">
-              Starting creates an AutoRun, provisions Box when configured, and opens the live
-              monitor + chat. You can steer, pause, or cancel anytime.
+              Starting creates an AutoRun, provisions Box when configured, clones the repo for goals
+              and instructions, then opens the live monitor + chat.
             </p>
           </div>
         ) : null}

@@ -42,6 +42,7 @@ import type {
   CreateSocialPostRequest,
   PostAutoMessageRequest,
   RegisterRunnerRequest,
+  ReportAutoInstructionsRequest,
 } from "@trainfabric/shared";
 import { createAutoStore } from "./autoStore";
 import { boxClientFromEnv } from "./box";
@@ -56,6 +57,7 @@ import {
   pauseAutoRun,
   postAutoMessage,
   registerRunner,
+  reportInstructions,
   resumeAutoRun,
 } from "./auto";
 
@@ -1468,6 +1470,22 @@ app.get("/auto/:id", async (c) => {
       messages: messages.slice(-30),
       events,
     });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.post("/auto/:id/instructions", async (c) => {
+  try {
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const store = createAutoStore(c.env);
+    const run = await store.getAutoRun(c.req.param("id"));
+    if (!run) return c.json({ error: "Not found" }, 404);
+    const body = (await c.req.json()) as ReportAutoInstructionsRequest;
+    if (!body.content?.trim()) return c.json({ error: "content required" }, 400);
+    const next = await reportInstructions({ store, run, body });
+    return c.json(next);
   } catch (e) {
     return errResponse(e);
   }

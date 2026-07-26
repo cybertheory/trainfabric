@@ -322,7 +322,7 @@ export interface AutoRun {
   datasetId?: string;
   /** Datasets the agent has bound (first bind freezes the protocol snapshot). */
   boundDatasets?: string[];
-  /** Human-set research goal — the agent chooses datasets to pursue it. */
+  /** Research brief loaded from the connected repo (TRAINFABRIC.md / AGENTS.md / README). */
   goal?: string;
   ownerId: string;
   status: AutoRunStatus;
@@ -400,15 +400,26 @@ export interface AutoRunner {
 }
 
 export interface CreateAutoRunRequest {
-  /** Research goal — required in the goal-first flow. */
+  /**
+   * Optional brief override. Prefer encoding the goal in the connected repo
+   * (TRAINFABRIC.md / AGENTS.md / README.md) — the daemon loads it after clone.
+   */
   goal?: string;
+  /** Required — Autoresearch is repo-driven. */
   repoUrl: string;
   defaultBranch?: string;
-  /** Optional starting-dataset hint; the agent may discover + bind others. */
+  /** Optional starting-dataset hint; the agent may discover + bind others from the repo brief. */
   datasetId?: string;
   protocol: AutoProtocol;
   compute: AutoComputeConfig;
   templateId?: string;
+}
+
+export interface ReportAutoInstructionsRequest {
+  /** Research brief extracted from the repo (or an override). */
+  content: string;
+  /** File the brief was loaded from, e.g. TRAINFABRIC.md. */
+  sourceFile?: string;
 }
 
 export interface BindAutoDatasetRequest {

@@ -131,10 +131,18 @@ export default function AutoRunMonitorPage() {
         <div className="flex flex-wrap items-center gap-2">
           <Bot className="h-5 w-5 text-primary" />
           <h1 className="text-xl font-semibold tracking-tight">
-            {run.goal?.trim() || "Autoresearch monitor"}
+            {run.repo.url.replace(/^https?:\/\/(www\.)?github\.com\//, "").replace(/\.git$/, "") ||
+              "Autoresearch monitor"}
           </h1>
           <Badge variant="outline">{run.status.replace("_", " ")}</Badge>
         </div>
+        {run.goal?.trim() ? (
+          <p className="text-sm text-foreground/90">{run.goal.trim().slice(0, 280)}</p>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            Loading research brief from the connected repo…
+          </p>
+        )}
         <p className="text-sm text-muted-foreground">
           <a
             href={run.repo.url}
@@ -148,7 +156,7 @@ export default function AutoRunMonitorPage() {
           {bound.length ? (
             <>data <code className="text-xs">{bound.join(", ")}</code></>
           ) : (
-            <span className="text-amber-600">choosing dataset…</span>
+            <span className="text-amber-600">choosing dataset from repo brief…</span>
           )}
         </p>
         <div className="flex flex-wrap gap-2">
@@ -424,7 +432,7 @@ function BindPanel({
     <div className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
       <p className="text-sm font-medium">Agent needs a dataset</p>
       <p className="text-xs text-muted-foreground">
-        No clear discovery match{goal ? ` for “${goal}”` : ""}. Pick a dataset to bind — or tell the
+        No clear discovery match{goal ? ` for the repo brief` : ""}. Pick a dataset to bind — or tell the
         agent which one to use in chat.
       </p>
       <div className="flex flex-wrap items-center gap-2">

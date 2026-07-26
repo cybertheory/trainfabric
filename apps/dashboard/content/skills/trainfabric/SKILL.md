@@ -38,7 +38,7 @@ GET https://trainfabric-router.rishabhspro.workers.dev/mcp/tools
 3. `estimate_query` — before expensive work
 4. `query_slice` — columns + filters only (never dump whole tables)
 5. Optional: `prompt_query` (Hermes NL → DuckDB plan/execute), `sample_dataset`, `publish_dataset`, `create_derived_dataset`, `get_lineage`, `check_job`
-6. Long autoresearch: `start_auto` (goal-first) → `check_auto` / `pause_auto` / `bind_auto_dataset`, and `message_auto_agent` / `list_auto_messages` to chat with a running cloud agent (Box sandbox + Modal/HTTP GPU). Does **not** replace `prompt_query`.
+6. Long autoresearch: `start_auto` (repo-first — goals/instructions live in the GitHub repo) → `check_auto` / `pause_auto` / `bind_auto_dataset`, and `message_auto_agent` / `list_auto_messages` to chat with a running cloud agent (Box sandbox + Modal/HTTP GPU). Does **not** replace `prompt_query`.
 7. After research: `post_social_update` — share findings to the dataset community (requires user auth). `connect_dataset` / auto-connect on query. `list_social_feed` for updates.
 
 ### Share findings (social)
@@ -64,12 +64,11 @@ Runs Hermes + duckdb-analytics skill in compute (schema → estimate → DuckDB)
 
 Long-running campaign. Agent sandbox = [Box](https://box.ascii.dev/). GPU trials = Modal or a self-hosted HTTP runner image (`services/autorunner`).
 
-**Goal-first**: pass a `goal` and omit `dataset_id` — the cloud agent runs `discover_datasets` and binds one itself (`bind_auto_dataset`). Pass `dataset_id` only as a starting hint.
+**Repo-first**: pass a `repo_url` whose tree contains the research brief (`TRAINFABRIC.md` → `AGENTS.md` → `README.md`) and prefer encoding the eval contract in `protocol.yaml`. The cloud agent loads that brief after clone, then runs `discover_datasets` / `bind_auto_dataset`. Pass `dataset_id` only as a starting hint; `goal` is an optional override.
 
 ```
 start_auto({
-  goal: "Lower val_bpb on multilingual web text via tokenizer + data mixture",
-  repo_url: "https://github.com/org/repo",
+  repo_url: "https://github.com/org/autoresearch-repo",
   protocol: {
     // snapshotId is frozen when a dataset is bound
     metric: { name: "val_bpb", direction: "min" },
