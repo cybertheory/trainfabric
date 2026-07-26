@@ -7,3 +7,12 @@ CLERK_JWT_ISSUER=https://desired-seal-5.clerk.accounts.dev
 # Set to "convex" only when verifying Convex JWT template tokens.
 PUBLIC_API_BASE=https://trainfabric-router.rishabhspro.workers.dev
 # AGENT_TOKEN_SECRET=  # wrangler secret put AGENT_TOKEN_SECRET
+
+# Autoresearch /auto — Box sandboxes + Modal GPU trials.
+# Without BOX_API_KEY the router runs /auto in stub mode (control plane only).
+BOX_API_KEY=
+BOX_TEMPLATE_ID=
+BOX_API_BASE=https://ascii.dev/api/box/v1
+MODAL_TOKEN=
+MODAL_APP_REF=
+# MODAL_API_BASE=  # optional override for Modal trial endpoint
