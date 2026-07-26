@@ -152,6 +152,8 @@ def test_query_correctness_vs_reference(local_env):
         f"SELECT fare_amount, passenger_count FROM read_csv_auto('{FIXTURES / 'tidy_small.csv'}') "
         f"WHERE fare_amount > 20 ORDER BY fare_amount"
     ).arrow()
+    if hasattr(ref, "read_all"):
+        ref = ref.read_all()
 
     result = execute_query(
         QueryRequest(
@@ -164,8 +166,6 @@ def test_query_correctness_vs_reference(local_env):
     assert result.arrow_base64
     got = ipc.open_stream(base64.b64decode(result.arrow_base64)).read_all()
     # Sort both for comparison
-    import pyarrow.compute as pc
-
     got_sorted = got.sort_by("fare_amount")
     ref_sorted = ref.sort_by("fare_amount")
     assert got_sorted.num_rows == ref_sorted.num_rows
@@ -228,6 +228,51 @@ def test_health_endpoint(local_env):
 
     client = TestClient(app)
     assert client.get("/health").json()["status"] == "ok"
+
+
+def test_http_ingest_scan_query_sample(local_env):
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    client = TestClient(app)
+    ingest_res = client.post(
+        "/ingest",
+        json={
+            "staging_path": str(FIXTURES / "tidy_small.csv"),
+            "dataset_id": "http_taxi",
+            "partition_hint": "pickup_date",
+            "sort_column": "fare_amount",
+        },
+    )
+    assert ingest_res.status_code == 200, ingest_res.text
+
+    plan = client.post(
+        "/scan-plan",
+        json={
+            "dataset_id": "http_taxi",
+            "columns": ["fare_amount"],
+            "filter": "pickup_date = '2024-01-01'",
+        },
+    )
+    assert plan.status_code == 200, plan.text
+    assert plan.json()["case"] in ("A", "B")
+
+    q = client.post(
+        "/query",
+        json={
+            "dataset_id": "http_taxi",
+            "columns": ["fare_amount", "pickup_date"],
+            "filter": "pickup_date = '2024-01-01'",
+            "limit": 5,
+            "query_hash": "test-hash-http",
+        },
+    )
+    assert q.status_code == 200, q.text
+    assert q.json()["rowCount"] >= 0
+
+    samp = client.post("/sample", json={"dataset_id": "http_taxi", "n": 2})
+    assert samp.status_code == 200, samp.text
+    assert "rows" in samp.json()
 
 
 def test_large_result_writes_link(local_env, monkeypatch, tmp_path):

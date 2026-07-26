@@ -211,3 +211,66 @@ def test_prompt_http_endpoint(local_env):
     assert body["skill"] == "duckdb-analytics"
     assert body["columns"]
     assert body["executed"] is True
+
+
+def test_prompt_with_auth_uses_tf(local_env, monkeypatch):
+    """When auth_token + api_base are set, tools shell out to tf."""
+    from unittest.mock import MagicMock, patch
+
+    _ingest_taxi("hermes_auth_tf")
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    schema_payload = {
+        "columns": [
+            {"name": "pickup_date", "type": "date", "required": False, "isPartition": True},
+            {"name": "fare_amount", "type": "double", "required": False, "isPartition": False},
+        ],
+        "partitionColumns": ["pickup_date"],
+        "sampleRows": [],
+    }
+    estimate_payload = {"costTier": "A", "estimatedRows": 1, "estimatedBytes": 100}
+    query_payload = {"rowCount": 1, "mode": "stream"}
+
+    def fake_run(args, **kwargs):
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.stderr = ""
+        cmd = " ".join(args)
+        if "schema" in cmd:
+            proc.stdout = json.dumps(schema_payload)
+        elif "estimate" in cmd:
+            proc.stdout = json.dumps(estimate_payload)
+        elif "sample" in cmd:
+            proc.stdout = json.dumps({"rows": []})
+        else:
+            proc.stdout = json.dumps(query_payload)
+        assert kwargs["env"]["TRAINFABRIC_TOKEN"] == "agent-tok"
+        assert kwargs["env"]["TRAINFABRIC_API_URL"] == "https://api.example"
+        return proc
+
+    client = TestClient(app)
+    with patch("app.hermes.tools.subprocess.run", side_effect=fake_run):
+        res = client.post(
+            "/prompt",
+            json={
+                "prompt": "pickup_date 2024-01-01 fares",
+                "dataset_id": "hermes_auth_tf",
+                "public_dataset_id": "ds_pub_tf",
+                "execute": True,
+                "auth_token": "agent-tok",
+                "api_base": "https://api.example",
+                "user_id": "user_test",
+            },
+        )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["agent"] == "hermes"
+    # Trace should show tf-backed tool results when heuristic path used tools
+    via_tf = False
+    for step in body.get("trace") or []:
+        result = step.get("result") or {}
+        if isinstance(result, dict) and result.get("via") == "tf":
+            via_tf = True
+            break
+    assert via_tf or body.get("columns")

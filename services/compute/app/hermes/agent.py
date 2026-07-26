@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from .cli_auth import CliAuthContext, set_cli_auth
 from .gateway import AIGatewayError, mockable_chat
 from .tools import TOOL_SPECS, dispatch_tool
 
@@ -31,6 +32,11 @@ class PromptRequest:
     execute: bool = True
     snapshot: Optional[str] = None
     max_steps: int = MAX_STEPS
+    auth_token: Optional[str] = None
+    api_base: Optional[str] = None
+    user_id: Optional[str] = None
+    user_email: Optional[str] = None
+    public_dataset_id: Optional[str] = None
 
 
 @dataclass
@@ -66,18 +72,34 @@ def _message_tool_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
 
 def run_hermes_prompt(req: PromptRequest) -> PromptResult:
     """Run Hermes DuckDB skill agent against a dataset."""
+    if req.auth_token and req.api_base:
+        set_cli_auth(
+            CliAuthContext(
+                api_base=req.api_base.rstrip("/"),
+                auth_token=req.auth_token,
+                user_id=req.user_id,
+                user_email=req.user_email,
+                public_dataset_id=req.public_dataset_id,
+            )
+        )
+    else:
+        set_cli_auth(None)
+
     skill = load_duckdb_skill()
     system = (
         "You are Hermes Agent with the duckdb-analytics skill, embedded in Trainfabric compute.\n"
         "Follow the skill. Always inspect schema before estimating or querying.\n"
-        "Prefer partition-aligned filters. Finish with the finish tool.\n\n"
+        "Prefer partition-aligned filters. Finish with the finish tool.\n"
+        "You are signed in as the invoking user; never invent credentials.\n\n"
         f"{skill}"
     )
     user = (
         f"Dataset id: {req.dataset_id}\n"
+        f"Public dataset id: {req.public_dataset_id or req.dataset_id}\n"
         f"Namespace: {req.namespace}\n"
         f"Execute: {req.execute}\n"
         f"Snapshot: {req.snapshot or 'latest'}\n"
+        f"User id: {req.user_id or 'anon'}\n"
         f"User question: {req.prompt}"
     )
 

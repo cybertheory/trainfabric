@@ -14,10 +14,15 @@ export interface ComputeClient {
   prompt(body: {
     prompt: string;
     dataset_id: string;
+    public_dataset_id?: string;
     namespace?: string;
     execute?: boolean;
     snapshot?: string;
     max_steps?: number;
+    auth_token?: string;
+    api_base?: string;
+    user_id?: string;
+    user_email?: string;
   }): Promise<Record<string, unknown>>;
   health(): Promise<boolean>;
 }

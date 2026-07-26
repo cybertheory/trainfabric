@@ -62,6 +62,11 @@ class PromptBody(BaseModel):
     execute: bool = True
     snapshot: Optional[str] = None
     max_steps: int = 8
+    auth_token: Optional[str] = None
+    api_base: Optional[str] = None
+    user_id: Optional[str] = None
+    user_email: Optional[str] = None
+    public_dataset_id: Optional[str] = None
 
 
 @app.get("/health")
@@ -168,6 +173,11 @@ def post_prompt(body: PromptBody) -> dict[str, Any]:
                 execute=body.execute,
                 snapshot=body.snapshot,
                 max_steps=body.max_steps,
+                auth_token=body.auth_token,
+                api_base=body.api_base,
+                user_id=body.user_id,
+                user_email=body.user_email,
+                public_dataset_id=body.public_dataset_id,
             )
         )
         from .hermes.gateway import gateway_config

@@ -31,10 +31,13 @@ export async function verifyClerkJwt(
     return null;
   }
   try {
-    const { payload } = await jwtVerify(token, getJwks(env.CLERK_JWT_ISSUER), {
+    const opts: { issuer: string; audience?: string } = {
       issuer: env.CLERK_JWT_ISSUER,
-      audience: env.CLERK_JWT_AUDIENCE,
-    });
+    };
+    if (env.CLERK_JWT_AUDIENCE?.trim()) {
+      opts.audience = env.CLERK_JWT_AUDIENCE;
+    }
+    const { payload } = await jwtVerify(token, getJwks(env.CLERK_JWT_ISSUER), opts);
     if (!payload.sub) return null;
     return {
       subject: payload.sub,

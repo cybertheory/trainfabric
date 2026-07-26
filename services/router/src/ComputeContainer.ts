@@ -35,6 +35,11 @@ export class ComputeContainer extends Container<Env> {
       CF_AI_GATEWAY_TOKEN: env.CF_AI_GATEWAY_TOKEN || "",
       CF_AI_GATEWAY_BASE: env.CF_AI_GATEWAY_BASE || "",
       CF_AI_MODEL: env.CF_AI_MODEL || "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      // Public router URL for `tf` CLI (per-user tokens are request-scoped, not here)
+      TRAINFABRIC_API_URL:
+        env.PUBLIC_API_BASE ||
+        env.TRAINFABRIC_API_URL ||
+        "https://trainfabric-router.rishabhspro.workers.dev",
     };
   }
 
@@ -68,4 +73,6 @@ interface Env {
   CF_AI_GATEWAY_TOKEN?: string;
   CF_AI_GATEWAY_BASE?: string;
   CF_AI_MODEL?: string;
+  PUBLIC_API_BASE?: string;
+  TRAINFABRIC_API_URL?: string;
 }
