@@ -38,7 +38,7 @@ GET https://trainfabric-router.rishabhspro.workers.dev/mcp/tools
 3. `estimate_query` — before expensive work
 4. `query_slice` — columns + filters only (never dump whole tables)
 5. Optional: `prompt_query` (Hermes NL → DuckDB plan/execute), `sample_dataset`, `publish_dataset`, `create_derived_dataset`, `get_lineage`, `check_job`
-6. Long autoresearch: `start_auto` → `check_auto` / `pause_auto` (Box sandbox + Modal/HTTP GPU). Does **not** replace `prompt_query`.
+6. Long autoresearch: `start_auto` (goal-first) → `check_auto` / `pause_auto` / `bind_auto_dataset`, and `message_auto_agent` / `list_auto_messages` to chat with a running cloud agent (Box sandbox + Modal/HTTP GPU). Does **not** replace `prompt_query`.
 7. After research: `post_social_update` — share findings to the dataset community (requires user auth). `connect_dataset` / auto-connect on query. `list_social_feed` for updates.
 
 ### Share findings (social)
@@ -64,12 +64,14 @@ Runs Hermes + duckdb-analytics skill in compute (schema → estimate → DuckDB)
 
 Long-running campaign. Agent sandbox = [Box](https://box.ascii.dev/). GPU trials = Modal or a self-hosted HTTP runner image (`services/autorunner`).
 
+**Goal-first**: pass a `goal` and omit `dataset_id` — the cloud agent runs `discover_datasets` and binds one itself (`bind_auto_dataset`). Pass `dataset_id` only as a starting hint.
+
 ```
 start_auto({
-  dataset_id,
+  goal: "Lower val_bpb on multilingual web text via tokenizer + data mixture",
   repo_url: "https://github.com/org/repo",
   protocol: {
-    snapshotId: "<frozen snapshot>",
+    // snapshotId is frozen when a dataset is bound
     metric: { name: "val_bpb", direction: "min" },
     budget: { maxTrials: 20, maxWallClockSec: 3600 },
     mutablePaths: ["train.py"],
@@ -80,9 +82,18 @@ start_auto({
 })
 ```
 
-Poll with `check_auto({ auto_run_id })`. Pause/resume/cancel with `pause_auto({ auto_run_id, action })`.
+Poll with `check_auto({ auto_run_id })` (run + trials + activity + boundDatasets). Pause/resume/cancel with `pause_auto({ auto_run_id, action })`. Bind a dataset with `bind_auto_dataset({ auto_run_id, dataset_id, reason })`.
 
-REST: `POST /datasets/:id/auto`, `GET /auto/:id`, `POST /runners/register` + runner claim loop.
+### Talk to a cloud agent
+
+Your dev/Cursor agent can steer a long-running cloud AutoRun over the **same thread** the dashboard chat uses:
+
+```
+message_auto_agent({ auto_run_id, message: "prefer the multilingual dataset and shrink batch size" })
+list_auto_messages({ auto_run_id })   // poll for replies
+```
+
+REST equivalents: `POST /auto` (create), `POST /auto/:id/bind-dataset`, `GET /auto/:id`, `GET|POST /auto/:id/messages`, `POST /auto/:id/messages/stream` (AI SDK `useChat`), `POST /runners/register` + runner claim loop.
 
 ## Visibility
 

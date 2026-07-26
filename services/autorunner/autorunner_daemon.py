@@ -2,12 +2,14 @@
 """
 Trainfabric autorunner daemon — runs inside a Box sandbox.
 
-Loop: pull repo → propose (optional /prompt) → enqueue GPU trial →
-await score → keep/revert → report progress / social findings.
+Goal-first loop: bind a dataset the agent discovers (if none was given) →
+pull repo → propose (optional /prompt) → enqueue GPU trial → await score →
+keep/revert → report progress / social findings. Reads steer messages the user
+or an external agent sends via /auto/:id/messages.
 
 Env:
-  AUTORUN_ID, TF_API_URL, TF_TOKEN, TF_DATASET_ID,
-  PROTOCOL_JSON, REPO_URL, REPO_BRANCH, COMPUTE_PROVIDER
+  AUTORUN_ID, TF_API_URL, TF_TOKEN, TF_DATASET_ID (optional),
+  AUTORUN_GOAL (goal-first), PROTOCOL_JSON, REPO_URL, REPO_BRANCH, COMPUTE_PROVIDER
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Optional
@@ -113,6 +116,64 @@ def propose_via_prompt(dataset_id: str, hypothesis_hint: str) -> Optional[str]:
         return None
 
 
+def discover_and_bind(auto_run_id: str, goal: str) -> Optional[str]:
+    """Goal-first: search the lakehouse for a dataset and bind it to the run."""
+    if not goal:
+        return None
+    try:
+        listing = api("GET", f"/datasets?search={urllib.parse.quote(goal)}")
+        datasets = listing.get("datasets") or []
+    except Exception as e:  # noqa: BLE001
+        print(f"discover failed: {e}", file=sys.stderr)
+        return None
+    if not datasets:
+        print("discover: no dataset candidates", file=sys.stderr)
+        return None
+    top = datasets[0]
+    dataset_id = top.get("id")
+    if not dataset_id:
+        return None
+    try:
+        api(
+            "POST",
+            f"/auto/{auto_run_id}/bind-dataset",
+            {
+                "datasetId": dataset_id,
+                "reason": f"Top discovery match for goal: {goal[:160]}",
+            },
+        )
+        send_message(auto_run_id, f"Bound dataset {dataset_id} for goal: {goal[:120]}")
+        return dataset_id
+    except Exception as e:  # noqa: BLE001
+        print(f"bind failed: {e}", file=sys.stderr)
+        return None
+
+
+def send_message(auto_run_id: str, content: str) -> None:
+    """Post an assistant-side message so the shared thread reflects agent activity."""
+    try:
+        api(
+            "POST",
+            f"/auto/{auto_run_id}/messages",
+            {"content": content, "role": "assistant", "source": "daemon"},
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"message skipped: {e}", file=sys.stderr)
+
+
+def read_steer() -> list[str]:
+    """Drain steer instructions dropped by the router into the inbox."""
+    inbox = Path.home() / "trainfabric" / "inbox" / "steer.log"
+    if not inbox.exists():
+        return []
+    try:
+        lines = [ln.strip() for ln in inbox.read_text().splitlines() if ln.strip()]
+        inbox.write_text("")
+        return lines
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def git_sha() -> str:
     return sh("git rev-parse HEAD", cwd=REPO_DIR).stdout.strip()
 
@@ -163,8 +224,32 @@ def post_finding(dataset_id: str, body: str, findings: dict[str, Any]) -> None:
 def run_loop() -> None:
     auto_run_id = env("AUTORUN_ID")
     dataset_id = env("TF_DATASET_ID")
-    if not auto_run_id or not dataset_id:
-        raise RuntimeError("AUTORUN_ID and TF_DATASET_ID required")
+    goal = env("AUTORUN_GOAL")
+    if not auto_run_id:
+        raise RuntimeError("AUTORUN_ID required")
+
+    # Goal-first: if no dataset was pre-bound, discover + bind one.
+    if not dataset_id:
+        send_message(auto_run_id, f"Discovering datasets for goal: {goal or '(unspecified)'}")
+        dataset_id = discover_and_bind(auto_run_id, goal) or ""
+    if not dataset_id:
+        send_message(
+            auto_run_id,
+            "No dataset match found — awaiting a dataset bind from the user. "
+            "Reply here or bind one in the monitor to continue.",
+        )
+        # Wait for a human/agent to bind via /auto/:id/bind-dataset.
+        for _ in range(MAX_IDLE_LOOPS * 4):
+            detail = api("GET", f"/auto/{auto_run_id}")
+            run = detail.get("run") or {}
+            if run.get("status") in ("cancelled", "done", "error"):
+                return
+            if run.get("datasetId"):
+                dataset_id = run["datasetId"]
+                break
+            time.sleep(POLL_SEC)
+    if not dataset_id:
+        raise RuntimeError("no dataset bound; exiting")
 
     protocol = load_protocol()
     ensure_repo()
@@ -188,11 +273,20 @@ def run_loop() -> None:
             print(f"run status={status}; exiting")
             break
 
+        steer = read_steer()
+        if steer:
+            send_message(
+                auto_run_id,
+                f"Acknowledged {len(steer)} instruction(s); factoring into the next trial.",
+            )
+
         sha_before = git_sha()
         hypothesis = (
             f"Autoresearch trial {trial_n + 1}: improve {metric.get('name')} "
             f"({direction}) within mutable paths {protocol.get('mutablePaths')}"
         )
+        if steer:
+            hypothesis = f"{hypothesis} | steer: {' '.join(steer)[:200]}"
         insight = propose_via_prompt(dataset_id, hypothesis)
         if insight:
             hypothesis = f"{hypothesis} | data: {insight[:200]}"

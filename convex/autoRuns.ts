@@ -5,6 +5,7 @@ const autoRunStatus = v.union(
   v.literal("pending"),
   v.literal("provisioning"),
   v.literal("running"),
+  v.literal("awaiting_user"),
   v.literal("paused"),
   v.literal("done"),
   v.literal("error"),
@@ -22,7 +23,9 @@ const trialStatus = v.union(
 
 function mapRun(row: {
   autoRunId: string;
-  datasetId: string;
+  datasetId?: string;
+  boundDatasets?: string[];
+  goal?: string;
   ownerId: string;
   status: string;
   repo: unknown;
@@ -38,6 +41,8 @@ function mapRun(row: {
   return {
     id: row.autoRunId,
     datasetId: row.datasetId,
+    boundDatasets: row.boundDatasets ?? [],
+    goal: row.goal,
     ownerId: row.ownerId,
     status: row.status,
     repo: row.repo,
@@ -49,6 +54,44 @@ function mapRun(row: {
     error: row.error,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+function mapActivity(row: {
+  activityId: string;
+  autoRunId: string;
+  kind: string;
+  message: string;
+  meta?: unknown;
+  createdAt: number;
+}) {
+  return {
+    id: row.activityId,
+    autoRunId: row.autoRunId,
+    kind: row.kind,
+    message: row.message,
+    meta: row.meta,
+    createdAt: row.createdAt,
+  };
+}
+
+function mapMessage(row: {
+  messageId: string;
+  autoRunId: string;
+  role: string;
+  source: string;
+  content: string;
+  meta?: unknown;
+  createdAt: number;
+}) {
+  return {
+    id: row.messageId,
+    autoRunId: row.autoRunId,
+    role: row.role,
+    source: row.source,
+    content: row.content,
+    meta: row.meta,
+    createdAt: row.createdAt,
   };
 }
 
@@ -119,6 +162,8 @@ export const upsertAutoRun = mutation({
   args: {
     autoRunId: v.string(),
     datasetId: v.optional(v.string()),
+    boundDatasets: v.optional(v.array(v.string())),
+    goal: v.optional(v.string()),
     ownerId: v.optional(v.string()),
     status: autoRunStatus,
     repo: v.optional(v.any()),
@@ -138,6 +183,9 @@ export const upsertAutoRun = mutation({
     if (existing) {
       await ctx.db.patch(existing._id, {
         status: args.status,
+        ...(args.datasetId !== undefined ? { datasetId: args.datasetId } : {}),
+        ...(args.boundDatasets !== undefined ? { boundDatasets: args.boundDatasets } : {}),
+        ...(args.goal !== undefined ? { goal: args.goal } : {}),
         ...(args.repo !== undefined ? { repo: args.repo } : {}),
         ...(args.protocol !== undefined ? { protocol: args.protocol } : {}),
         ...(args.box !== undefined ? { box: args.box } : {}),
@@ -149,12 +197,14 @@ export const upsertAutoRun = mutation({
       });
       return;
     }
-    if (!args.datasetId || !args.ownerId || !args.repo || !args.protocol || !args.compute) {
-      throw new Error("create AutoRun requires datasetId, ownerId, repo, protocol, compute");
+    if (!args.ownerId || !args.repo || !args.protocol || !args.compute) {
+      throw new Error("create AutoRun requires ownerId, repo, protocol, compute");
     }
     await ctx.db.insert("autoRuns", {
       autoRunId: args.autoRunId,
       datasetId: args.datasetId,
+      boundDatasets: args.boundDatasets ?? [],
+      goal: args.goal,
       ownerId: args.ownerId,
       status: args.status,
       repo: args.repo,
@@ -166,6 +216,91 @@ export const upsertAutoRun = mutation({
       error: args.error,
       createdAt: now,
       updatedAt: now,
+    });
+  },
+});
+
+/* ── Activity timeline ───────────────────────────────────────────── */
+
+export const listActivity = query({
+  args: { autoRunId: v.string() },
+  handler: async (ctx, { autoRunId }) => {
+    const rows = await ctx.db
+      .query("autoActivity")
+      .withIndex("by_autoRunId", (q) => q.eq("autoRunId", autoRunId))
+      .collect();
+    return rows.map(mapActivity).sort((a, b) => a.createdAt - b.createdAt);
+  },
+});
+
+export const appendActivity = mutation({
+  args: {
+    activityId: v.string(),
+    autoRunId: v.string(),
+    kind: v.union(
+      v.literal("status"),
+      v.literal("dataset_bound"),
+      v.literal("trial"),
+      v.literal("message"),
+      v.literal("box"),
+      v.literal("note"),
+    ),
+    message: v.string(),
+    meta: v.optional(v.any()),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.insert("autoActivity", {
+      activityId: args.activityId,
+      autoRunId: args.autoRunId,
+      kind: args.kind,
+      message: args.message,
+      meta: args.meta,
+      createdAt: Date.now(),
+    });
+  },
+});
+
+/* ── Chat thread ─────────────────────────────────────────────────── */
+
+export const listMessages = query({
+  args: { autoRunId: v.string() },
+  handler: async (ctx, { autoRunId }) => {
+    const rows = await ctx.db
+      .query("autoMessages")
+      .withIndex("by_autoRunId", (q) => q.eq("autoRunId", autoRunId))
+      .collect();
+    return rows.map(mapMessage).sort((a, b) => a.createdAt - b.createdAt);
+  },
+});
+
+export const appendMessage = mutation({
+  args: {
+    messageId: v.string(),
+    autoRunId: v.string(),
+    role: v.union(
+      v.literal("user"),
+      v.literal("assistant"),
+      v.literal("system"),
+      v.literal("tool"),
+    ),
+    source: v.union(
+      v.literal("dashboard"),
+      v.literal("mcp"),
+      v.literal("api"),
+      v.literal("daemon"),
+    ),
+    content: v.string(),
+    meta: v.optional(v.any()),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.insert("autoMessages", {
+      messageId: args.messageId,
+      autoRunId: args.autoRunId,
+      role: args.role,
+      source: args.source,
+      content: args.content,
+      meta: args.meta,
+      createdAt: Date.now(),
     });
   },
 });

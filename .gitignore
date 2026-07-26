@@ -27,3 +27,5 @@ minio-data/
 .pnpm-store/
 .tmp-query-results/
 .vercel/
+.coverage
+*.tsbuildinfo

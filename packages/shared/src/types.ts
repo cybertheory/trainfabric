@@ -248,6 +248,7 @@ export type AutoRunStatus =
   | "pending"
   | "provisioning"
   | "running"
+  | "awaiting_user"
   | "paused"
   | "done"
   | "error"
@@ -274,9 +275,13 @@ export interface AutoBudget {
   maxGpuSec?: number;
 }
 
-/** Immutable after AutoRun start — agent cannot soften the test. */
+/**
+ * Soft protocol: metric/budget/paths are set up front, but `snapshotId` is
+ * bound once the agent (or human) picks a dataset. After the first dataset
+ * bind the snapshot is frozen so trials stay comparable.
+ */
 export interface AutoProtocol {
-  snapshotId: string;
+  snapshotId?: string;
   metric: AutoMetric;
   budget: AutoBudget;
   mutablePaths: string[];
@@ -313,7 +318,12 @@ export interface AutoProgress {
 
 export interface AutoRun {
   id: string;
-  datasetId: string;
+  /** Optional up front — the agent binds datasets at runtime via discovery. */
+  datasetId?: string;
+  /** Datasets the agent has bound (first bind freezes the protocol snapshot). */
+  boundDatasets?: string[];
+  /** Human-set research goal — the agent chooses datasets to pursue it. */
+  goal?: string;
   ownerId: string;
   status: AutoRunStatus;
   repo: AutoRepoBind;
@@ -325,6 +335,43 @@ export interface AutoRun {
   error?: string;
   createdAt: number;
   updatedAt: number;
+}
+
+/* ── Activity timeline + chat thread ─────────────────────────────── */
+
+export type AutoActivityKind =
+  | "status"
+  | "dataset_bound"
+  | "trial"
+  | "message"
+  | "box"
+  | "note";
+
+export interface AutoActivity {
+  id: string;
+  autoRunId: string;
+  kind: AutoActivityKind;
+  message: string;
+  meta?: Record<string, unknown>;
+  createdAt: number;
+}
+
+export type AutoMessageRole = "user" | "assistant" | "system" | "tool";
+export type AutoMessageSource = "dashboard" | "mcp" | "api" | "daemon";
+
+/**
+ * A single message on an AutoRun's conversation thread. The same store backs
+ * the dashboard chat (useChat), REST `/messages`, and MCP `message_auto_agent`
+ * so humans and external/dev agents share one thread.
+ */
+export interface AutoMessage {
+  id: string;
+  autoRunId: string;
+  role: AutoMessageRole;
+  source: AutoMessageSource;
+  content: string;
+  createdAt: number;
+  meta?: Record<string, unknown>;
 }
 
 export interface AutoTrial {
@@ -353,11 +400,30 @@ export interface AutoRunner {
 }
 
 export interface CreateAutoRunRequest {
+  /** Research goal — required in the goal-first flow. */
+  goal?: string;
   repoUrl: string;
   defaultBranch?: string;
+  /** Optional starting-dataset hint; the agent may discover + bind others. */
+  datasetId?: string;
   protocol: AutoProtocol;
   compute: AutoComputeConfig;
   templateId?: string;
+}
+
+export interface BindAutoDatasetRequest {
+  datasetId: string;
+  /** Freeze this snapshot into the protocol (first bind). */
+  snapshotId?: string;
+  /** Why the agent chose it — surfaced in the activity timeline. */
+  reason?: string;
+}
+
+export interface PostAutoMessageRequest {
+  content: string;
+  role?: AutoMessageRole;
+  source?: AutoMessageSource;
+  meta?: Record<string, unknown>;
 }
 
 export interface CompleteAutoTrialRequest {

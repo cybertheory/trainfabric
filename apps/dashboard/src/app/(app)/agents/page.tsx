@@ -24,6 +24,15 @@ function statusVariant(status: string): "default" | "secondary" | "outline" {
   return "outline";
 }
 
+function boundLabel(run: AutoRun): string {
+  const bound = run.boundDatasets ?? (run.datasetId ? [run.datasetId] : []);
+  if (bound.length === 0) {
+    return run.status === "awaiting_user" ? "awaiting your pick" : "choosing dataset…";
+  }
+  if (bound.length === 1) return bound[0];
+  return `${bound.length} datasets`;
+}
+
 export default function AgentsPage() {
   const [runs, setRuns] = useState<AutoRun[]>([]);
   const [prereq, setPrereq] = useState<AutoListResponse["prerequisites"]>();
@@ -54,9 +63,10 @@ export default function AgentsPage() {
             <h1 className="text-2xl font-semibold tracking-tight">Agents</h1>
           </div>
           <p className="max-w-xl text-sm text-muted-foreground">
-            Long-running autoresearch campaigns. Configure a dataset, GitHub repo, and experiment
-            protocol — then start. GPU trials run on Modal or a self-hosted runner; the agent loop
-            runs on Box when a platform Box API key is configured.
+            Long-running autoresearch campaigns. Set a goal, bind a GitHub repo and compute — the
+            agent discovers and binds datasets itself, then chat with it while it runs. GPU trials
+            run on Modal or a self-hosted runner; the agent loop runs on Box when a platform Box API
+            key is configured.
           </p>
         </div>
         <Button asChild>
@@ -123,8 +133,9 @@ export default function AgentsPage() {
             <Bot className="mx-auto h-8 w-8 text-muted-foreground" />
             <h3 className="mt-3 text-base font-medium">No agents yet</h3>
             <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
-              Configure an autoresearch agent: pick a dataset, bind a GitHub repo, freeze an
-              experiment protocol, choose Modal or an HTTP GPU runner — then start.
+              Configure an autoresearch agent: set a goal, bind a GitHub repo, freeze an experiment
+              protocol, choose Modal or an HTTP GPU runner — then start. The agent picks datasets for
+              you.
             </p>
             <Button asChild className="mt-5">
               <Link href="/agents/new">
@@ -143,13 +154,18 @@ export default function AgentsPage() {
                       href={`/auto/${run.id}`}
                       className="truncate font-medium hover:text-primary hover:underline"
                     >
-                      {run.repo.url.replace(/^https?:\/\/(www\.)?github\.com\//, "")}
+                      {run.goal?.trim()
+                        ? run.goal.length > 72
+                          ? `${run.goal.slice(0, 72)}…`
+                          : run.goal
+                        : run.repo.url.replace(/^https?:\/\/(www\.)?github\.com\//, "")}
                     </Link>
                     <Badge variant={statusVariant(run.status)}>{run.status}</Badge>
                   </div>
                   <p className="truncate text-xs text-muted-foreground">
-                    {run.protocol.metric.name} ({run.protocol.metric.direction}) · trial{" "}
-                    {run.progress.trial}/{run.protocol.budget.maxTrials}
+                    {run.repo.url.replace(/^https?:\/\/(www\.)?github\.com\//, "")} · data{" "}
+                    {boundLabel(run)} · {run.protocol.metric.name} ({run.protocol.metric.direction})
+                    · trial {run.progress.trial}/{run.protocol.budget.maxTrials}
                     {run.progress.bestScore != null ? ` · best ${run.progress.bestScore}` : ""}
                     {" · "}
                     {run.compute.provider}

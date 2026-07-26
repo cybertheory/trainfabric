@@ -1,8 +1,10 @@
 /** AutoRun / AutoTrial / AutoRunner persistence (D1 or Convex HTTP). */
 
 import type {
+  AutoActivity,
   AutoBoxState,
   AutoComputeConfig,
+  AutoMessage,
   AutoProgress,
   AutoProtocol,
   AutoRepoBind,
@@ -29,6 +31,10 @@ export interface AutoStore {
   ): Promise<AutoRunner>;
   getAutoRunnerByTokenHash(tokenHash: string): Promise<AutoRunner | null>;
   listAutoRunners(ownerId: string): Promise<AutoRunner[]>;
+  appendActivity(body: Omit<AutoActivity, "createdAt"> & { createdAt?: number }): Promise<AutoActivity>;
+  listActivity(autoRunId: string): Promise<AutoActivity[]>;
+  appendMessage(body: Omit<AutoMessage, "createdAt"> & { createdAt?: number }): Promise<AutoMessage>;
+  listMessages(autoRunId: string): Promise<AutoMessage[]>;
 }
 
 async function ensureAutoSchema(db: D1Database): Promise<void> {
@@ -82,16 +88,54 @@ async function ensureAutoSchema(db: D1Database): Promise<void> {
       )`,
     )
     .run();
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS auto_activity (
+        id TEXT PRIMARY KEY,
+        auto_run_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        message TEXT NOT NULL,
+        meta_json TEXT,
+        created_at INTEGER NOT NULL
+      )`,
+    )
+    .run();
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS auto_messages (
+        id TEXT PRIMARY KEY,
+        auto_run_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        source TEXT NOT NULL,
+        content TEXT NOT NULL,
+        meta_json TEXT,
+        created_at INTEGER NOT NULL
+      )`,
+    )
+    .run();
   await db.prepare(`CREATE INDEX IF NOT EXISTS idx_auto_runs_dataset ON auto_runs(dataset_id)`).run();
+  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_auto_runs_owner ON auto_runs(owner_id)`).run();
   await db.prepare(`CREATE INDEX IF NOT EXISTS idx_auto_trials_run ON auto_trials(auto_run_id)`).run();
   await db.prepare(`CREATE INDEX IF NOT EXISTS idx_auto_trials_status ON auto_trials(status)`).run();
   await db.prepare(`CREATE INDEX IF NOT EXISTS idx_auto_runners_token ON auto_runners(token_hash)`).run();
+  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_auto_activity_run ON auto_activity(auto_run_id)`).run();
+  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_auto_messages_run ON auto_messages(auto_run_id)`).run();
+  // Migrations for goal-first agent-led binding (ignore if column exists).
+  await db.prepare(`ALTER TABLE auto_runs ADD COLUMN goal TEXT`).run().catch(() => undefined);
+  await db
+    .prepare(`ALTER TABLE auto_runs ADD COLUMN bound_datasets_json TEXT`)
+    .run()
+    .catch(() => undefined);
 }
 
 function rowToRun(r: Record<string, unknown>): AutoRun {
   return {
     id: String(r.id),
-    datasetId: String(r.dataset_id),
+    datasetId: r.dataset_id ? String(r.dataset_id) : undefined,
+    boundDatasets: r.bound_datasets_json
+      ? (JSON.parse(String(r.bound_datasets_json)) as string[])
+      : [],
+    goal: r.goal ? String(r.goal) : undefined,
     ownerId: String(r.owner_id),
     status: r.status as AutoRunStatus,
     repo: JSON.parse(String(r.repo_json)) as AutoRepoBind,
@@ -103,6 +147,29 @@ function rowToRun(r: Record<string, unknown>): AutoRun {
     error: r.error ? String(r.error) : undefined,
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
+  };
+}
+
+function rowToActivity(r: Record<string, unknown>): AutoActivity {
+  return {
+    id: String(r.id),
+    autoRunId: String(r.auto_run_id),
+    kind: r.kind as AutoActivity["kind"],
+    message: String(r.message),
+    meta: r.meta_json ? (JSON.parse(String(r.meta_json)) as Record<string, unknown>) : undefined,
+    createdAt: Number(r.created_at),
+  };
+}
+
+function rowToMessage(r: Record<string, unknown>): AutoMessage {
+  return {
+    id: String(r.id),
+    autoRunId: String(r.auto_run_id),
+    role: r.role as AutoMessage["role"],
+    source: r.source as AutoMessage["source"],
+    content: String(r.content),
+    meta: r.meta_json ? (JSON.parse(String(r.meta_json)) as Record<string, unknown>) : undefined,
+    createdAt: Number(r.created_at),
   };
 }
 
@@ -145,10 +212,14 @@ export function createD1AutoStore(db: D1Database): AutoStore {
         const cur = rowToRun(existing as Record<string, unknown>);
         await db
           .prepare(
-            `UPDATE auto_runs SET status=?, repo_json=?, protocol_json=?, box_json=?, compute_json=?,
+            `UPDATE auto_runs SET dataset_id=COALESCE(?, dataset_id), goal=COALESCE(?, goal),
+             bound_datasets_json=?, status=?, repo_json=?, protocol_json=?, box_json=?, compute_json=?,
              progress_json=?, result_ref=COALESCE(?, result_ref), error=?, updated_at=? WHERE id=?`,
           )
           .bind(
+            body.datasetId ?? null,
+            body.goal ?? null,
+            JSON.stringify(body.boundDatasets ?? cur.boundDatasets ?? []),
             body.status,
             JSON.stringify(body.repo ?? cur.repo),
             JSON.stringify(body.protocol ?? cur.protocol),
@@ -163,18 +234,20 @@ export function createD1AutoStore(db: D1Database): AutoStore {
           .run();
         return;
       }
-      if (!body.datasetId || !body.ownerId || !body.repo || !body.protocol || !body.compute) {
-        throw new Error("create AutoRun requires datasetId, ownerId, repo, protocol, compute");
+      if (!body.ownerId || !body.repo || !body.protocol || !body.compute) {
+        throw new Error("create AutoRun requires ownerId, repo, protocol, compute");
       }
       await db
         .prepare(
           `INSERT INTO auto_runs
-           (id, dataset_id, owner_id, status, repo_json, protocol_json, box_json, compute_json, progress_json, result_ref, error, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, dataset_id, goal, bound_datasets_json, owner_id, status, repo_json, protocol_json, box_json, compute_json, progress_json, result_ref, error, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           body.id,
-          body.datasetId,
+          body.datasetId ?? "",
+          body.goal ?? null,
+          JSON.stringify(body.boundDatasets ?? []),
           body.ownerId,
           body.status,
           JSON.stringify(body.repo),
@@ -359,6 +432,65 @@ export function createD1AutoStore(db: D1Database): AutoStore {
         .all();
       return (results ?? []).map((r) => rowToRunner(r as Record<string, unknown>));
     },
+
+    async appendActivity(body) {
+      await ensureAutoSchema(db);
+      const createdAt = body.createdAt ?? Date.now();
+      await db
+        .prepare(
+          `INSERT INTO auto_activity (id, auto_run_id, kind, message, meta_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          body.id,
+          body.autoRunId,
+          body.kind,
+          body.message,
+          body.meta ? JSON.stringify(body.meta) : null,
+          createdAt,
+        )
+        .run();
+      return { ...body, createdAt };
+    },
+
+    async listActivity(autoRunId) {
+      await ensureAutoSchema(db);
+      const { results } = await db
+        .prepare("SELECT * FROM auto_activity WHERE auto_run_id = ? ORDER BY created_at ASC")
+        .bind(autoRunId)
+        .all();
+      return (results ?? []).map((r) => rowToActivity(r as Record<string, unknown>));
+    },
+
+    async appendMessage(body) {
+      await ensureAutoSchema(db);
+      const createdAt = body.createdAt ?? Date.now();
+      await db
+        .prepare(
+          `INSERT INTO auto_messages (id, auto_run_id, role, source, content, meta_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          body.id,
+          body.autoRunId,
+          body.role,
+          body.source,
+          body.content,
+          body.meta ? JSON.stringify(body.meta) : null,
+          createdAt,
+        )
+        .run();
+      return { ...body, createdAt };
+    },
+
+    async listMessages(autoRunId) {
+      await ensureAutoSchema(db);
+      const { results } = await db
+        .prepare("SELECT * FROM auto_messages WHERE auto_run_id = ? ORDER BY created_at ASC")
+        .bind(autoRunId)
+        .all();
+      return (results ?? []).map((r) => rowToMessage(r as Record<string, unknown>));
+    },
   };
 }
 
@@ -385,6 +517,8 @@ function createConvexAutoStore(baseUrl: string, serviceKey: string): AutoStore {
       await post("/api/auto/runs/upsert", {
         autoRunId: body.id,
         datasetId: body.datasetId,
+        boundDatasets: body.boundDatasets,
+        goal: body.goal,
         ownerId: body.ownerId,
         status: body.status,
         repo: body.repo,
@@ -429,6 +563,31 @@ function createConvexAutoStore(baseUrl: string, serviceKey: string): AutoStore {
     getAutoRunnerByTokenHash: (tokenHash) =>
       post("/api/auto/runners/by-token", { tokenHash }),
     listAutoRunners: (ownerId) => post("/api/auto/runners/list", { ownerId }),
+    async appendActivity(body) {
+      const createdAt = body.createdAt ?? Date.now();
+      await post("/api/auto/activity/append", {
+        activityId: body.id,
+        autoRunId: body.autoRunId,
+        kind: body.kind,
+        message: body.message,
+        meta: body.meta,
+      });
+      return { ...body, createdAt };
+    },
+    listActivity: (autoRunId) => post("/api/auto/activity/list", { autoRunId }),
+    async appendMessage(body) {
+      const createdAt = body.createdAt ?? Date.now();
+      await post("/api/auto/messages/append", {
+        messageId: body.id,
+        autoRunId: body.autoRunId,
+        role: body.role,
+        source: body.source,
+        content: body.content,
+        meta: body.meta,
+      });
+      return { ...body, createdAt };
+    },
+    listMessages: (autoRunId) => post("/api/auto/messages/list", { autoRunId }),
   };
 }
 

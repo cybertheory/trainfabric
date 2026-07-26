@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import type { QueryRequest, Visibility } from "@trainfabric/shared";
 import {
   resolveQuery,
+  authorizeDataset,
   AuthError,
   NotFoundError,
   FilterValidationError,
@@ -18,6 +19,7 @@ import {
 } from "./compute";
 import type { ComputeContainer } from "./ComputeContainer";
 import { verifyClerkJwt } from "./auth";
+import { mintAgentToken, verifyAgentToken, agentHasReadScope } from "./agentToken";
 import { publicResultUrl, putStaging, objectKeyFromUri } from "./r2";
 import {
   parseSourceUrl,
@@ -34,20 +36,25 @@ import { WarmRouterDO } from "./WarmRouterDO";
 import { ComputeContainer as ComputeContainerClass } from "./ComputeContainer";
 import { autoConnect, createSocialStore } from "./social";
 import type {
+  BindAutoDatasetRequest,
   CompleteAutoTrialRequest,
   CreateAutoRunRequest,
   CreateSocialPostRequest,
+  PostAutoMessageRequest,
   RegisterRunnerRequest,
 } from "@trainfabric/shared";
 import { createAutoStore } from "./autoStore";
 import { boxClientFromEnv } from "./box";
 import {
   authRunner,
+  bindDataset,
   cancelAutoRun,
   completeTrial,
   createAutoRun,
   enqueueTrial,
+  logActivity,
   pauseAutoRun,
+  postAutoMessage,
   registerRunner,
   resumeAutoRun,
 } from "./auto";
@@ -102,6 +109,10 @@ export interface Env {
   MODAL_API_BASE?: string;
   /** Public router origin for trial callbacks / Box env */
   PUBLIC_API_URL?: string;
+  /** Public API base for Hermes tf CLI (same origin as this Worker). */
+  PUBLIC_API_BASE?: string;
+  /** HS256 secret for short-lived Hermes agent tokens. */
+  AGENT_TOKEN_SECRET?: string;
 }
 
 function computeUrlFor(env: Env): string {
@@ -119,7 +130,7 @@ function identityOrAnon(
   return null;
 }
 
-type Variables = { identity: Identity | null };
+type Variables = { identity: Identity | null; authVia: "clerk" | "agent" | null };
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -139,13 +150,32 @@ app.use(
 );
 
 app.use("*", async (c, next) => {
-  const identity = await verifyClerkJwt(c.req.header("Authorization"), {
+  const auth = c.req.header("Authorization");
+  let identity = await verifyClerkJwt(auth, {
     CLERK_JWT_ISSUER: c.env.CLERK_JWT_ISSUER,
     CLERK_JWT_AUDIENCE: c.env.CLERK_JWT_AUDIENCE,
   });
+  let authVia: "clerk" | "agent" | null = identity ? "clerk" : null;
+  if (!identity) {
+    const agent = await verifyAgentToken(auth, c.env.AGENT_TOKEN_SECRET);
+    if (agent && agentHasReadScope(agent.scope)) {
+      identity = { subject: agent.subject, email: agent.email };
+      authVia = "agent";
+    }
+  }
   c.set("identity", identity);
+  c.set("authVia", authVia);
   await next();
 });
+
+function requireClerkIdentity(c: { get: (k: "identity" | "authVia") => Identity | null | "clerk" | "agent" | null; env: Env }) {
+  const identity = identityOrAnon(c.get("identity") as Identity | null, c.env);
+  if (!identity) return { error: "Unauthorized" as const, status: 401 as const };
+  if (c.get("authVia") === "agent") {
+    return { error: "Agent tokens are read-only; use a Clerk session for writes" as const, status: 403 as const };
+  }
+  return { identity };
+}
 
 function depsFrom(c: { env: Env; req: { url: string } }): ResolverDeps {
   const registry = createRegistry(c.env);
@@ -216,6 +246,37 @@ function errResponse(e: unknown): Response {
   return Response.json({ error: msg }, { status: 500 });
 }
 
+/**
+ * Emit a Vercel AI SDK UI message stream (v5 SSE protocol) for `useChat`.
+ * Chunks the assistant reply into text-deltas so the client renders progressively.
+ */
+function streamAiMessage(messageId: string, text: string): Response {
+  const encoder = new TextEncoder();
+  const send = (obj: unknown) => encoder.encode(`data: ${JSON.stringify(obj)}\n\n`);
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(send({ type: "start" }));
+      controller.enqueue(send({ type: "text-start", id: messageId }));
+      const words = text.split(/(\s+)/);
+      for (const w of words) {
+        if (w) controller.enqueue(send({ type: "text-delta", id: messageId, delta: w }));
+      }
+      controller.enqueue(send({ type: "text-end", id: messageId }));
+      controller.enqueue(send({ type: "finish" }));
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+      "x-vercel-ai-ui-message-stream": "v1",
+    },
+  });
+}
+
 app.get("/health", (c) =>
   c.json({
     status: "ok",
@@ -223,6 +284,17 @@ app.get("/health", (c) =>
     compute: c.env.COMPUTE_URL ? "http" : c.env.COMPUTE ? "container" : "none",
   }),
 );
+
+/** Identity echo for tf whoami (Clerk session or agent token). */
+app.get("/auth/whoami", (c) => {
+  const identity = identityOrAnon(c.get("identity"), c.env);
+  if (!identity) return c.json({ error: "Unauthorized" }, 401);
+  return c.json({
+    subject: identity.subject,
+    email: identity.email ?? null,
+    authVia: c.get("authVia") ?? (identity.subject === "anon" ? "anon" : null),
+  });
+});
 
 app.post("/admin/seed", async (c) => {
   try {
@@ -705,14 +777,32 @@ app.post("/datasets/:id/prompt", async (c) => {
     };
     if (!body.prompt?.trim()) return c.json({ error: "prompt required" }, 400);
 
+    const identity = identityOrAnon(c.get("identity"), c.env) ?? { subject: "anon" };
+    const apiBase =
+      c.env.PUBLIC_API_BASE?.replace(/\/$/, "") ||
+      c.env.PUBLIC_API_URL?.replace(/\/$/, "") ||
+      new URL(c.req.url).origin;
+    let authToken: string | undefined;
+    if (c.env.AGENT_TOKEN_SECRET) {
+      authToken = await mintAgentToken(identity, {
+        secret: c.env.AGENT_TOKEN_SECRET,
+        datasetId: ds.id,
+      });
+    }
+
     const compute = createComputeClientFromEnv(c.env);
     const out = await compute.prompt({
       prompt: body.prompt,
       dataset_id: ds.icebergTable ?? ds.id,
+      public_dataset_id: ds.id,
       namespace: body.namespace ?? ds.icebergNamespace ?? "default",
       execute: body.execute !== false,
       snapshot: body.snapshot,
       max_steps: body.max_steps,
+      auth_token: authToken,
+      api_base: apiBase,
+      user_id: identity.subject,
+      user_email: identity.email,
     });
     return c.json(out);
   } catch (e) {
@@ -722,8 +812,9 @@ app.post("/datasets/:id/prompt", async (c) => {
 
 app.post("/datasets", async (c) => {
   try {
-    const identity = identityOrAnon(c.get("identity"), c.env);
-    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const gated = requireClerkIdentity(c);
+    if ("error" in gated) return c.json({ error: gated.error }, gated.status);
+    const identity = gated.identity;
 
     const contentType = c.req.header("content-type") ?? "";
     let meta: {
@@ -1289,6 +1380,39 @@ app.get("/datasets/:id/auto", async (c) => {
   }
 });
 
+app.post("/auto", async (c) => {
+  try {
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const body = (await c.req.json()) as CreateAutoRunRequest;
+    // If a dataset hint is given, authorize it.
+    if (body.datasetId) {
+      const deps = depsFrom(c);
+      const ds = await deps.getDataset(body.datasetId);
+      if (ds) {
+        const { authorizeDataset } = await import("./resolver");
+        authorizeDataset(ds, identity);
+      }
+    }
+    const store = createAutoStore(c.env);
+    const box = boxClientFromEnv(c.env);
+    const origin = c.env.PUBLIC_API_URL || new URL(c.req.url).origin;
+    const run = await createAutoRun({
+      store,
+      box,
+      datasetId: body.datasetId,
+      ownerId: identity.subject,
+      body,
+      tfApiUrl: origin,
+      campaignToken: c.req.header("Authorization")?.replace(/^Bearer\s+/i, "") || "anon",
+      env: c.env,
+    });
+    return c.json(run, 201);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
 app.get("/auto", async (c) => {
   try {
     const identity = identityOrAnon(c.get("identity"), c.env);
@@ -1315,7 +1439,11 @@ app.get("/auto/:id", async (c) => {
     const store = createAutoStore(c.env);
     const run = await store.getAutoRun(c.req.param("id"));
     if (!run) return c.json({ error: "Not found" }, 404);
-    const trials = await store.listAutoTrials(run.id);
+    const [trials, activity, messages] = await Promise.all([
+      store.listAutoTrials(run.id),
+      store.listActivity(run.id).catch(() => []),
+      store.listMessages(run.id).catch(() => []),
+    ]);
     let events: unknown[] = [];
     const box = boxClientFromEnv(c.env);
     if (box && run.box.boxId && !run.box.boxId.startsWith("stub_")) {
@@ -1332,7 +1460,115 @@ app.get("/auto/:id", async (c) => {
         /* optional */
       }
     }
-    return c.json({ run, trials, events });
+    return c.json({
+      run,
+      trials,
+      activity,
+      boundDatasets: run.boundDatasets ?? [],
+      messages: messages.slice(-30),
+      events,
+    });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.post("/auto/:id/bind-dataset", async (c) => {
+  try {
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const store = createAutoStore(c.env);
+    const run = await store.getAutoRun(c.req.param("id"));
+    if (!run) return c.json({ error: "Not found" }, 404);
+    const isOwner = run.ownerId === identity.subject || identity.subject === "anon";
+    const body = (await c.req.json()) as BindAutoDatasetRequest;
+    if (!body.datasetId) return c.json({ error: "datasetId required" }, 400);
+    // Resolve snapshot from dataset if not supplied, and authorize access.
+    const deps = depsFrom(c);
+    const ds = await deps.getDataset(body.datasetId);
+    if (!ds) return c.json({ error: "Dataset not found" }, 404);
+    const { authorizeDataset } = await import("./resolver");
+    authorizeDataset(ds, identity);
+    const snapshotId = body.snapshotId || ds.latestSnapshotId || undefined;
+    const next = await bindDataset({
+      store,
+      run,
+      body: { ...body, snapshotId },
+      boundBy: isOwner ? "user" : "agent",
+    });
+    return c.json(next);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.get("/auto/:id/messages", async (c) => {
+  try {
+    const store = createAutoStore(c.env);
+    const run = await store.getAutoRun(c.req.param("id"));
+    if (!run) return c.json({ error: "Not found" }, 404);
+    const messages = await store.listMessages(run.id);
+    const limit = Number(c.req.query("limit") ?? 200);
+    return c.json({ messages: messages.slice(-Math.max(1, limit)) });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.post("/auto/:id/messages", async (c) => {
+  try {
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const store = createAutoStore(c.env);
+    const run = await store.getAutoRun(c.req.param("id"));
+    if (!run) return c.json({ error: "Not found" }, 404);
+    const body = (await c.req.json()) as PostAutoMessageRequest;
+    const out = await postAutoMessage({
+      store,
+      box: boxClientFromEnv(c.env),
+      run,
+      content: String(body.content ?? ""),
+      role: body.role,
+      source: body.source ?? "api",
+      meta: body.meta,
+      ai: c.env.AI,
+    });
+    return c.json(out, 201);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+// AI SDK UI message stream (data stream protocol) for useChat.
+app.post("/auto/:id/messages/stream", async (c) => {
+  try {
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const store = createAutoStore(c.env);
+    const run = await store.getAutoRun(c.req.param("id"));
+    if (!run) return c.json({ error: "Not found" }, 404);
+    const body = (await c.req.json()) as {
+      messages?: Array<{ role: string; content?: string; parts?: Array<{ type: string; text?: string }> }>;
+      content?: string;
+    };
+    // useChat sends the full message list; take the last user message.
+    let content = body.content ?? "";
+    if (!content && Array.isArray(body.messages)) {
+      const last = [...body.messages].reverse().find((m) => m.role === "user");
+      content =
+        last?.content ??
+        last?.parts?.filter((p) => p.type === "text").map((p) => p.text ?? "").join("") ??
+        "";
+    }
+    const out = await postAutoMessage({
+      store,
+      box: boxClientFromEnv(c.env),
+      run,
+      content,
+      source: "dashboard",
+      ai: c.env.AI,
+    });
+    return streamAiMessage(out.assistantMessage.id, out.assistantMessage.content);
   } catch (e) {
     return errResponse(e);
   }
@@ -1695,13 +1931,30 @@ function buildMcpContext(c: {
       }
       const ds = await deps.getDataset(args.dataset_id);
       if (!ds) throw new NotFoundError();
+      const id = identity ?? { subject: "anon" };
+      const apiBase =
+        c.env.PUBLIC_API_BASE?.replace(/\/$/, "") ||
+        c.env.PUBLIC_API_URL?.replace(/\/$/, "") ||
+        new URL(c.req.url).origin;
+      let authToken: string | undefined;
+      if (c.env.AGENT_TOKEN_SECRET) {
+        authToken = await mintAgentToken(id, {
+          secret: c.env.AGENT_TOKEN_SECRET,
+          datasetId: ds.id,
+        });
+      }
       const compute = createComputeClientFromEnv(c.env);
       return compute.prompt({
         prompt: args.prompt,
         dataset_id: ds.icebergTable ?? ds.id,
+        public_dataset_id: ds.id,
         namespace: args.namespace ?? ds.icebergNamespace ?? "default",
         execute: args.execute !== false,
         snapshot: args.snapshot,
+        auth_token: authToken,
+        api_base: apiBase,
+        user_id: id.subject,
+        user_email: id.email,
       });
     },
     autoConnect: async (datasetId, source) => {
@@ -1750,8 +2003,10 @@ function buildMcpContext(c: {
         datasetId: args.dataset_id,
         ownerId: identity.subject,
         body: {
+          goal: args.goal,
           repoUrl: args.repo_url,
           defaultBranch: args.default_branch,
+          datasetId: args.dataset_id,
           protocol: args.protocol,
           compute: args.compute,
           templateId: args.template_id,
@@ -1765,8 +2020,11 @@ function buildMcpContext(c: {
       const store = createAutoStore(c.env);
       const run = await store.getAutoRun(autoRunId);
       if (!run) throw new NotFoundError();
-      const trials = await store.listAutoTrials(run.id);
-      return { run, trials };
+      const [trials, activity] = await Promise.all([
+        store.listAutoTrials(run.id),
+        store.listActivity(run.id).catch(() => []),
+      ]);
+      return { run, trials, activity, boundDatasets: run.boundDatasets ?? [] };
     },
     listAutoRuns: async (datasetId) => {
       const store = createAutoStore(c.env);
@@ -1784,6 +2042,42 @@ function buildMcpContext(c: {
       if (action === "resume") return resumeAutoRun(store, box, run);
       if (action === "cancel") return cancelAutoRun(store, box, run);
       return pauseAutoRun(store, box, run);
+    },
+    bindAutoDataset: async (autoRunId, datasetId, reason) => {
+      const store = createAutoStore(c.env);
+      const run = await store.getAutoRun(autoRunId);
+      if (!run) throw new NotFoundError();
+      const ds = await deps.getDataset(datasetId);
+      if (!ds) throw new NotFoundError();
+      authorizeDataset(ds, identity);
+      const boundBy =
+        run.ownerId === identity?.subject || identity?.subject === "anon" ? "user" : "agent";
+      return bindDataset({
+        store,
+        run,
+        body: { datasetId, snapshotId: ds.latestSnapshotId ?? undefined, reason },
+        boundBy,
+      });
+    },
+    messageAutoAgent: async (autoRunId, message) => {
+      const store = createAutoStore(c.env);
+      const run = await store.getAutoRun(autoRunId);
+      if (!run) throw new NotFoundError();
+      return postAutoMessage({
+        store,
+        box: boxClientFromEnv(c.env),
+        run,
+        content: message,
+        source: "mcp",
+        ai: c.env.AI,
+      });
+    },
+    listAutoMessages: async (autoRunId, limit) => {
+      const store = createAutoStore(c.env);
+      const run = await store.getAutoRun(autoRunId);
+      if (!run) throw new NotFoundError();
+      const messages = await store.listMessages(run.id);
+      return messages.slice(-Math.max(1, limit ?? 50));
     },
     ai: c.env.AI,
     vectorize: c.env.VECTORIZE,
@@ -1819,13 +2113,18 @@ export default {
     // Proper MCP (Streamable HTTP) — agents createMcpHandler + MCP SDK
     if (path === "/mcp" || path.startsWith("/mcp/")) {
       return handleTrainfabricMcp(request, env, ctx, async (req) => {
-        const identity = identityOrAnon(
-          await verifyClerkJwt(req.headers.get("Authorization"), {
-            CLERK_JWT_ISSUER: env.CLERK_JWT_ISSUER,
-            CLERK_JWT_AUDIENCE: env.CLERK_JWT_AUDIENCE,
-          }),
-          env,
-        );
+        const auth = req.headers.get("Authorization");
+        let identity = await verifyClerkJwt(auth, {
+          CLERK_JWT_ISSUER: env.CLERK_JWT_ISSUER,
+          CLERK_JWT_AUDIENCE: env.CLERK_JWT_AUDIENCE,
+        });
+        if (!identity) {
+          const agent = await verifyAgentToken(auth, env.AGENT_TOKEN_SECRET);
+          if (agent && agentHasReadScope(agent.scope)) {
+            identity = { subject: agent.subject, email: agent.email };
+          }
+        }
+        identity = identityOrAnon(identity, env);
         return buildMcpContext({
           env,
           get: () => identity,
@@ -1836,6 +2135,7 @@ export default {
 
     const isApi =
       path === "/health" ||
+      path === "/auth/whoami" ||
       path.startsWith("/admin/") ||
       path.startsWith("/jobs/") ||
       path === "/auto" ||

@@ -8,6 +8,7 @@ import type {
   DatasetConnection,
   CreateAutoRunRequest,
   AutoRun,
+  AutoMessage,
 } from "@trainfabric/shared";
 import type { Identity, ResolverDeps, DatasetRecord } from "./resolver";
 import { resolveQuery, authorizeDataset, AuthError, NotFoundError } from "./resolver";
@@ -55,7 +56,8 @@ export interface McpContext {
   listFeed?: (limit?: number) => Promise<SocialPost[]>;
   listConnections?: () => Promise<DatasetConnection[]>;
   startAuto?: (args: {
-    dataset_id: string;
+    goal?: string;
+    dataset_id?: string;
     repo_url: string;
     default_branch?: string;
     protocol: CreateAutoRunRequest["protocol"];
@@ -65,6 +67,16 @@ export interface McpContext {
   checkAuto?: (auto_run_id: string) => Promise<unknown>;
   listAutoRuns?: (dataset_id: string) => Promise<AutoRun[]>;
   pauseAuto?: (auto_run_id: string, action?: "pause" | "resume" | "cancel") => Promise<AutoRun>;
+  bindAutoDataset?: (
+    auto_run_id: string,
+    dataset_id: string,
+    reason?: string,
+  ) => Promise<AutoRun>;
+  messageAutoAgent?: (
+    auto_run_id: string,
+    message: string,
+  ) => Promise<{ userMessage: AutoMessage; assistantMessage: AutoMessage }>;
+  listAutoMessages?: (auto_run_id: string, limit?: number) => Promise<AutoMessage[]>;
   ai?: unknown;
   vectorize?: unknown;
 }
@@ -274,17 +286,18 @@ export const MCP_TOOLS = [
   {
     name: "start_auto",
     description:
-      "Start a long-running autoresearch AutoRun on a dataset (Box sandbox + Modal/HTTP GPU). Requires GitHub repo + immutable experiment protocol. Does not replace prompt_query.",
+      "Start a long-running autoresearch AutoRun (Box sandbox + Modal/HTTP GPU). Goal-first: pass a `goal` and the agent discovers + binds datasets itself (dataset_id optional). Requires a GitHub repo + experiment protocol (metric, budget, mutable/immutable paths). Does not replace prompt_query.",
     inputSchema: {
       type: "object",
       properties: {
-        dataset_id: { type: "string" },
+        goal: { type: "string", description: "Research goal — the agent chooses datasets to pursue it" },
+        dataset_id: { type: "string", description: "Optional starting-dataset hint" },
         repo_url: { type: "string" },
         default_branch: { type: "string" },
         protocol: {
           type: "object",
           description:
-            "{ snapshotId, metric:{name,direction}, budget:{maxTrials,maxWallClockSec}, mutablePaths, immutablePaths }",
+            "{ metric:{name,direction}, budget:{maxTrials,maxWallClockSec}, mutablePaths, immutablePaths } — snapshotId is bound when a dataset is chosen",
         },
         compute: {
           type: "object",
@@ -292,7 +305,46 @@ export const MCP_TOOLS = [
         },
         template_id: { type: "string" },
       },
-      required: ["dataset_id", "repo_url", "protocol", "compute"],
+      required: ["repo_url", "protocol", "compute"],
+    },
+  },
+  {
+    name: "bind_auto_dataset",
+    description:
+      "Bind a dataset the agent discovered (or the user confirmed) to an AutoRun. The first bind freezes the protocol snapshot so trials stay comparable, and moves an awaiting_user run into running.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        auto_run_id: { type: "string" },
+        dataset_id: { type: "string" },
+        reason: { type: "string", description: "Why this dataset fits the goal" },
+      },
+      required: ["auto_run_id", "dataset_id"],
+    },
+  },
+  {
+    name: "message_auto_agent",
+    description:
+      "Send a message to a long-running cloud AutoRun agent and get its reply. Same conversation thread as the dashboard chat — use this so your (dev/Cursor) agent can steer or ask a cloud AutoRun. Persisted for all clients.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        auto_run_id: { type: "string" },
+        message: { type: "string" },
+      },
+      required: ["auto_run_id", "message"],
+    },
+  },
+  {
+    name: "list_auto_messages",
+    description: "Read an AutoRun's conversation thread (poll for new messages).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        auto_run_id: { type: "string" },
+        limit: { type: "number" },
+      },
+      required: ["auto_run_id"],
     },
   },
   {
@@ -530,23 +582,66 @@ export async function handleMcpTool(
     case "start_auto": {
       if (!ctx.identity) throw new AuthError("Auth required to start AutoRun");
       if (!ctx.startAuto) throw new Error("Auto store not configured");
-      const id = String(args.dataset_id);
-      const ds = await ctx.deps.getDataset(id);
-      if (!ds) throw new NotFoundError();
-      authorizeDataset(ds, ctx.identity);
+      const goal = args.goal as string | undefined;
+      const datasetId = args.dataset_id ? String(args.dataset_id) : undefined;
+      if (!goal && !datasetId) throw new Error("Provide a goal (goal-first) or a dataset_id hint");
+      if (datasetId) {
+        const ds = await ctx.deps.getDataset(datasetId);
+        if (!ds) throw new NotFoundError();
+        authorizeDataset(ds, ctx.identity);
+      }
       const run = await ctx.startAuto({
-        dataset_id: id,
+        goal,
+        dataset_id: datasetId,
         repo_url: String(args.repo_url),
         default_branch: args.default_branch as string | undefined,
         protocol: args.protocol as CreateAutoRunRequest["protocol"],
         compute: args.compute as CreateAutoRunRequest["compute"],
         template_id: args.template_id as string | undefined,
       });
-      await ctx.autoConnect?.(id, "agent");
+      if (datasetId) await ctx.autoConnect?.(datasetId, "agent");
       return ok({
         run,
-        next: `Poll check_auto with auto_run_id="${run.id}". Share findings with post_social_update.`,
+        next: datasetId
+          ? `Poll check_auto with auto_run_id="${run.id}". The agent will run trials.`
+          : `Poll check_auto with auto_run_id="${run.id}". The agent will discover_datasets and bind_auto_dataset for goal "${goal}".`,
       });
+    }
+    case "bind_auto_dataset": {
+      if (!ctx.identity) throw new AuthError("Auth required");
+      if (!ctx.bindAutoDataset) throw new Error("Auto store not configured");
+      const datasetId = String(args.dataset_id);
+      const ds = await ctx.deps.getDataset(datasetId);
+      if (!ds) throw new NotFoundError();
+      authorizeDataset(ds, ctx.identity);
+      const run = await ctx.bindAutoDataset(
+        String(args.auto_run_id),
+        datasetId,
+        args.reason as string | undefined,
+      );
+      await ctx.autoConnect?.(datasetId, "agent");
+      return ok({ run, next: `Dataset bound. Poll check_auto with auto_run_id="${run.id}".` });
+    }
+    case "message_auto_agent": {
+      if (!ctx.identity) throw new AuthError("Auth required");
+      if (!ctx.messageAutoAgent) throw new Error("Auto store not configured");
+      const message = String(args.message ?? "").trim();
+      if (!message) throw new Error("message required");
+      const out = await ctx.messageAutoAgent(String(args.auto_run_id), message);
+      return ok({
+        reply: out.assistantMessage.content,
+        userMessage: out.userMessage,
+        assistantMessage: out.assistantMessage,
+        next: "Poll list_auto_messages for further replies as the agent works.",
+      });
+    }
+    case "list_auto_messages": {
+      if (!ctx.listAutoMessages) throw new Error("Auto store not configured");
+      const messages = await ctx.listAutoMessages(
+        String(args.auto_run_id),
+        args.limit as number | undefined,
+      );
+      return ok({ messages });
     }
     case "check_auto": {
       if (!ctx.checkAuto) throw new Error("Auto store not configured");

@@ -55,10 +55,13 @@ Works with Cursor, Claude, MCP Inspector, and any Streamable HTTP MCP client. No
 | `preview_derived` | Preview a derived spec |
 | `get_lineage` | Upstream / downstream lineage |
 | `prompt_query` | Natural-language slice via Hermes + DuckDB skill |
-| `start_auto` | Start long-running autoresearch (Box + Modal/HTTP GPU) |
-| `check_auto` | Poll AutoRun status + trials |
+| `start_auto` | Start long-running autoresearch — goal-first, agent binds datasets (Box + Modal/HTTP GPU) |
+| `check_auto` | Poll AutoRun status + trials + activity + bound datasets |
 | `list_auto_runs` | List AutoRuns for a dataset |
 | `pause_auto` | Pause / resume / cancel an AutoRun |
+| `bind_auto_dataset` | Bind a discovered/confirmed dataset (freezes the snapshot) |
+| `message_auto_agent` | Chat with a running cloud AutoRun (same thread as the dashboard) |
+| `list_auto_messages` | Read the AutoRun conversation thread |
 | `post_social_update` | Publish a research finding / update to a dataset community (**auth required**) |
 | `connect_dataset` | Connect (subscribe) the user to a dataset |
 | `list_social_feed` | Recent community updates for connected datasets |
@@ -86,10 +89,20 @@ REST equivalent: `POST /datasets/:id/prompt` with `{ "prompt": "...", "execute":
 
 Long campaigns are a separate primitive from `prompt_query`:
 
-1. Control plane creates an **AutoRun** with an immutable experiment protocol (frozen snapshot, metric, budget, mutable/immutable paths).
-2. A [Box](https://box.ascii.dev/) sandbox is forked from a template and runs the Trainfabric autorunner daemon (git + `/prompt` + trial enqueue).
+1. Control plane creates an **AutoRun** from a **goal** + repo + compute. The experiment protocol (metric, budget, mutable/immutable paths) is fixed up front; the dataset snapshot is frozen when the agent binds a dataset.
+2. A [Box](https://box.ascii.dev/) sandbox is forked from a template and runs the Trainfabric autorunner daemon: it `discover_datasets` → `bind_auto_dataset` → git + `/prompt` + trial enqueue → keep/revert.
 3. GPU trials go to **Modal** or a self-hosted **HTTP runner** (`POST /runners/register`, poll `/runners/claim`). No SSH.
 
-REST: `POST /datasets/:id/auto`, `GET /auto/:id`, dashboard monitor at `/auto/:id`.
+### Chat with a cloud agent
+
+Humans (dashboard) and external/dev agents (MCP/REST) share **one** conversation thread per AutoRun:
+
+- Dashboard: the monitor at `/auto/:id` embeds a Vercel AI SDK `useChat` panel streaming from `POST /auto/:id/messages/stream`.
+- External agents: `message_auto_agent({ auto_run_id, message })` + `list_auto_messages({ auto_run_id })`.
+- REST: `GET /auto/:id/messages`, `POST /auto/:id/messages`.
+
+Messages are injected into the running Box agent (daemon chat endpoint or steer inbox) and every reply is persisted, so all clients see the same history.
+
+REST: `POST /auto` (goal-first create), `POST /auto/:id/bind-dataset`, `GET /auto/:id`, dashboard monitor at `/auto/:id`.
 
 See `services/autorunner/README.md` for the daemon and GPU worker image.

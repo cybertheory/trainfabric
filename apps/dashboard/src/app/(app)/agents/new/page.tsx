@@ -1,12 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Bot, Check, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import type { AutoRun, DatasetMeta } from "@trainfabric/shared";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,7 +14,7 @@ import { apiFetch } from "@/lib/api";
 import { useJobTracker } from "@/lib/job-tracker";
 import { cn } from "@/lib/utils";
 
-const STEPS = ["Dataset", "Repo & protocol", "Compute", "Review"] as const;
+const STEPS = ["Goal", "Repo & protocol", "Compute", "Review"] as const;
 
 type Prereq = {
   boxConfigured: boolean;
@@ -24,15 +23,24 @@ type Prereq = {
 };
 
 export default function NewAgentPage() {
+  return (
+    <Suspense fallback={null}>
+      <NewAgentWizard />
+    </Suspense>
+  );
+}
+
+function NewAgentWizard() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { trackAutoRun } = useJobTracker();
   const [step, setStep] = useState(0);
   const [datasets, setDatasets] = useState<DatasetMeta[]>([]);
   const [prereq, setPrereq] = useState<Prereq | null>(null);
-  const [loadingDatasets, setLoadingDatasets] = useState(true);
   const [starting, setStarting] = useState(false);
 
-  const [datasetId, setDatasetId] = useState("");
+  const [goal, setGoal] = useState("");
+  const [datasetHint, setDatasetHint] = useState(searchParams.get("dataset") ?? ""); // optional — "" means agent chooses
   const [repoUrl, setRepoUrl] = useState("");
   const [branch, setBranch] = useState("main");
   const [metric, setMetric] = useState("val_bpb");
@@ -46,28 +54,22 @@ export default function NewAgentPage() {
   const [runnerId, setRunnerId] = useState("");
 
   useEffect(() => {
-    setLoadingDatasets(true);
     Promise.all([
-      apiFetch<{ datasets: DatasetMeta[] }>("/datasets"),
+      apiFetch<{ datasets: DatasetMeta[] }>("/datasets").catch(() => ({ datasets: [] })),
       apiFetch<{ prerequisites?: Prereq }>("/auto").catch(() => ({ prerequisites: undefined })),
-    ])
-      .then(([ds, auto]) => {
-        setDatasets(ds.datasets ?? []);
-        if (auto.prerequisites) setPrereq(auto.prerequisites);
-      })
-      .catch(() => setDatasets([]))
-      .finally(() => setLoadingDatasets(false));
+    ]).then(([ds, auto]) => {
+      setDatasets(ds.datasets ?? []);
+      if (auto.prerequisites) setPrereq(auto.prerequisites);
+    });
   }, []);
 
-  const selected = useMemo(
-    () => datasets.find((d) => d.id === datasetId) ?? null,
-    [datasets, datasetId],
+  const selectedHint = useMemo(
+    () => datasets.find((d) => d.id === datasetHint) ?? null,
+    [datasets, datasetHint],
   );
 
-  const snapshotId = selected?.latestSnapshotId ?? "";
-
   function canNext(): boolean {
-    if (step === 0) return Boolean(datasetId && snapshotId);
+    if (step === 0) return goal.trim().length >= 8;
     if (step === 1) {
       return (
         Boolean(repoUrl.trim()) &&
@@ -84,19 +86,16 @@ export default function NewAgentPage() {
   }
 
   async function start() {
-    if (!selected || !snapshotId) {
-      toast.error("Pick a dataset with a snapshot");
-      return;
-    }
     setStarting(true);
     try {
-      const run = await apiFetch<AutoRun>(`/datasets/${selected.id}/auto`, {
+      const run = await apiFetch<AutoRun>(`/auto`, {
         method: "POST",
         body: JSON.stringify({
+          goal: goal.trim(),
           repoUrl: repoUrl.trim(),
           defaultBranch: branch.trim() || "main",
+          datasetId: datasetHint || undefined,
           protocol: {
-            snapshotId,
             metric: { name: metric.trim() || "score", direction },
             budget: {
               maxTrials: Number(maxTrials) || 10,
@@ -120,13 +119,13 @@ export default function NewAgentPage() {
       });
       trackAutoRun({
         autoRunId: run.id,
-        datasetId: selected.id,
-        name: `Auto · ${repoUrl.split("/").slice(-2).join("/")}`,
+        datasetId: run.datasetId,
+        name: `Auto · ${repoUrl.split("/").slice(-2).join("/") || goal.slice(0, 24)}`,
       });
       toast.success("Agent started", {
-        description: prereq?.boxConfigured
-          ? "Provisioning Box sandbox…"
-          : "Stub mode — configure BOX_API_KEY on the Worker for live Box.",
+        description: datasetHint
+          ? "Starting trials on your dataset hint."
+          : "The agent will discover and bind a dataset for your goal.",
       });
       router.push(`/auto/${run.id}`);
     } catch (e) {
@@ -151,8 +150,9 @@ export default function NewAgentPage() {
           <h1 className="text-2xl font-semibold tracking-tight">Configure agent</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Set everything up before the campaign starts. Nothing runs until you confirm on the last
-          step.
+          Set a research <span className="font-medium text-foreground">goal</span>, bind a repo and
+          compute — the agent discovers and binds datasets itself. Nothing runs until you confirm on
+          the last step.
         </p>
       </div>
 
@@ -160,7 +160,9 @@ export default function NewAgentPage() {
         <div
           className={cn(
             "rounded-lg border px-3 py-2.5 text-xs",
-            prereq.boxConfigured ? "border-primary/20 bg-primary/5" : "border-amber-500/30 bg-amber-500/5",
+            prereq.boxConfigured
+              ? "border-primary/20 bg-primary/5"
+              : "border-amber-500/30 bg-amber-500/5",
           )}
         >
           <p className="font-medium">
@@ -171,7 +173,7 @@ export default function NewAgentPage() {
           <p className="mt-1 text-muted-foreground">
             Box keys are <span className="font-medium text-foreground">not</span> entered here.
             Operators set <code>BOX_API_KEY</code> (and optionally <code>BOX_TEMPLATE_ID</code>) as
-            Worker secrets. You configure dataset, repo, protocol, and GPU provider below.
+            Worker secrets. You configure the goal, repo, protocol, and GPU provider below.
           </p>
         </div>
       ) : null}
@@ -203,62 +205,37 @@ export default function NewAgentPage() {
       <div className="min-h-[280px] space-y-4 rounded-lg border p-4">
         {step === 0 ? (
           <div className="space-y-3">
-            <h2 className="text-sm font-semibold">1. Choose a dataset</h2>
+            <h2 className="text-sm font-semibold">1. Research goal</h2>
             <p className="text-xs text-muted-foreground">
-              The experiment protocol freezes this dataset&apos;s latest snapshot so trials stay
-              comparable.
+              Describe the outcome — the agent uses discovery to find and bind the most relevant
+              dataset(s). You don&apos;t need to pick data here.
             </p>
-            {loadingDatasets ? (
-              <p className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" /> Loading datasets…
-              </p>
-            ) : datasets.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No datasets found.{" "}
-                <Link href="/new" className="text-primary hover:underline">
-                  Publish one
-                </Link>{" "}
-                first.
-              </p>
-            ) : (
-              <ul className="max-h-72 space-y-1 overflow-y-auto">
+            <Textarea
+              value={goal}
+              onChange={(e) => setGoal(e.target.value)}
+              placeholder="e.g. Lower validation bits-per-byte on multilingual web text by tuning the tokenizer and data mixture."
+              className="min-h-[96px]"
+            />
+            <div className="space-y-1">
+              <Label className="text-xs">Dataset hint (optional)</Label>
+              <select
+                className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                value={datasetHint}
+                onChange={(e) => setDatasetHint(e.target.value)}
+              >
+                <option value="">Let the agent choose (recommended)</option>
                 {datasets.map((d) => (
-                  <li key={d.id}>
-                    <button
-                      type="button"
-                      onClick={() => setDatasetId(d.id)}
-                      className={cn(
-                        "flex w-full items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-sm",
-                        datasetId === d.id
-                          ? "border-primary bg-primary/5"
-                          : "border-transparent hover:bg-muted/50",
-                      )}
-                    >
-                      <span className="truncate">
-                        <span className="font-medium">
-                          {d.owner}/{d.name}
-                        </span>
-                        <span className="ml-2 text-xs text-muted-foreground">{d.id}</span>
-                      </span>
-                      {d.latestSnapshotId ? (
-                        <Badge variant="outline" className="shrink-0 text-[10px]">
-                          snap
-                        </Badge>
-                      ) : (
-                        <Badge variant="outline" className="shrink-0 text-[10px]">
-                          no snap
-                        </Badge>
-                      )}
-                    </button>
-                  </li>
+                  <option key={d.id} value={d.id}>
+                    {d.owner}/{d.name}
+                  </option>
                 ))}
-              </ul>
-            )}
-            {selected ? (
-              <p className="text-xs text-muted-foreground">
-                Snapshot: <code>{snapshotId || "—"}</code>
+              </select>
+              <p className="text-[11px] text-muted-foreground">
+                {selectedHint
+                  ? "Starts bound to this dataset; the agent may still bind others."
+                  : "The agent runs discover_datasets, then binds the best match (or asks you in chat)."}
               </p>
-            ) : null}
+            </div>
           </div>
         ) : null}
 
@@ -324,6 +301,10 @@ export default function NewAgentPage() {
                 className="min-h-[64px]"
               />
             </div>
+            <p className="text-[11px] text-muted-foreground">
+              The dataset snapshot is frozen into the protocol when the agent binds a dataset, so
+              trials stay comparable.
+            </p>
           </div>
         ) : null}
 
@@ -379,12 +360,13 @@ export default function NewAgentPage() {
           <div className="space-y-3">
             <h2 className="text-sm font-semibold">4. Review & start</h2>
             <dl className="space-y-2 rounded-md bg-muted/30 p-3 text-xs">
+              <Row k="Goal" v={goal} />
               <Row
                 k="Dataset"
                 v={
-                  selected
-                    ? `${selected.owner}/${selected.name} (${snapshotId})`
-                    : "—"
+                  selectedHint
+                    ? `${selectedHint.owner}/${selectedHint.name} (hint)`
+                    : "Agent chooses at runtime"
                 }
               />
               <Row k="Repo" v={`${repoUrl} @ ${branch}`} />
@@ -411,7 +393,7 @@ export default function NewAgentPage() {
             </dl>
             <p className="text-xs text-muted-foreground">
               Starting creates an AutoRun, provisions Box when configured, and opens the live
-              monitor. You can pause/cancel anytime.
+              monitor + chat. You can steer, pause, or cancel anytime.
             </p>
           </div>
         ) : null}

@@ -183,9 +183,10 @@ function registerTools(server: McpServer, ctx: McpContext) {
     "start_auto",
     {
       description:
-        "Start a long-running autoresearch AutoRun (Box + Modal/HTTP GPU). Requires repo + protocol.",
+        "Start a long-running autoresearch AutoRun (Box + Modal/HTTP GPU). Goal-first: pass `goal` and the agent binds datasets itself (dataset_id optional). Requires repo + protocol.",
       inputSchema: {
-        dataset_id: z.string(),
+        goal: z.string().optional(),
+        dataset_id: z.string().optional(),
         repo_url: z.string(),
         default_branch: z.string().optional(),
         protocol: z.record(z.unknown()),
@@ -194,6 +195,45 @@ function registerTools(server: McpServer, ctx: McpContext) {
       },
     },
     async (args) => run("start_auto", args as Record<string, unknown>),
+  );
+
+  server.registerTool(
+    "bind_auto_dataset",
+    {
+      description:
+        "Bind a dataset (agent-discovered or user-confirmed) to an AutoRun; freezes the protocol snapshot on first bind.",
+      inputSchema: {
+        auto_run_id: z.string(),
+        dataset_id: z.string(),
+        reason: z.string().optional(),
+      },
+    },
+    async (args) => run("bind_auto_dataset", args as Record<string, unknown>),
+  );
+
+  server.registerTool(
+    "message_auto_agent",
+    {
+      description:
+        "Send a message to a long-running cloud AutoRun agent and get its reply. Same thread as the dashboard chat — lets a dev/Cursor agent steer a cloud AutoRun.",
+      inputSchema: {
+        auto_run_id: z.string(),
+        message: z.string(),
+      },
+    },
+    async (args) => run("message_auto_agent", args as Record<string, unknown>),
+  );
+
+  server.registerTool(
+    "list_auto_messages",
+    {
+      description: "Read an AutoRun's conversation thread (poll for new messages).",
+      inputSchema: {
+        auto_run_id: z.string(),
+        limit: z.number().optional(),
+      },
+    },
+    async (args) => run("list_auto_messages", args as Record<string, unknown>),
   );
 
   server.registerTool(

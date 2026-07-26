@@ -222,12 +222,15 @@ export default defineSchema({
 
   autoRuns: defineTable({
     autoRunId: v.string(),
-    datasetId: v.string(),
+    datasetId: v.optional(v.string()),
+    boundDatasets: v.optional(v.array(v.string())),
+    goal: v.optional(v.string()),
     ownerId: v.string(),
     status: v.union(
       v.literal("pending"),
       v.literal("provisioning"),
       v.literal("running"),
+      v.literal("awaiting_user"),
       v.literal("paused"),
       v.literal("done"),
       v.literal("error"),
@@ -246,6 +249,46 @@ export default defineSchema({
     .index("by_autoRunId", ["autoRunId"])
     .index("by_datasetId", ["datasetId"])
     .index("by_ownerId", ["ownerId"]),
+
+  autoActivity: defineTable({
+    activityId: v.string(),
+    autoRunId: v.string(),
+    kind: v.union(
+      v.literal("status"),
+      v.literal("dataset_bound"),
+      v.literal("trial"),
+      v.literal("message"),
+      v.literal("box"),
+      v.literal("note"),
+    ),
+    message: v.string(),
+    meta: v.optional(v.any()),
+    createdAt: v.number(),
+  })
+    .index("by_activityId", ["activityId"])
+    .index("by_autoRunId", ["autoRunId"]),
+
+  autoMessages: defineTable({
+    messageId: v.string(),
+    autoRunId: v.string(),
+    role: v.union(
+      v.literal("user"),
+      v.literal("assistant"),
+      v.literal("system"),
+      v.literal("tool"),
+    ),
+    source: v.union(
+      v.literal("dashboard"),
+      v.literal("mcp"),
+      v.literal("api"),
+      v.literal("daemon"),
+    ),
+    content: v.string(),
+    meta: v.optional(v.any()),
+    createdAt: v.number(),
+  })
+    .index("by_messageId", ["messageId"])
+    .index("by_autoRunId", ["autoRunId"]),
 
   autoTrials: defineTable({
     trialId: v.string(),

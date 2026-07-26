@@ -344,4 +344,48 @@ http.route({
   }),
 });
 
+http.route({
+  path: "/api/auto/activity/list",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const { autoRunId } = await req.json();
+    const rows = await ctx.runQuery(api.autoRuns.listActivity, { autoRunId });
+    return Response.json(rows);
+  }),
+});
+
+http.route({
+  path: "/api/auto/activity/append",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    await ctx.runMutation(api.autoRuns.appendActivity, body);
+    return Response.json({ ok: true });
+  }),
+});
+
+http.route({
+  path: "/api/auto/messages/list",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const { autoRunId } = await req.json();
+    const rows = await ctx.runQuery(api.autoRuns.listMessages, { autoRunId });
+    return Response.json(rows);
+  }),
+});
+
+http.route({
+  path: "/api/auto/messages/append",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    await ctx.runMutation(api.autoRuns.appendMessage, body);
+    return Response.json({ ok: true });
+  }),
+});
+
 export default http;

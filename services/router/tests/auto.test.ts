@@ -6,6 +6,8 @@ import type { AutoStore } from "../src/autoStore";
 function memoryStore(seed?: { run?: AutoRun; trial?: AutoTrial }): AutoStore {
   const runs = new Map<string, AutoRun>();
   const trials = new Map<string, AutoTrial>();
+  const activity: import("@trainfabric/shared").AutoActivity[] = [];
+  const messages: import("@trainfabric/shared").AutoMessage[] = [];
   if (seed?.run) runs.set(seed.run.id, seed.run);
   if (seed?.trial) trials.set(seed.trial.id, seed.trial);
   return {
@@ -47,6 +49,22 @@ function memoryStore(seed?: { run?: AutoRun; trial?: AutoTrial }): AutoStore {
     },
     async listAutoRunners() {
       return [];
+    },
+    async appendActivity(body) {
+      const entry = { ...body, createdAt: body.createdAt ?? Date.now() };
+      activity.push(entry);
+      return entry;
+    },
+    async listActivity(autoRunId) {
+      return activity.filter((a) => a.autoRunId === autoRunId);
+    },
+    async appendMessage(body) {
+      const entry = { ...body, createdAt: body.createdAt ?? Date.now() };
+      messages.push(entry);
+      return entry;
+    },
+    async listMessages(autoRunId) {
+      return messages.filter((m) => m.autoRunId === autoRunId);
     },
   };
 }
