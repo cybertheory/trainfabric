@@ -49,7 +49,7 @@ export default function NewAgentPage() {
 function NewAgentWizard() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { trackAutoRun } = useJobTracker();
+  const { trackAutoRun, authToken } = useJobTracker();
   const [step, setStep] = useState(0);
   const [datasets, setDatasets] = useState<DatasetMeta[]>([]);
   const [prereq, setPrereq] = useState<Prereq | null>(null);
@@ -70,13 +70,17 @@ function NewAgentWizard() {
 
   useEffect(() => {
     Promise.all([
-      apiFetch<{ datasets: DatasetMeta[] }>("/datasets").catch(() => ({ datasets: [] })),
-      apiFetch<{ prerequisites?: Prereq }>("/auto").catch(() => ({ prerequisites: undefined })),
+      apiFetch<{ datasets: DatasetMeta[] }>("/datasets", { token: authToken }).catch(() => ({
+        datasets: [],
+      })),
+      apiFetch<{ prerequisites?: Prereq }>("/auto", { token: authToken }).catch(() => ({
+        prerequisites: undefined,
+      })),
     ]).then(([ds, auto]) => {
       setDatasets(ds.datasets ?? []);
       if (auto.prerequisites) setPrereq(auto.prerequisites);
     });
-  }, []);
+  }, [authToken]);
 
   const selectedHint = useMemo(
     () => datasets.find((d) => d.id === datasetHint) ?? null,
@@ -104,6 +108,7 @@ function NewAgentWizard() {
     try {
       const run = await apiFetch<AutoRun>(`/auto`, {
         method: "POST",
+        token: authToken,
         body: JSON.stringify({
           repoUrl: repoUrl.trim(),
           defaultBranch: branch.trim() || "main",

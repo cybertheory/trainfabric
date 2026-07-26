@@ -7,6 +7,7 @@ import type { AutoRun } from "@trainfabric/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
+import { useJobTracker } from "@/lib/job-tracker";
 
 type AutoListResponse = {
   runs: AutoRun[];
@@ -38,10 +39,12 @@ export default function AgentsPage() {
   const [prereq, setPrereq] = useState<AutoListResponse["prerequisites"]>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Clerk JWT synced by NotificationAuthBridge — refetch once it lands.
+  const { authToken } = useJobTracker();
 
   useEffect(() => {
     setLoading(true);
-    apiFetch<AutoListResponse>("/auto")
+    apiFetch<AutoListResponse>("/auto", { token: authToken })
       .then((r) => {
         setRuns(r.runs ?? []);
         setPrereq(r.prerequisites);
@@ -52,7 +55,7 @@ export default function AgentsPage() {
         setRuns([]);
       })
       .finally(() => setLoading(false));
-  }, []);
+  }, [authToken]);
 
   return (
     <div className="mx-auto max-w-4xl space-y-8 px-1 py-2">

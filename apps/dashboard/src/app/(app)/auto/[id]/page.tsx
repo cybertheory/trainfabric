@@ -9,6 +9,7 @@ import type { DatasetMeta } from "@trainfabric/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
+import { useJobTracker } from "@/lib/job-tracker";
 import { AutoChatPanel } from "@/components/auto-chat-panel";
 import { cn } from "@/lib/utils";
 
@@ -63,16 +64,18 @@ export default function AutoRunMonitorPage() {
   const [detail, setDetail] = useState<AutoDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Clerk JWT synced by NotificationAuthBridge — polling picks it up when it lands.
+  const { authToken } = useJobTracker();
 
   const load = useCallback(async () => {
     try {
-      const out = await apiFetch<AutoDetail>(`/auto/${id}`);
+      const out = await apiFetch<AutoDetail>(`/auto/${id}`, { token: authToken });
       setDetail(out);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
     }
-  }, [id]);
+  }, [id, authToken]);
 
   useEffect(() => {
     void load();
@@ -83,7 +86,7 @@ export default function AutoRunMonitorPage() {
   async function action(path: "pause" | "resume" | "cancel") {
     setBusy(true);
     try {
-      await apiFetch(`/auto/${id}/${path}`, { method: "POST" });
+      await apiFetch(`/auto/${id}/${path}`, { method: "POST", token: authToken });
       toast.success(`AutoRun ${path}`);
       await load();
     } catch (e) {
@@ -214,7 +217,7 @@ export default function AutoRunMonitorPage() {
       ) : null}
 
       {run.status === "awaiting_user" ? (
-        <BindPanel autoRunId={id} goal={run.goal} onBound={() => void load()} />
+        <BindPanel autoRunId={id} goal={run.goal} token={authToken} onBound={() => void load()} />
       ) : null}
 
       <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
@@ -393,10 +396,12 @@ function Sparkline({ trials, direction }: { trials: Trial[]; direction: string }
 function BindPanel({
   autoRunId,
   goal,
+  token,
   onBound,
 }: {
   autoRunId: string;
   goal?: string;
+  token?: string | null;
   onBound: () => void;
 }) {
   const [datasets, setDatasets] = useState<DatasetMeta[]>([]);
@@ -406,10 +411,11 @@ function BindPanel({
   useEffect(() => {
     apiFetch<{ datasets: DatasetMeta[] }>(
       `/datasets${goal ? `?search=${encodeURIComponent(goal)}` : ""}`,
+      { token },
     )
       .then((r) => setDatasets(r.datasets ?? []))
       .catch(() => setDatasets([]));
-  }, [goal]);
+  }, [goal, token]);
 
   async function bind() {
     if (!datasetId) return;
@@ -417,6 +423,7 @@ function BindPanel({
     try {
       await apiFetch(`/auto/${autoRunId}/bind-dataset`, {
         method: "POST",
+        token,
         body: JSON.stringify({ datasetId, reason: "Confirmed by user in monitor" }),
       });
       toast.success("Dataset bound — agent resuming");
