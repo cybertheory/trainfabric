@@ -13,6 +13,12 @@ import { hashQueryRequest, validateFilter, FilterValidationError } from "@trainf
 export interface Identity {
   subject: string;
   email?: string;
+  /** Full name / display name from the identity provider (Clerk `name`). */
+  name?: string;
+  /** Handle from the identity provider (Clerk `preferred_username` / `username`). */
+  username?: string;
+  /** Avatar URL from the identity provider (Clerk `picture` / `image_url`). */
+  imageUrl?: string;
 }
 
 export interface DatasetRecord extends DatasetMeta {

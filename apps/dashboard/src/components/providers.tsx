@@ -7,6 +7,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { JobTrackerProvider } from "@/lib/job-tracker";
 import { AlertDrawer } from "@/components/alert-drawer";
 import { NotificationAuthBridge } from "@/components/notification-auth-bridge";
+import { ProfileSync } from "@/components/profile-sync";
 import { clerkPublishableKey } from "@/lib/clerk";
 
 const ClerkRoot = dynamic(
@@ -20,6 +21,7 @@ function AppProviders({ children }: { children: React.ReactNode }) {
       <TooltipProvider>
         <JobTrackerProvider>
           <NotificationAuthBridge />
+          <ProfileSync />
           {children}
           <AlertDrawer />
           <Toaster />

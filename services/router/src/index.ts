@@ -34,7 +34,12 @@ import { upsertDatasetEmbedding } from "./discover";
 import { CatalogDO } from "./CatalogDO";
 import { WarmRouterDO } from "./WarmRouterDO";
 import { ComputeContainer as ComputeContainerClass } from "./ComputeContainer";
-import { autoConnect, createSocialStore } from "./social";
+import {
+  autoConnect,
+  createSocialStore,
+  enrichPostsWithProfiles,
+  upsertProfileFromIdentity,
+} from "./social";
 import type {
   BindAutoDatasetRequest,
   CompleteAutoTrialRequest,
@@ -43,6 +48,7 @@ import type {
   PostAutoMessageRequest,
   RegisterRunnerRequest,
   ReportAutoInstructionsRequest,
+  UpsertProfileRequest,
 } from "@trainfabric/shared";
 import { createAutoStore } from "./autoStore";
 import { boxClientFromEnv } from "./box";
@@ -288,14 +294,87 @@ app.get("/health", (c) =>
 );
 
 /** Identity echo for tf whoami (Clerk session or agent token). */
-app.get("/auth/whoami", (c) => {
+app.get("/auth/whoami", async (c) => {
   const identity = identityOrAnon(c.get("identity"), c.env);
   if (!identity) return c.json({ error: "Unauthorized" }, 401);
+  const authVia = c.get("authVia") ?? (identity.subject === "anon" ? "anon" : null);
+  let profile = null;
+  if (identity.subject !== "anon") {
+    const store = createSocialStore(c.env);
+    if (store) {
+      // Provision/refresh the caller's profile so display identity is available.
+      profile = await upsertProfileFromIdentity(store, identity, {
+        isAgent: authVia === "agent",
+      });
+    }
+  }
   return c.json({
     subject: identity.subject,
     email: identity.email ?? null,
-    authVia: c.get("authVia") ?? (identity.subject === "anon" ? "anon" : null),
+    authVia,
+    profile,
   });
+});
+
+// ---- Social identity profiles ----
+
+/** Upsert the caller's own profile (dashboard syncs Clerk fields here). */
+app.post("/profile", async (c) => {
+  try {
+    const store = createSocialStore(c.env);
+    if (!store) return c.json({ error: "Social store not configured" }, 503);
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity || identity.subject === "anon") {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+    const body = (await c.req.json().catch(() => ({}))) as UpsertProfileRequest;
+    const isAgent = c.get("authVia") === "agent";
+    const profile = await store.upsertProfile(identity.subject, {
+      // Trust client-supplied Clerk fields for the authenticated subject only.
+      displayName: body.displayName ?? identity.name,
+      username: body.username ?? identity.username,
+      imageUrl: body.imageUrl ?? identity.imageUrl,
+      email: body.email ?? identity.email,
+      bio: body.bio,
+      isAgent,
+    });
+    return c.json({ profile });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+/** Get the caller's own profile (provisioning from identity if absent). */
+app.get("/profile", async (c) => {
+  try {
+    const store = createSocialStore(c.env);
+    if (!store) return c.json({ profile: null });
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity || identity.subject === "anon") {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+    const profile =
+      (await store.getProfile(identity.subject)) ??
+      (await upsertProfileFromIdentity(store, identity, {
+        isAgent: c.get("authVia") === "agent",
+      }));
+    return c.json({ profile });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+/** Public profile lookup by subject id. */
+app.get("/profile/:id", async (c) => {
+  try {
+    const store = createSocialStore(c.env);
+    if (!store) return c.json({ profile: null });
+    const profile = await store.getProfile(c.req.param("id"));
+    if (!profile) return c.json({ error: "Not found" }, 404);
+    return c.json({ profile });
+  } catch (e) {
+    return errResponse(e);
+  }
 });
 
 app.post("/admin/seed", async (c) => {
@@ -314,10 +393,11 @@ app.get("/datasets", async (c) => {
   try {
     const convex = createRegistry(c.env);
     const identity = c.get("identity");
+    const requestedOwner = c.req.query("owner");
     const rows = await convex.listDatasets({
       tag: c.req.query("tag"),
       search: c.req.query("search") ?? c.req.query("q"),
-      owner: c.req.query("owner"),
+      owner: requestedOwner === "me" ? identity?.subject : requestedOwner,
       includePrivateFor: identity?.subject,
       limit: Number(c.req.query("limit") ?? 50),
     });
@@ -647,7 +727,23 @@ app.get("/me/connections", async (c) => {
     const identity = identityOrAnon(c.get("identity"), c.env);
     if (!identity) return c.json({ error: "Unauthorized" }, 401);
     const connections = await store.listConnections(identity.subject);
-    return c.json({ connections });
+    const deps = depsFrom(c);
+    const datasets = (
+      await Promise.all(
+        connections.map(async (connection) => {
+          const dataset = await deps.getDataset(connection.datasetId);
+          if (!dataset) return null;
+          try {
+            const { authorizeDataset } = await import("./resolver");
+            authorizeDataset(dataset, c.get("identity"));
+            return dataset;
+          } catch {
+            return null;
+          }
+        }),
+      )
+    ).filter((dataset) => dataset !== null);
+    return c.json({ connections, datasets });
   } catch (e) {
     return errResponse(e);
   }
@@ -668,13 +764,19 @@ app.post("/social/posts", async (c) => {
     if (!ds) return c.json({ error: "Dataset not found" }, 404);
     const { authorizeDataset } = await import("./resolver");
     authorizeDataset(ds, c.get("identity"));
+    const authVia = c.get("authVia");
+    // Ensure the caller has a profile so posts resolve a display identity.
+    await upsertProfileFromIdentity(store, identity, { isAgent: authVia === "agent" });
     await store.ensureConnection(identity.subject, body.datasetId, "manual");
+    const source = body.source ?? "user";
     const post = await store.createPost({
       authorId: identity.subject,
-      authorName: body.authorName,
+      // Humans resolve their name from the synced Clerk profile; agents may
+      // pass an explicit label (e.g. "autoresearch").
+      authorName: source === "agent" ? body.authorName : undefined,
       datasetId: body.datasetId,
       body: String(body.body).trim(),
-      source: body.source ?? "user",
+      source,
       findings: body.findings,
       datasetOwner: ds.owner,
       datasetName: ds.name,
@@ -690,11 +792,12 @@ app.get("/social/feed", async (c) => {
     const store = createSocialStore(c.env);
     if (!store) return c.json({ posts: [] });
     const identity = identityOrAnon(c.get("identity"), c.env);
-    const posts = await store.listFeed({
+    const raw = await store.listFeed({
       userId: identity?.subject,
       datasetId: c.req.query("datasetId") ?? undefined,
       limit: Number(c.req.query("limit") ?? 40),
     });
+    const posts = await enrichPostsWithProfiles(store, raw);
     return c.json({ posts });
   } catch (e) {
     return errResponse(e);
@@ -707,7 +810,8 @@ app.get("/social/posts/:id", async (c) => {
     if (!store) return c.json({ error: "Not found" }, 404);
     const post = await store.getPost(c.req.param("id"));
     if (!post) return c.json({ error: "Not found" }, 404);
-    return c.json({ post });
+    const [enriched] = await enrichPostsWithProfiles(store, [post]);
+    return c.json({ post: enriched ?? post });
   } catch (e) {
     return errResponse(e);
   }
@@ -1983,6 +2087,12 @@ function buildMcpContext(c: {
       if (!store) throw new Error("Social store not configured");
       if (!identity) throw new AuthError("Auth required");
       const ds = await deps.getDataset(args.datasetId);
+      // Agents (MCP/CLI/autorunner) get an auto-provisioned profile so their
+      // posts carry a stable identity across the feed.
+      await upsertProfileFromIdentity(store, identity, {
+        isAgent: true,
+        fallbackName: args.authorName,
+      });
       return store.createPost({
         authorId: identity.subject,
         authorName: args.authorName,
@@ -2004,7 +2114,8 @@ function buildMcpContext(c: {
     listFeed: async (limit) => {
       const store = createSocialStore(c.env);
       if (!store) return [];
-      return store.listFeed({ userId: identity?.subject, limit });
+      const raw = await store.listFeed({ userId: identity?.subject, limit });
+      return enrichPostsWithProfiles(store, raw);
     },
     listConnections: async () => {
       const store = createSocialStore(c.env);
@@ -2198,6 +2309,8 @@ export default {
       path.startsWith("/results/") ||
       path.startsWith("/r2/") ||
       path.startsWith("/social/") ||
+      path === "/profile" ||
+      path.startsWith("/profile/") ||
       path === "/notifications" ||
       path.startsWith("/notifications/") ||
       path === "/me/connections" ||

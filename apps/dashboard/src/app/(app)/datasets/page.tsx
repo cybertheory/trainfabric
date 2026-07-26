@@ -52,6 +52,11 @@ export default function HomePage() {
   const { activeJobs, setDrawerOpen } = useJobTracker();
 
   useEffect(() => {
+    const search = new URLSearchParams(window.location.search).get("search");
+    if (search) setQ(search);
+  }, []);
+
+  useEffect(() => {
     const t = setTimeout(() => {
       setLoading(true);
       const params = new URLSearchParams();

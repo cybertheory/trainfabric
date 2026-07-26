@@ -34,9 +34,6 @@ export function SiteHeader() {
           <Link href="/docs/api" className="hidden hover:text-foreground sm:inline">
             API
           </Link>
-          <Link href="/me" className="hover:text-foreground">
-            My datasets
-          </Link>
         </nav>
         <div className="ml-auto flex items-center gap-2">
           <JobProgressChip />

@@ -21,4 +21,18 @@ Started with env from the router on `POST /auto`:
 
 ## Modal
 
-Point `compute.provider: "modal"` + `MODAL_TOKEN` / `MODAL_APP_REF` on the Worker.
+Deploy the trial web endpoint, then point the Worker at it:
+
+```bash
+modal token set --token-id ak-… --token-secret as-… --profile=rishabhspro
+modal profile activate rishabhspro
+modal deploy services/autorunner/modal_trial.py
+```
+
+Worker secrets:
+
+- `MODAL_TOKEN` — `token_id:token_secret` (or proxy token `wk-…:ws-…`)
+- `MODAL_APP_REF` — the printed `https://…--run-trial.modal.run` URL
+
+`compute.provider: "modal"` POSTs trial kwargs to that URL; the function clones the
+research repo, runs the entrypoint, and POSTs `/auto/:id/trials/:trialId/complete`.

@@ -175,6 +175,99 @@ def query_cmd(
     _request("POST", f"/datasets/{ds}/query", body)
 
 
+@app.command()
+def connect(
+    dataset_id: Optional[str] = typer.Argument(None),
+    off: bool = typer.Option(False, "--off", help="Disconnect instead of connect"),
+) -> None:
+    """Connect (subscribe) to a dataset community — like starring."""
+    ds = _dataset(dataset_id)
+    _request("POST", f"/datasets/{ds}/connect", {"connected": not off})
+
+
+# ---- Social feature (same interface as MCP / dashboard) ----
+
+social_app = typer.Typer(add_completion=False, no_args_is_help=True, help="Social feed")
+app.add_typer(social_app, name="social")
+
+
+@social_app.command("post")
+def social_post(
+    dataset_id: Optional[str] = typer.Argument(None),
+    body: str = typer.Option(..., "--body", "-b", help="Update / finding summary"),
+    author_name: Optional[str] = typer.Option(
+        None, "--author-name", help="Display name for the post (agent label)"
+    ),
+    findings: Optional[str] = typer.Option(
+        None, "--findings", help="Optional structured findings as a JSON string"
+    ),
+    source: str = typer.Option("agent", "--source", help="user | agent"),
+) -> None:
+    """Publish a social update / research finding to a dataset community feed.
+
+    Notifies users connected to the dataset. Same endpoint used by the MCP
+    `post_social_update` tool and the dashboard composer.
+    """
+    ds = _dataset(dataset_id)
+    payload: dict[str, Any] = {"datasetId": ds, "body": body, "source": source}
+    if author_name:
+        payload["authorName"] = author_name
+    if findings:
+        try:
+            payload["findings"] = json.loads(findings)
+        except json.JSONDecodeError as e:
+            print(json.dumps({"error": f"invalid --findings JSON: {e}"}), file=sys.stderr)
+            raise typer.Exit(2) from e
+    _request("POST", "/social/posts", payload)
+
+
+@social_app.command("feed")
+def social_feed(
+    dataset_id: Optional[str] = typer.Option(None, "--dataset", "-d", help="Scope to one dataset"),
+    limit: int = typer.Option(40, "--limit"),
+) -> None:
+    """List the social feed (connected datasets, or a specific dataset)."""
+    q = [f"limit={limit}"]
+    if dataset_id:
+        q.append(f"datasetId={dataset_id}")
+    _request("GET", "/social/feed?" + "&".join(q))
+
+
+# ---- Profile ----
+
+profile_app = typer.Typer(add_completion=False, no_args_is_help=True, help="Social identity profile")
+app.add_typer(profile_app, name="profile")
+
+
+@profile_app.command("show")
+def profile_show() -> None:
+    """Show the caller's social profile."""
+    _request("GET", "/profile")
+
+
+@profile_app.command("set")
+def profile_set(
+    display_name: Optional[str] = typer.Option(None, "--name"),
+    username: Optional[str] = typer.Option(None, "--username"),
+    image_url: Optional[str] = typer.Option(None, "--image"),
+    bio: Optional[str] = typer.Option(None, "--bio"),
+) -> None:
+    """Update the caller's social profile (name / handle / avatar / bio)."""
+    payload: dict[str, Any] = {}
+    if display_name:
+        payload["displayName"] = display_name
+    if username:
+        payload["username"] = username
+    if image_url:
+        payload["imageUrl"] = image_url
+    if bio:
+        payload["bio"] = bio
+    if not payload:
+        print(json.dumps({"error": "nothing to update"}), file=sys.stderr)
+        raise typer.Exit(2)
+    _request("POST", "/profile", payload)
+
+
 def main() -> None:
     app()
 

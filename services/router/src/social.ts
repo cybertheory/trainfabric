@@ -6,10 +6,24 @@ import type {
   DatasetConnection,
   SocialPost,
   SocialPostSource,
+  UpsertProfileRequest,
+  UserProfile,
 } from "@trainfabric/shared";
 
 function newId(prefix: string) {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 14)}`;
+}
+
+export interface CreatePostInput {
+  authorId: string;
+  /** Optional display-name override (agents). Humans resolve from profile. */
+  authorName?: string;
+  datasetId: string;
+  body: string;
+  source: SocialPostSource;
+  findings?: Record<string, unknown>;
+  datasetOwner?: string;
+  datasetName?: string;
 }
 
 export interface SocialStore {
@@ -25,16 +39,7 @@ export interface SocialStore {
   ): Promise<{ connected: boolean }>;
   getConnection(userId: string, datasetId: string): Promise<DatasetConnection | null>;
   listConnections(userId: string): Promise<DatasetConnection[]>;
-  createPost(input: {
-    authorId: string;
-    authorName?: string;
-    datasetId: string;
-    body: string;
-    source: SocialPostSource;
-    findings?: Record<string, unknown>;
-    datasetOwner?: string;
-    datasetName?: string;
-  }): Promise<SocialPost>;
+  createPost(input: CreatePostInput): Promise<SocialPost>;
   getPost(postId: string): Promise<SocialPost | null>;
   listFeed(opts: {
     userId?: string;
@@ -44,6 +49,10 @@ export interface SocialStore {
   listNotifications(userId: string, limit?: number): Promise<AppNotification[]>;
   markNotificationRead(userId: string, notificationId: string): Promise<{ ok: boolean }>;
   markAllNotificationsRead(userId: string): Promise<{ ok: boolean; count: number }>;
+  /** Merge-upsert a profile keyed by userId (only provided fields are written). */
+  upsertProfile(userId: string, patch: UpsertProfileRequest): Promise<UserProfile>;
+  getProfile(userId: string): Promise<UserProfile | null>;
+  getProfiles(userIds: string[]): Promise<Record<string, UserProfile>>;
 }
 
 async function ensureSocialSchema(db: D1Database): Promise<void> {
@@ -69,6 +78,9 @@ async function ensureSocialSchema(db: D1Database): Promise<void> {
         id TEXT PRIMARY KEY,
         author_id TEXT NOT NULL,
         author_name TEXT,
+        author_image TEXT,
+        author_username TEXT,
+        author_is_agent INTEGER DEFAULT 0,
         dataset_id TEXT NOT NULL,
         body TEXT NOT NULL,
         source TEXT NOT NULL DEFAULT 'user',
@@ -77,11 +89,39 @@ async function ensureSocialSchema(db: D1Database): Promise<void> {
       )`,
     )
     .run();
+  // Backfill columns for pre-existing tables (ignore if already present).
+  for (const col of [
+    "author_image TEXT",
+    "author_username TEXT",
+    "author_is_agent INTEGER DEFAULT 0",
+  ]) {
+    try {
+      await db.prepare(`ALTER TABLE social_posts ADD COLUMN ${col}`).run();
+    } catch {
+      /* column exists */
+    }
+  }
   await db
     .prepare(`CREATE INDEX IF NOT EXISTS idx_social_posts_dataset ON social_posts(dataset_id)`)
     .run();
   await db
     .prepare(`CREATE INDEX IF NOT EXISTS idx_social_posts_created ON social_posts(created_at DESC)`)
+    .run();
+
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS profiles (
+        user_id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        username TEXT,
+        image_url TEXT,
+        email TEXT,
+        bio TEXT,
+        is_agent INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+    )
     .run();
 
   await db
@@ -122,6 +162,9 @@ function rowToPost(
     id: String(r.id),
     authorId: String(r.author_id),
     authorName: r.author_name ? String(r.author_name) : undefined,
+    authorImage: r.author_image ? String(r.author_image) : undefined,
+    authorUsername: r.author_username ? String(r.author_username) : undefined,
+    authorIsAgent: r.author_is_agent != null ? Boolean(r.author_is_agent) : undefined,
     datasetId: String(r.dataset_id),
     datasetOwner: meta?.owner,
     datasetName: meta?.name,
@@ -129,6 +172,20 @@ function rowToPost(
     source: String(r.source) as SocialPostSource,
     findings: r.findings_json ? JSON.parse(String(r.findings_json)) : undefined,
     createdAt: Number(r.created_at),
+  };
+}
+
+function rowToProfile(r: Record<string, unknown>): UserProfile {
+  return {
+    userId: String(r.user_id),
+    displayName: String(r.display_name),
+    username: r.username ? String(r.username) : undefined,
+    imageUrl: r.image_url ? String(r.image_url) : undefined,
+    email: r.email ? String(r.email) : undefined,
+    bio: r.bio ? String(r.bio) : undefined,
+    isAgent: Boolean(r.is_agent),
+    createdAt: Number(r.created_at),
+    updatedAt: Number(r.updated_at),
   };
 }
 
@@ -226,16 +283,34 @@ export function createD1SocialStore(db: D1Database): SocialStore {
       await ensureSocialSchema(db);
       const id = newId("post");
       const createdAt = Date.now();
+
+      // Resolve author identity from profile; explicit authorName override wins (agents).
+      const profileRow = await db
+        .prepare("SELECT * FROM profiles WHERE user_id = ?")
+        .bind(input.authorId)
+        .first();
+      const profile = profileRow ? rowToProfile(profileRow as Record<string, unknown>) : null;
+      const authorName =
+        input.authorName ??
+        profile?.displayName ??
+        (input.source === "agent" ? "agent" : undefined);
+      const authorImage = profile?.imageUrl ?? null;
+      const authorUsername = profile?.username ?? null;
+      const authorIsAgent = profile?.isAgent ?? input.source === "agent";
+
       await db
         .prepare(
           `INSERT INTO social_posts
-          (id, author_id, author_name, dataset_id, body, source, findings_json, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, author_id, author_name, author_image, author_username, author_is_agent, dataset_id, body, source, findings_json, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           id,
           input.authorId,
-          input.authorName ?? null,
+          authorName ?? null,
+          authorImage,
+          authorUsername,
+          authorIsAgent ? 1 : 0,
           input.datasetId,
           input.body,
           input.source,
@@ -249,8 +324,7 @@ export function createD1SocialStore(db: D1Database): SocialStore {
           ? { owner: input.datasetOwner, name: input.datasetName }
           : await datasetMeta(db, input.datasetId);
       const label = meta.owner && meta.name ? `${meta.owner}/${meta.name}` : input.datasetId;
-      const who =
-        input.authorName || (input.source === "agent" ? "an agent" : "someone");
+      const who = authorName || (input.source === "agent" ? "an agent" : "someone");
 
       const connected = await db
         .prepare("SELECT user_id FROM connections WHERE dataset_id = ?")
@@ -280,7 +354,10 @@ export function createD1SocialStore(db: D1Database): SocialStore {
       return {
         id,
         authorId: input.authorId,
-        authorName: input.authorName,
+        authorName,
+        authorImage: authorImage ?? undefined,
+        authorUsername: authorUsername ?? undefined,
+        authorIsAgent,
         datasetId: input.datasetId,
         datasetOwner: meta.owner,
         datasetName: meta.name,
@@ -297,6 +374,70 @@ export function createD1SocialStore(db: D1Database): SocialStore {
       if (!row) return null;
       const meta = await datasetMeta(db, String((row as { dataset_id: string }).dataset_id));
       return rowToPost(row as Record<string, unknown>, meta);
+    },
+
+    async upsertProfile(userId, patch) {
+      await ensureSocialSchema(db);
+      const now = Date.now();
+      const existingRow = await db
+        .prepare("SELECT * FROM profiles WHERE user_id = ?")
+        .bind(userId)
+        .first();
+      const existing = existingRow ? rowToProfile(existingRow as Record<string, unknown>) : null;
+      const merged: UserProfile = {
+        userId,
+        displayName:
+          patch.displayName ?? existing?.displayName ?? patch.email ?? existing?.email ?? userId,
+        username: patch.username ?? existing?.username,
+        imageUrl: patch.imageUrl ?? existing?.imageUrl,
+        email: patch.email ?? existing?.email,
+        bio: patch.bio ?? existing?.bio,
+        isAgent: patch.isAgent ?? existing?.isAgent ?? false,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      };
+      await db
+        .prepare(
+          `INSERT OR REPLACE INTO profiles
+          (user_id, display_name, username, image_url, email, bio, is_agent, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          merged.userId,
+          merged.displayName,
+          merged.username ?? null,
+          merged.imageUrl ?? null,
+          merged.email ?? null,
+          merged.bio ?? null,
+          merged.isAgent ? 1 : 0,
+          merged.createdAt,
+          merged.updatedAt,
+        )
+        .run();
+      return merged;
+    },
+
+    async getProfile(userId) {
+      await ensureSocialSchema(db);
+      const row = await db.prepare("SELECT * FROM profiles WHERE user_id = ?").bind(userId).first();
+      return row ? rowToProfile(row as Record<string, unknown>) : null;
+    },
+
+    async getProfiles(userIds) {
+      await ensureSocialSchema(db);
+      const uniq = [...new Set(userIds)].filter(Boolean);
+      if (!uniq.length) return {};
+      const placeholders = uniq.map(() => "?").join(",");
+      const res = await db
+        .prepare(`SELECT * FROM profiles WHERE user_id IN (${placeholders})`)
+        .bind(...uniq)
+        .all();
+      const out: Record<string, UserProfile> = {};
+      for (const r of res.results ?? []) {
+        const p = rowToProfile(r as Record<string, unknown>);
+        out[p.userId] = p;
+      }
+      return out;
     },
 
     async listFeed(opts) {
@@ -420,6 +561,17 @@ export function createConvexSocialStore(
       post("/api/social/mark-read", { userId, notificationId }),
     markAllNotificationsRead: (userId) =>
       post("/api/social/mark-all-read", { userId }),
+    upsertProfile: (userId, patch) =>
+      post("/api/social/upsert-profile", { userId, ...patch }),
+    getProfile: (userId) => post("/api/social/get-profile", { userId }),
+    getProfiles: async (userIds) => {
+      const res = await post<{ profiles: UserProfile[] }>("/api/social/get-profiles", {
+        userIds,
+      });
+      const out: Record<string, UserProfile> = {};
+      for (const p of res.profiles ?? []) out[p.userId] = p;
+      return out;
+    },
   };
 }
 
@@ -447,5 +599,68 @@ export async function autoConnect(
     await store.ensureConnection(userId, datasetId, source);
   } catch {
     /* non-fatal */
+  }
+}
+
+interface ProfileIdentity {
+  subject: string;
+  email?: string;
+  name?: string;
+  username?: string;
+  imageUrl?: string;
+}
+
+/**
+ * Ensure a profile exists for an authenticated identity, merging any Clerk
+ * profile claims present on the token. Agents get an auto-provisioned profile.
+ */
+export async function upsertProfileFromIdentity(
+  store: SocialStore | null,
+  identity: ProfileIdentity | null | undefined,
+  opts: { isAgent?: boolean; fallbackName?: string } = {},
+): Promise<UserProfile | null> {
+  if (!store || !identity || identity.subject === "anon") return null;
+  try {
+    return await store.upsertProfile(identity.subject, {
+      displayName:
+        identity.name ??
+        opts.fallbackName ??
+        (opts.isAgent ? undefined : identity.email),
+      username: identity.username,
+      imageUrl: identity.imageUrl,
+      email: identity.email,
+      isAgent: opts.isAgent,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Backfill author display fields (name/image/username) on posts from the
+ * current profiles table so avatar/name stay fresh and legacy posts render.
+ */
+export async function enrichPostsWithProfiles(
+  store: SocialStore | null,
+  posts: SocialPost[],
+): Promise<SocialPost[]> {
+  if (!store || !posts.length) return posts;
+  try {
+    const profiles = await store.getProfiles(posts.map((p) => p.authorId));
+    return posts.map((p) => {
+      const prof = profiles[p.authorId];
+      if (!prof) return p;
+      // Keep an agent's explicit override name; refresh humans from profile.
+      const authorName = p.source === "user" ? prof.displayName || p.authorName : p.authorName;
+      return {
+        ...p,
+        authorName,
+        authorImage: prof.imageUrl ?? p.authorImage,
+        authorUsername: prof.username ?? p.authorUsername,
+        authorIsAgent: prof.isAgent,
+      };
+    });
+  } catch {
+    return posts;
   }
 }

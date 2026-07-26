@@ -188,6 +188,9 @@ export default defineSchema({
     postId: v.string(),
     authorId: v.string(),
     authorName: v.optional(v.string()),
+    authorImage: v.optional(v.string()),
+    authorUsername: v.optional(v.string()),
+    authorIsAgent: v.optional(v.boolean()),
     datasetId: v.string(),
     body: v.string(),
     source: v.union(v.literal("user"), v.literal("agent")),
@@ -198,6 +201,19 @@ export default defineSchema({
     .index("by_dataset", ["datasetId"])
     .index("by_author", ["authorId"])
     .index("by_created", ["createdAt"]),
+
+  /** Social identity profiles keyed by auth subject (Clerk `sub` / agent). */
+  profiles: defineTable({
+    userId: v.string(),
+    displayName: v.string(),
+    username: v.optional(v.string()),
+    imageUrl: v.optional(v.string()),
+    email: v.optional(v.string()),
+    bio: v.optional(v.string()),
+    isAgent: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_userId", ["userId"]),
 
   notifications: defineTable({
     notificationId: v.string(),

@@ -221,6 +221,39 @@ http.route({
   }),
 });
 
+http.route({
+  path: "/api/social/upsert-profile",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    const out = await ctx.runMutation(api.social.upsertProfileService, body);
+    return Response.json(out);
+  }),
+});
+
+http.route({
+  path: "/api/social/get-profile",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    const out = await ctx.runQuery(api.social.getProfileService, body);
+    return Response.json(out);
+  }),
+});
+
+http.route({
+  path: "/api/social/get-profiles",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    const out = await ctx.runQuery(api.social.getProfilesService, body);
+    return Response.json(out);
+  }),
+});
+
 // ---- Autoresearch /auto ----
 
 http.route({

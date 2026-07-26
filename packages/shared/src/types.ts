@@ -197,10 +197,44 @@ export interface DatasetConnection {
 
 export type SocialPostSource = "user" | "agent";
 
+/**
+ * A social identity, keyed by the auth subject (Clerk `sub` for humans,
+ * agent-token subject for agents). Sourced from Clerk profile on the client
+ * and merged server-side; agents get an auto-provisioned profile.
+ */
+export interface UserProfile {
+  /** Auth subject: Clerk `sub` or agent-token subject. */
+  userId: string;
+  displayName: string;
+  username?: string;
+  imageUrl?: string;
+  email?: string;
+  bio?: string;
+  /** True when this identity is an agent (autoresearch, MCP client, CLI token). */
+  isAgent: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Partial profile update — only provided fields are written (merge semantics). */
+export interface UpsertProfileRequest {
+  displayName?: string;
+  username?: string;
+  imageUrl?: string;
+  email?: string;
+  bio?: string;
+  isAgent?: boolean;
+}
+
 export interface SocialPost {
   id: string;
   authorId: string;
   authorName?: string;
+  /** Denormalized author avatar at post time (from profile). */
+  authorImage?: string;
+  /** Denormalized author handle at post time (from profile). */
+  authorUsername?: string;
+  authorIsAgent?: boolean;
   datasetId: string;
   datasetOwner?: string;
   datasetName?: string;

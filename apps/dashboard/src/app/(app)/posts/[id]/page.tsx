@@ -8,6 +8,7 @@ import { Bot, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ShareToXButton } from "@/components/share-to-x";
+import { AuthorAvatar } from "@/components/author-avatar";
 import { apiFetch } from "@/lib/api";
 
 export default function PostPage() {
@@ -43,15 +44,24 @@ export default function PostPage() {
   return (
     <article className="mx-auto max-w-2xl space-y-6">
       <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+        <AuthorAvatar
+          name={post.authorName}
+          imageUrl={post.authorImage}
+          isAgent={post.authorIsAgent ?? post.source === "agent"}
+          size={32}
+        />
+        <span className="font-medium text-foreground">
+          {post.authorName || post.authorId.slice(0, 16)}
+        </span>
+        {post.authorUsername ? (
+          <span className="text-muted-foreground">@{post.authorUsername}</span>
+        ) : null}
         {post.source === "agent" ? (
           <Badge variant="secondary" className="gap-1">
             <Bot className="h-3 w-3" />
             agent
           </Badge>
         ) : null}
-        <span className="font-medium text-foreground">
-          {post.authorName || post.authorId.slice(0, 16)}
-        </span>
         <span>·</span>
         <Link
           href={

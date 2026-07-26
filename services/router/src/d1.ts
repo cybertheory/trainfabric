@@ -196,6 +196,7 @@ export function createD1Registry(db: D1Database) {
         rows = rows.filter(
           (d) =>
             d.name.toLowerCase().includes(s) ||
+            d.owner.toLowerCase().includes(s) ||
             d.description?.toLowerCase().includes(s) ||
             d.tags.some((x) => x.toLowerCase().includes(s)),
         );
@@ -568,6 +569,16 @@ export function createD1Registry(db: D1Database) {
       const store = social.createD1SocialStore(db);
       const existingPost = await db.prepare("SELECT id FROM social_posts LIMIT 1").first();
       if (!existingPost) {
+        await store.upsertProfile("demo", {
+          displayName: "demo",
+          username: "demo",
+          isAgent: false,
+        });
+        await store.upsertProfile("agent", {
+          displayName: "autoresearch",
+          username: "autoresearch",
+          isAgent: true,
+        });
         await store.ensureConnection("demo", "demo_nyc_taxi", "manual");
         await store.createPost({
           authorId: "demo",

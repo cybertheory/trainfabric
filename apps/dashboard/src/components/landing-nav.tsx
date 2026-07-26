@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { AuthControls } from "@/components/auth-controls";
+import { LandingAuthCta } from "@/components/landing-auth-cta";
 
 const LINKS = [
   { href: "/docs", label: "Docs" },
@@ -56,15 +56,7 @@ export function LandingNav() {
           >
             Docs
           </Link>
-          <Link
-            href="/sign-in"
-            className="landing-btn-primary ml-1 inline-flex min-h-8 shrink-0 items-center rounded-full px-3.5 py-1.5 text-sm font-medium leading-normal text-white sm:min-h-9 sm:px-4"
-          >
-            Sign in
-          </Link>
-          <div className="ml-1 hidden sm:block">
-            <AuthControls />
-          </div>
+          <LandingAuthCta />
         </nav>
       </div>
     </header>

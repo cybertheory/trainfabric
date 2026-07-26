@@ -21,49 +21,75 @@ export interface ComputeProvider {
   cancel?(externalId: string): Promise<void>;
 }
 
-/** Modal via REST — token + app/function ref. Stub-friendly when Modal URL unset. */
+/** Modal trial submit — web endpoint URL or Functions REST invoke. */
 export function createModalProvider(cfg: {
   token: string;
-  /** e.g. username/trainfabric-trial */
+  /** HTTPS web endpoint (preferred) or Functions API ref e.g. workspace/app/fn */
   appRef: string;
-  /** Override Modal API base for tests */
+  /** Override Modal API base for Functions REST path */
   apiBase?: string;
 }): ComputeProvider {
   const base = cfg.apiBase ?? "https://api.modal.com";
+  const payload = (spec: TrialSubmitSpec) => ({
+    trial_id: spec.trialId,
+    auto_run_id: spec.autoRunId,
+    repo_url: spec.repoUrl,
+    commit_sha: spec.commitSha,
+    entrypoint: spec.entrypoint ?? "python train.py",
+    budget_sec: spec.budgetSec,
+    callback_url: spec.callbackUrl,
+    env: spec.env ?? {},
+  });
+
   return {
     name: "modal",
     async submitTrial(spec) {
-      // Modal Functions HTTP invoke — payload matches gpu-runner contract.
-      const res = await fetch(`${base}/v1/functions/${encodeURIComponent(cfg.appRef)}/call`, {
+      const body = payload(spec);
+      // Preferred: Modal @fastapi_endpoint URL (MODAL_APP_REF=https://….modal.run)
+      const isWeb = /^https?:\/\//i.test(cfg.appRef);
+      const url = isWeb
+        ? cfg.appRef
+        : `${base}/v1/functions/${encodeURIComponent(cfg.appRef)}/call`;
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      };
+      // token_id:token_secret → Modal-Key / Modal-Secret (proxy auth) or Bearer
+      if (cfg.token.includes(":")) {
+        const [key, secret] = cfg.token.split(":", 2);
+        headers["Modal-Key"] = key;
+        headers["Modal-Secret"] = secret;
+        headers.Authorization = `Bearer ${cfg.token}`;
+      } else if (cfg.token) {
+        headers.Authorization = `Bearer ${cfg.token}`;
+      }
+
+      const res = await fetch(url, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${cfg.token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          args: [],
-          kwargs: {
-            trial_id: spec.trialId,
-            auto_run_id: spec.autoRunId,
-            repo_url: spec.repoUrl,
-            commit_sha: spec.commitSha,
-            entrypoint: spec.entrypoint ?? "python train.py",
-            budget_sec: spec.budgetSec,
-            callback_url: spec.callbackUrl,
-            env: spec.env ?? {},
-          },
-        }),
+        headers,
+        body: JSON.stringify(isWeb ? body : { args: [], kwargs: body }),
       });
       if (!res.ok) {
-        // Soft-fail path: queue as external pending so self-hosted / webhook can complete
+        // Soft-fail path: queue as external pending so webhook can complete
         if (res.status === 404 || res.status === 501) {
           return { externalId: `modal-pending:${spec.trialId}` };
         }
         const text = await res.text();
         throw new Error(`Modal submit failed: ${res.status} ${text}`);
       }
-      const json = (await res.json()) as { call_id?: string; id?: string };
-      return { externalId: json.call_id || json.id || `modal:${spec.trialId}` };
+      // Web endpoint runs sync and callbacks itself — fire-and-forget id is enough.
+      const text = await res.text();
+      let json: { call_id?: string; id?: string; trial_id?: string } = {};
+      try {
+        json = text ? (JSON.parse(text) as typeof json) : {};
+      } catch {
+        /* non-JSON ok for async web */
+      }
+      return {
+        externalId:
+          json.call_id || json.id || json.trial_id || `modal:${spec.trialId}`,
+      };
     },
   };
 }
