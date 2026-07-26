@@ -1,6 +1,7 @@
 "use client";
 
-import { SignedIn, SignedOut, SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
+import Link from "next/link";
+import { SignedIn, SignedOut, UserButton } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 
 /** Loaded only when Clerk publishable key is present. */
@@ -8,14 +9,12 @@ export function AuthControlsClerk() {
   return (
     <div className="flex items-center gap-2">
       <SignedOut>
-        <SignInButton mode="modal">
-          <Button variant="outline" size="sm">
-            Sign in
-          </Button>
-        </SignInButton>
-        <SignUpButton mode="modal">
-          <Button size="sm">Sign up</Button>
-        </SignUpButton>
+        <Button asChild variant="outline" size="sm">
+          <Link href="/sign-in">Sign in</Link>
+        </Button>
+        <Button asChild size="sm">
+          <Link href="/sign-up">Sign up</Link>
+        </Button>
       </SignedOut>
       <SignedIn>
         <UserButton

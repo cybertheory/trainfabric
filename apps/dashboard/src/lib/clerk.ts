@@ -1,4 +1,8 @@
-/** Clerk is optional — app builds and runs with no Clerk env vars. */
+/**
+ * Clerk helpers. Dashboard `(app)` routes call `auth.protect()` when both keys
+ * are set. Marketing `/` and `/docs` stay public. Without keys, local/CI builds
+ * still work and the app layout shows an open-mode warning.
+ */
 
 export function clerkPublishableKey(): string | undefined {
   const key = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim();

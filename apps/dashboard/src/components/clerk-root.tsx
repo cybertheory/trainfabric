@@ -11,7 +11,14 @@ export function ClerkRoot({
   children: React.ReactNode;
 }) {
   return (
-    <ClerkProvider publishableKey={publishableKey} afterSignOutUrl="/">
+    <ClerkProvider
+      publishableKey={publishableKey}
+      signInUrl="/sign-in"
+      signUpUrl="/sign-up"
+      signInFallbackRedirectUrl="/home"
+      signUpFallbackRedirectUrl="/home"
+      afterSignOutUrl="/"
+    >
       {children}
     </ClerkProvider>
   );

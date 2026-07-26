@@ -2,8 +2,12 @@ import { NextResponse } from "next/server";
 import type { NextFetchEvent, NextRequest } from "next/server";
 
 /**
- * Clerk is optional. Without pk_/sk_ keys this is a no-op passthrough so
- * `next build` and production work with zero Clerk configuration.
+ * When Clerk keys are set, run clerkMiddleware so session cookies work and
+ * `auth.protect()` in the dashboard `(app)` layout can require sign-in.
+ * Without keys this is a no-op so `next build` still works.
+ *
+ * Public: `/`, `/docs`, `/sign-in`, `/sign-up`.
+ * Protected: everything under `(app)` via layout `auth.protect()`.
  */
 export default async function middleware(req: NextRequest, event: NextFetchEvent) {
   const pk = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim();
@@ -20,7 +24,6 @@ export default async function middleware(req: NextRequest, event: NextFetchEvent
 
 export const config = {
   matcher: [
-    // Skip Next.js internals and static files
     "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
     "/(api|trpc)(.*)",
     "/__clerk/:path*",
