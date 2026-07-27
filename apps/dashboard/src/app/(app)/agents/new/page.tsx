@@ -3,14 +3,28 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Bot, Check, ChevronLeft, ChevronRight, GitBranch, Loader2 } from "lucide-react";
+import {
+  Bot,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Github,
+  GitBranch,
+  Loader2,
+  Plus,
+} from "lucide-react";
 import { toast } from "sonner";
-import type { AutoRun, DatasetMeta } from "@trainfabric/shared";
+import type {
+  AutoRun,
+  CreateGithubRepoResponse,
+  DatasetMeta,
+  GithubConnectionStatus,
+} from "@trainfabric/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, publicApiOrigin } from "@/lib/api";
 import { useJobTracker } from "@/lib/job-tracker";
 import { cn } from "@/lib/utils";
 
@@ -20,6 +34,24 @@ type Prereq = {
   boxConfigured: boolean;
   modalConfigured: boolean;
   note: string;
+};
+
+type GhInstall = {
+  installationId: number;
+  accountLogin: string;
+  accountType: "User" | "Organization";
+  accountId: number;
+  avatarUrl?: string;
+};
+
+type GhRepo = {
+  id: number;
+  fullName: string;
+  name: string;
+  private: boolean;
+  defaultBranch: string;
+  htmlUrl: string;
+  description?: string | null;
 };
 
 function isLikelyGitUrl(url: string): boolean {
@@ -57,6 +89,21 @@ function NewAgentWizard() {
 
   const [repoUrl, setRepoUrl] = useState("");
   const [branch, setBranch] = useState("main");
+  const [repoTab, setRepoTab] = useState<"repos" | "create" | "advanced">("repos");
+  const [ghStatus, setGhStatus] = useState<GithubConnectionStatus | null>(null);
+  const [ghInstalls, setGhInstalls] = useState<GhInstall[]>([]);
+  const [installationId, setInstallationId] = useState<number | null>(null);
+  const [ghRepos, setGhRepos] = useState<GhRepo[]>([]);
+  const [repoSearch, setRepoSearch] = useState("");
+  const [selectedFullName, setSelectedFullName] = useState("");
+  const [githubRepoId, setGithubRepoId] = useState<number | undefined>();
+  const [createdFromPlatform, setCreatedFromPlatform] = useState(false);
+  const [ghLoading, setGhLoading] = useState(false);
+  const [creatingRepo, setCreatingRepo] = useState(false);
+  const [newRepoName, setNewRepoName] = useState("");
+  const [newRepoPrivate, setNewRepoPrivate] = useState(true);
+  const [newRepoDesc, setNewRepoDesc] = useState("");
+  const [connectingGh, setConnectingGh] = useState(false);
   const [datasetHint, setDatasetHint] = useState(searchParams.get("dataset") ?? "");
   const [metric, setMetric] = useState("val_bpb");
   const [direction, setDirection] = useState<"min" | "max">("min");
@@ -104,6 +151,132 @@ function NewAgentWizard() {
       .catch(() => setRunners([]));
   }, [authToken]);
 
+  async function refreshGithub() {
+    if (!authToken) return;
+    setGhLoading(true);
+    try {
+      const status = await apiFetch<GithubConnectionStatus>("/github/status", { token: authToken });
+      setGhStatus(status);
+      if (status.connected) {
+        const inst = await apiFetch<{ installations: GhInstall[] }>("/github/installations", {
+          token: authToken,
+        });
+        const list = inst.installations ?? [];
+        setGhInstalls(list);
+        if (!installationId && list[0]) setInstallationId(list[0].installationId);
+      } else {
+        setGhInstalls([]);
+      }
+    } catch {
+      setGhStatus({ configured: false, connected: false, installationCount: 0 });
+    } finally {
+      setGhLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void refreshGithub();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- load once per token
+  }, [authToken]);
+
+  useEffect(() => {
+    const flag = searchParams.get("github");
+    if (flag === "connected") {
+      toast.success("GitHub connected");
+      void refreshGithub();
+    } else if (flag === "error") {
+      toast.error(searchParams.get("reason") || "GitHub connection failed");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (!authToken || !installationId) {
+      setGhRepos([]);
+      return;
+    }
+    apiFetch<{ repos: GhRepo[] }>(`/github/installations/${installationId}/repos`, {
+      token: authToken,
+    })
+      .then((r) => setGhRepos(r.repos ?? []))
+      .catch(() => setGhRepos([]));
+  }, [authToken, installationId]);
+
+  async function connectGithub() {
+    if (!authToken) {
+      toast.error("Sign in to connect GitHub");
+      return;
+    }
+    setConnectingGh(true);
+    try {
+      const out = await apiFetch<{ url: string }>("/github/install", {
+        method: "POST",
+        token: authToken,
+        body: JSON.stringify({ returnTo: "/agents/new?github=connected" }),
+      });
+      window.location.href = out.url;
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not start GitHub install");
+      setConnectingGh(false);
+    }
+  }
+
+  function selectRepo(repo: GhRepo) {
+    setSelectedFullName(repo.fullName);
+    setRepoUrl(repo.htmlUrl.replace(/\.git$/, ""));
+    setBranch(repo.defaultBranch || "main");
+    setGithubRepoId(repo.id);
+    setCreatedFromPlatform(false);
+  }
+
+  async function createRepo() {
+    if (!authToken || !installationId || !newRepoName.trim()) {
+      toast.error("Pick an installation and enter a repo name");
+      return;
+    }
+    setCreatingRepo(true);
+    try {
+      const out = await apiFetch<CreateGithubRepoResponse>("/github/repos", {
+        method: "POST",
+        token: authToken,
+        body: JSON.stringify({
+          installationId,
+          name: newRepoName.trim(),
+          private: newRepoPrivate,
+          description: newRepoDesc.trim() || undefined,
+          defaultBranch: "main",
+        }),
+      });
+      setSelectedFullName(out.fullName);
+      setRepoUrl(out.htmlUrl);
+      setBranch(out.defaultBranch || "main");
+      setGithubRepoId(out.githubRepoId);
+      setCreatedFromPlatform(true);
+      setRepoTab("repos");
+      toast.success(`Created ${out.fullName}`);
+      // Refresh list
+      const r = await apiFetch<{ repos: GhRepo[] }>(
+        `/github/installations/${installationId}/repos`,
+        { token: authToken },
+      );
+      setGhRepos(r.repos ?? []);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Create repo failed");
+    } finally {
+      setCreatingRepo(false);
+    }
+  }
+
+  const filteredRepos = useMemo(() => {
+    const q = repoSearch.trim().toLowerCase();
+    if (!q) return ghRepos;
+    return ghRepos.filter(
+      (r) =>
+        r.fullName.toLowerCase().includes(q) ||
+        (r.description || "").toLowerCase().includes(q),
+    );
+  }, [ghRepos, repoSearch]);
+
   async function registerRunner() {
     if (!authToken) {
       toast.error("Sign in to register a GPU runner");
@@ -138,7 +311,10 @@ function NewAgentWizard() {
   );
 
   function canNext(): boolean {
-    if (step === 0) return isLikelyGitUrl(repoUrl);
+    if (step === 0) {
+      if (selectedFullName && installationId) return true;
+      return isLikelyGitUrl(repoUrl);
+    }
     if (step === 1) {
       return (
         Boolean(metric.trim()) &&
@@ -156,11 +332,16 @@ function NewAgentWizard() {
   async function start() {
     setStarting(true);
     try {
+      const display = selectedFullName || repoShortName(repoUrl);
       const run = await apiFetch<AutoRun>(`/auto`, {
         method: "POST",
         token: authToken,
         body: JSON.stringify({
-          repoUrl: repoUrl.trim(),
+          repoUrl: repoUrl.trim() || (selectedFullName ? `https://github.com/${selectedFullName}` : undefined),
+          repoFullName: selectedFullName || undefined,
+          installationId: installationId ?? undefined,
+          githubRepoId,
+          createdFromPlatform: createdFromPlatform || undefined,
           defaultBranch: branch.trim() || "main",
           datasetId: datasetHint || undefined,
           protocol: {
@@ -188,7 +369,7 @@ function NewAgentWizard() {
       trackAutoRun({
         autoRunId: run.id,
         datasetId: run.datasetId,
-        name: `Auto · ${repoShortName(repoUrl)}`,
+        name: `Auto · ${display}`,
       });
       toast.success("Agent started", {
         description: "Cloning the repo for goals and instructions, then binding a dataset.",
@@ -271,24 +452,221 @@ function NewAgentWizard() {
       <div className="min-h-[280px] space-y-4 rounded-lg border p-4">
         {step === 0 ? (
           <div className="space-y-3">
-            <h2 className="text-sm font-semibold">1. Connect Git repo</h2>
+            <h2 className="text-sm font-semibold">1. Connect GitHub repo</h2>
             <p className="text-xs text-muted-foreground">
-              Autoresearch is driven by the repo. Put the research brief in{" "}
-              <code className="text-[11px]">TRAINFABRIC.md</code>,{" "}
-              <code className="text-[11px]">AGENTS.md</code>, or{" "}
-              <code className="text-[11px]">README.md</code>, and keep the eval contract in{" "}
-              <code className="text-[11px]">protocol.yaml</code>. The agent reads those after clone —
-              you don&apos;t paste a free-form goal here.
+              Install the Trainfabric GitHub App, then pick or create a repo. The agent loads{" "}
+              <code className="text-[11px]">TRAINFABRIC.md</code> /{" "}
+              <code className="text-[11px]">AGENTS.md</code> /{" "}
+              <code className="text-[11px]">protocol.yaml</code> after clone.
             </p>
-            <div className="space-y-1">
-              <Label className="text-xs">Repo URL</Label>
-              <Input
-                value={repoUrl}
-                onChange={(e) => setRepoUrl(e.target.value)}
-                placeholder="https://github.com/org/autoresearch-repo"
-                autoFocus
-              />
-            </div>
+
+            {ghLoading ? (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Checking GitHub connection…
+              </div>
+            ) : null}
+
+            {ghStatus && !ghStatus.configured ? (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
+                GitHub App is not configured on the API (
+                <code className="text-[11px]">GITHUB_APP_*</code> secrets). You can still paste a
+                public repo URL under Advanced. Callback base:{" "}
+                <code className="text-[11px]">{publicApiOrigin()}</code>
+              </div>
+            ) : null}
+
+            {ghStatus?.configured && !ghStatus.connected ? (
+              <div className="space-y-2 rounded-md border border-primary/20 bg-primary/5 px-3 py-3">
+                <p className="text-xs text-muted-foreground">
+                  Connect GitHub to browse private repos, create seeded autoresearch repos, and
+                  authorize clone/push for the agent.
+                </p>
+                <Button type="button" size="sm" onClick={() => void connectGithub()} disabled={connectingGh}>
+                  {connectingGh ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Github className="h-3.5 w-3.5" />
+                  )}
+                  Connect GitHub
+                </Button>
+              </div>
+            ) : null}
+
+            {ghStatus?.connected ? (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <p className="text-muted-foreground">
+                    Connected as{" "}
+                    <span className="font-medium text-foreground">@{ghStatus.login}</span>
+                  </p>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => void connectGithub()}
+                  >
+                    Manage install
+                  </Button>
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs">Account / org</Label>
+                  <select
+                    className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                    value={installationId ?? ""}
+                    onChange={(e) => setInstallationId(Number(e.target.value) || null)}
+                  >
+                    {ghInstalls.map((i) => (
+                      <option key={i.installationId} value={i.installationId}>
+                        {i.accountLogin} ({i.accountType})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex flex-wrap gap-1.5">
+                  {(
+                    [
+                      ["repos", "Your repos"],
+                      ["create", "Create repo"],
+                      ["advanced", "Advanced URL"],
+                    ] as const
+                  ).map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setRepoTab(id)}
+                      className={cn(
+                        "rounded-full border px-2.5 py-1 text-[11px]",
+                        repoTab === id
+                          ? "border-primary bg-primary/10 text-foreground"
+                          : "border-border text-muted-foreground",
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                {repoTab === "repos" ? (
+                  <div className="space-y-2">
+                    <Input
+                      value={repoSearch}
+                      onChange={(e) => setRepoSearch(e.target.value)}
+                      placeholder="Search repos…"
+                      className="h-8 text-sm"
+                    />
+                    <ul className="max-h-48 space-y-1 overflow-y-auto rounded-md border p-1">
+                      {filteredRepos.map((r) => (
+                        <li key={r.id}>
+                          <button
+                            type="button"
+                            onClick={() => selectRepo(r)}
+                            className={cn(
+                              "flex w-full flex-col rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted/60",
+                              selectedFullName === r.fullName && "bg-primary/10",
+                            )}
+                          >
+                            <span className="font-medium">{r.fullName}</span>
+                            <span className="text-[11px] text-muted-foreground">
+                              {r.private ? "private" : "public"} · {r.defaultBranch}
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                      {filteredRepos.length === 0 ? (
+                        <li className="px-2 py-3 text-xs text-muted-foreground">
+                          No repos in this installation. Create one or grant the App access.
+                        </li>
+                      ) : null}
+                    </ul>
+                    {selectedFullName ? (
+                      <p className="text-[11px] text-muted-foreground">
+                        Selected <span className="font-medium text-foreground">{selectedFullName}</span>
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {repoTab === "create" ? (
+                  <div className="space-y-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Repository name</Label>
+                      <Input
+                        value={newRepoName}
+                        onChange={(e) => setNewRepoName(e.target.value)}
+                        placeholder="my-autoresearch"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Description</Label>
+                      <Input
+                        value={newRepoDesc}
+                        onChange={(e) => setNewRepoDesc(e.target.value)}
+                        placeholder="Trainfabric autoresearch campaign"
+                      />
+                    </div>
+                    <label className="flex items-center gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={newRepoPrivate}
+                        onChange={(e) => setNewRepoPrivate(e.target.checked)}
+                      />
+                      Private repository (recommended)
+                    </label>
+                    <p className="text-[11px] text-muted-foreground">
+                      Seeds <code>TRAINFABRIC.md</code>, <code>protocol.yaml</code>,{" "}
+                      <code>AGENTS.md</code>, and <code>.gitignore</code>.
+                    </p>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => void createRepo()}
+                      disabled={creatingRepo || !newRepoName.trim()}
+                    >
+                      {creatingRepo ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Plus className="h-3.5 w-3.5" />
+                      )}
+                      Create repo
+                    </Button>
+                  </div>
+                ) : null}
+
+                {repoTab === "advanced" ? (
+                  <div className="space-y-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Public repo URL</Label>
+                      <Input
+                        value={repoUrl}
+                        onChange={(e) => {
+                          setRepoUrl(e.target.value);
+                          setSelectedFullName("");
+                          setGithubRepoId(undefined);
+                          setCreatedFromPlatform(false);
+                        }}
+                        placeholder="https://github.com/org/public-repo"
+                      />
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {(!ghStatus?.connected || repoTab === "advanced") && ghStatus && !ghStatus.connected ? (
+              <div className="space-y-1">
+                <Label className="text-xs">Public repo URL (fallback)</Label>
+                <Input
+                  value={repoUrl}
+                  onChange={(e) => setRepoUrl(e.target.value)}
+                  placeholder="https://github.com/org/autoresearch-repo"
+                />
+              </div>
+            ) : null}
+
             <div className="space-y-1">
               <Label className="text-xs">Default branch</Label>
               <Input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" />
@@ -521,7 +899,10 @@ function NewAgentWizard() {
           <div className="space-y-3">
             <h2 className="text-sm font-semibold">4. Review & start</h2>
             <dl className="space-y-2 rounded-md bg-muted/30 p-3 text-xs">
-              <Row k="Repo" v={`${repoShortName(repoUrl)} @ ${branch || "main"}`} />
+              <Row
+                k="Repo"
+                v={`${selectedFullName || repoShortName(repoUrl)} @ ${branch || "main"}`}
+              />
               <Row
                 k="Instructions"
                 v="Loaded from TRAINFABRIC.md / AGENTS.md / README.md after clone"

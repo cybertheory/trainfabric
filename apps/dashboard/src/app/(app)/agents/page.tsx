@@ -66,8 +66,9 @@ export default function AgentsPage() {
             <h1 className="text-2xl font-semibold tracking-tight">Agents</h1>
           </div>
           <p className="max-w-xl text-sm text-muted-foreground">
-            Long-running autoresearch campaigns. Connect a GitHub repo first — goals and instructions
-            live in that repo — then set protocol and compute. GPU trials run on Modal or a{" "}
+            Long-running autoresearch campaigns. Connect the GitHub App, pick or create a repo —
+            goals and instructions live there — then set protocol and compute. GPU trials run on
+            Modal or a{" "}
             <a
               href="https://github.com/cybertheory/trainfabric-gpu-runner"
               target="_blank"

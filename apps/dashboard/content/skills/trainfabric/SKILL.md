@@ -74,7 +74,7 @@ Runs Hermes + duckdb-analytics skill in compute (schema → estimate → DuckDB)
 
 Long-running campaign. Agent sandbox = [Box](https://box.ascii.dev/). GPU trials = Modal **or** a self-hosted [HTTP GPU runner](https://github.com/cybertheory/trainfabric-gpu-runner).
 
-**Repo-first**: pass a `repo_url` whose tree contains the research brief (`TRAINFABRIC.md` → `AGENTS.md` → `README.md`) and prefer encoding the eval contract in `protocol.yaml`. The cloud agent loads that brief after clone, then runs `discover_datasets` / `bind_auto_dataset`. Pass `dataset_id` only as a starting hint; `goal` is an optional override.
+**Repo-first (GitHub App)**: connect the Trainfabric GitHub App from the dashboard (`/agents/new` or `/me`), then pass `repo_full_name` + `installation_id` (or a public `repo_url`). The tree should contain the research brief (`TRAINFABRIC.md` → `AGENTS.md` → `README.md`) and prefer encoding the eval contract in `protocol.yaml`. Platform **Create repo** seeds those files. The cloud agent loads the brief after authenticated clone, then runs `discover_datasets` / `bind_auto_dataset`. Pass `dataset_id` only as a starting hint; `goal` is an optional override.
 
 **Custom GPU**: register once, run the public image on your machine, pass `runnerId` into `start_auto`.
 
@@ -83,7 +83,9 @@ register_gpu_runner({ name: "home-gpu", capacity: "gpu:1" })
 # → { runnerId, token, docker_run }  — clone https://github.com/cybertheory/trainfabric-gpu-runner
 
 start_auto({
-  repo_url: "https://github.com/org/autoresearch-repo",
+  repo_full_name: "org/autoresearch-repo",
+  installation_id: 12345678,
+  // or public: repo_url: "https://github.com/org/autoresearch-repo",
   protocol: {
     // snapshotId is frozen when a dataset is bound
     metric: { name: "val_bpb", direction: "min" },

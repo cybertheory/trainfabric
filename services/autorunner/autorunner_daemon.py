@@ -11,7 +11,8 @@ keep/revert → report progress / social findings. Steer messages arrive via
 Env:
   AUTORUN_ID, TF_API_URL, TF_TOKEN, TF_DATASET_ID (optional),
   AUTORUN_GOAL (optional override; otherwise loaded from the repo),
-  PROTOCOL_JSON, REPO_URL, REPO_BRANCH, COMPUTE_PROVIDER
+  PROTOCOL_JSON, REPO_URL, REPO_BRANCH, COMPUTE_PROVIDER,
+  GITHUB_TOKEN (optional App installation token), REPO_FULL_NAME
 """
 
 from __future__ import annotations
@@ -75,14 +76,58 @@ def sh(cmd: str, cwd: Optional[Path] = None, check: bool = True) -> subprocess.C
     )
 
 
-def ensure_repo() -> None:
+def _repo_full_name() -> str:
+    full = env("REPO_FULL_NAME")
+    if full:
+        return full.replace(".git", "")
     url = env("REPO_URL")
-    branch = env("REPO_BRANCH", "main")
+    return (
+        url.replace("https://github.com/", "")
+        .replace("https://www.github.com/", "")
+        .replace(".git", "")
+        .strip("/")
+    )
+
+
+def _clone_url(token: str = "") -> str:
+    full = _repo_full_name()
+    tok = token or env("GITHUB_TOKEN")
+    if tok and full and "/" in full:
+        return f"https://x-access-token:{tok}@github.com/{full}.git"
+    url = env("REPO_URL")
     if not url:
         raise RuntimeError("REPO_URL required")
+    return url
+
+
+def refresh_github_token() -> str:
+    """Re-mint installation token via control plane (campaign auth)."""
+    auto_run_id = env("AUTORUN_ID")
+    if not auto_run_id:
+        return env("GITHUB_TOKEN")
+    try:
+        out = api("POST", f"/auto/{auto_run_id}/github-credentials", {})
+        tok = str(out.get("token") or "")
+        if tok:
+            os.environ["GITHUB_TOKEN"] = tok
+        return tok or env("GITHUB_TOKEN")
+    except Exception as e:  # noqa: BLE001
+        print(f"github token refresh skipped: {e}", file=sys.stderr)
+        return env("GITHUB_TOKEN")
+
+
+def ensure_repo() -> None:
+    branch = env("REPO_BRANCH", "main")
+    url = _clone_url()
     if not REPO_DIR.exists():
         REPO_DIR.parent.mkdir(parents=True, exist_ok=True)
-        sh(f"git clone --branch {branch} --single-branch {url} {REPO_DIR}")
+        clone = sh(f"git clone --branch {branch} --single-branch {url} {REPO_DIR}", check=False)
+        if clone.returncode != 0:
+            tok = refresh_github_token()
+            url = _clone_url(tok)
+            sh(f"git clone --branch {branch} --single-branch {url} {REPO_DIR}")
+        sh('git config user.email "bot@trainfabric.local"', cwd=REPO_DIR, check=False)
+        sh('git config user.name "trainfabric-bot"', cwd=REPO_DIR, check=False)
     else:
         sh("git fetch origin", cwd=REPO_DIR, check=False)
         sh(f"git checkout {branch}", cwd=REPO_DIR, check=False)
@@ -360,7 +405,14 @@ def wait_trial(auto_run_id: str, trial_id: str, timeout_sec: int) -> dict[str, A
 
 def ratchet(kept: bool, sha_before: str) -> None:
     if kept:
-        sh("git push origin HEAD", cwd=REPO_DIR, check=False)
+        push = sh("git push origin HEAD", cwd=REPO_DIR, check=False)
+        if push.returncode != 0 and env("GITHUB_INSTALLATION_ID"):
+            tok = refresh_github_token()
+            full = _repo_full_name()
+            if tok and full:
+                remote = f"https://x-access-token:{tok}@github.com/{full}.git"
+                sh(f"git remote set-url origin {remote}", cwd=REPO_DIR, check=False)
+                sh("git push origin HEAD", cwd=REPO_DIR, check=False)
         return
     sh(f"git reset --hard {sha_before}", cwd=REPO_DIR, check=False)
 

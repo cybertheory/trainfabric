@@ -183,11 +183,13 @@ function registerTools(server: McpServer, ctx: McpContext) {
     "start_auto",
     {
       description:
-        "Start a long-running autoresearch AutoRun (Box + Modal/HTTP GPU). Repo-first: connect a GitHub repo that contains the research brief (TRAINFABRIC.md / AGENTS.md / README.md). The agent loads goals from the repo after clone and binds datasets from that brief (dataset_id optional). Requires repo_url + protocol.",
+        "Start a long-running autoresearch AutoRun (Box + Modal/HTTP GPU). Repo-first: GitHub App install or public repo URL with research brief (TRAINFABRIC.md / AGENTS.md / README.md). Prefer repo_full_name + installation_id for private clone/push.",
       inputSchema: {
         goal: z.string().optional(),
         dataset_id: z.string().optional(),
-        repo_url: z.string(),
+        repo_url: z.string().optional(),
+        repo_full_name: z.string().optional(),
+        installation_id: z.number().optional(),
         default_branch: z.string().optional(),
         protocol: z.record(z.unknown()),
         compute: z.record(z.unknown()),

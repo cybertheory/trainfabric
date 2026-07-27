@@ -325,6 +325,12 @@ export interface AutoProtocol {
 export interface AutoRepoBind {
   url: string;
   defaultBranch: string;
+  /** GitHub App installation that owns clone/push credentials. */
+  installationId?: number;
+  /** owner/repo */
+  fullName?: string;
+  githubRepoId?: number;
+  createdFromPlatform?: boolean;
   boxRepoSelected?: boolean;
   lastSyncedSha?: string;
 }
@@ -439,14 +445,49 @@ export interface CreateAutoRunRequest {
    * (TRAINFABRIC.md / AGENTS.md / README.md) — the daemon loads it after clone.
    */
   goal?: string;
-  /** Required — Autoresearch is repo-driven. */
-  repoUrl: string;
+  /**
+   * Repo URL (https://github.com/owner/repo). Preferred when using a public
+   * escape hatch; otherwise pass installationId + repoFullName.
+   */
+  repoUrl?: string;
+  /** GitHub App installation id for authenticated clone/push. */
+  installationId?: number;
+  /** owner/repo — preferred with installationId. */
+  repoFullName?: string;
+  githubRepoId?: number;
+  createdFromPlatform?: boolean;
   defaultBranch?: string;
   /** Optional starting-dataset hint; the agent may discover + bind others from the repo brief. */
   datasetId?: string;
   protocol: AutoProtocol;
   compute: AutoComputeConfig;
   templateId?: string;
+}
+
+export interface GithubConnectionStatus {
+  configured: boolean;
+  connected: boolean;
+  login?: string;
+  avatarUrl?: string;
+  installationCount: number;
+}
+
+export interface CreateGithubRepoRequest {
+  installationId: number;
+  name: string;
+  private?: boolean;
+  description?: string;
+  defaultBranch?: string;
+}
+
+export interface CreateGithubRepoResponse {
+  fullName: string;
+  htmlUrl: string;
+  cloneUrl: string;
+  defaultBranch: string;
+  installationId: number;
+  githubRepoId: number;
+  private: boolean;
 }
 
 export interface ReportAutoInstructionsRequest {

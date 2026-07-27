@@ -17,7 +17,35 @@ Docs: `/docs/agents`. MCP: `register_gpu_runner` / `list_gpu_runners` / `start_a
 
 Started with env from the router on `POST /auto`:
 
-`AUTORUN_ID`, `TF_API_URL`, `TF_TOKEN`, `TF_DATASET_ID` (optional), `AUTORUN_GOAL` (optional override), `PROTOCOL_JSON`, `REPO_URL`, `REPO_BRANCH`.
+`AUTORUN_ID`, `TF_API_URL`, `TF_TOKEN`, `TF_DATASET_ID` (optional), `AUTORUN_GOAL` (optional override), `PROTOCOL_JSON`, `REPO_URL`, `REPO_FULL_NAME`, `REPO_BRANCH`, `GITHUB_TOKEN` (short-lived App installation token), `GITHUB_INSTALLATION_ID`.
+
+On push failure the daemon calls `POST /auto/:id/github-credentials` to refresh the token.
+
+## GitHub App setup
+
+Create a GitHub App (Settings → Developer settings → GitHub Apps):
+
+1. **Callback URL**: `${PUBLIC_API_BASE}/github/callback`
+2. **Setup URL** (optional): same as callback
+3. Enable **Request user authorization (OAuth) during installation**
+4. **Webhook URL**: `${PUBLIC_API_BASE}/github/webhook` + webhook secret
+5. Permissions: Repository **Contents** R/W, **Metadata** R, **Administration** R/W (create repos)
+6. Install on accounts/orgs users will use from the dashboard
+
+Worker secrets (`wrangler secret put` / `.dev.vars`):
+
+| Secret | Purpose |
+|--------|---------|
+| `GITHUB_APP_ID` | App id |
+| `GITHUB_APP_SLUG` | URL slug (`github.com/apps/{slug}`) |
+| `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET` | User OAuth during install |
+| `GITHUB_APP_PRIVATE_KEY` | PEM (use `\n` for newlines in secrets) |
+| `GITHUB_APP_WEBHOOK_SECRET` | HMAC for `POST /github/webhook` |
+| `GITHUB_APP_STATE_SECRET` | Signed install `state` |
+| `GITHUB_TOKEN_CRYPTO_KEY` | AES-GCM key for stored user OAuth tokens |
+| `DASHBOARD_URL` | Post-callback redirect origin |
+
+Dashboard flow: **Connect GitHub** → install/authorize → pick or **Create repo** (seeds `TRAINFABRIC.md`, `protocol.yaml`, `AGENTS.md`) → `POST /auto` with `installationId` + `repoFullName`.
 
 ## Status: push, not cron-poll
 

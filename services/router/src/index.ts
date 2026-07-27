@@ -44,6 +44,7 @@ import type {
   BindAutoDatasetRequest,
   CompleteAutoTrialRequest,
   CreateAutoRunRequest,
+  CreateGithubRepoRequest,
   CreateSocialPostRequest,
   PostAutoMessageRequest,
   RegisterRunnerRequest,
@@ -67,6 +68,27 @@ import {
   reportInstructions,
   resumeAutoRun,
 } from "./auto";
+import {
+  authenticatedCloneUrl,
+  buildInstallUrl,
+  createAppJwt,
+  createInstallationAccessToken,
+  createRepoUnderInstallation,
+  dashboardOrigin,
+  exchangeOAuthCode,
+  getGithubUser,
+  githubConfigured,
+  listInstallationRepos,
+  listUserInstallations,
+  signInstallState,
+  verifyInstallState,
+  verifyWebhookSignature,
+} from "./github";
+import {
+  createGithubStore,
+  encryptUserToken,
+  tokenCryptoKey,
+} from "./githubStore";
 
 export { CatalogDO, WarmRouterDO, ComputeContainerClass as ComputeContainer };
 
@@ -122,6 +144,15 @@ export interface Env {
   PUBLIC_API_BASE?: string;
   /** HS256 secret for short-lived Hermes agent tokens. */
   AGENT_TOKEN_SECRET?: string;
+  /** GitHub App (install + user OAuth during install). */
+  GITHUB_APP_ID?: string;
+  GITHUB_APP_SLUG?: string;
+  GITHUB_APP_CLIENT_ID?: string;
+  GITHUB_APP_CLIENT_SECRET?: string;
+  GITHUB_APP_PRIVATE_KEY?: string;
+  GITHUB_APP_WEBHOOK_SECRET?: string;
+  GITHUB_APP_STATE_SECRET?: string;
+  GITHUB_TOKEN_CRYPTO_KEY?: string;
 }
 
 function computeUrlFor(env: Env): string {
@@ -1454,7 +1485,16 @@ app.post("/datasets/:id/auto", async (c) => {
     const body = (await c.req.json()) as CreateAutoRunRequest;
     const store = createAutoStore(c.env);
     const box = boxClientFromEnv(c.env);
-    const origin = c.env.PUBLIC_API_URL || new URL(c.req.url).origin;
+    const origin = c.env.PUBLIC_API_URL || c.env.PUBLIC_API_BASE || new URL(c.req.url).origin;
+    let githubToken: string | undefined;
+    if (body.installationId && githubConfigured(c.env)) {
+      const ghStore = createGithubStore(c.env);
+      const inst = await ghStore.getInstallation(body.installationId);
+      if (!inst || inst.userId !== identity.subject || inst.suspended) {
+        return c.json({ error: "GitHub installation not found for this user" }, 403);
+      }
+      githubToken = (await createInstallationAccessToken(c.env, body.installationId)).token;
+    }
     const run = await createAutoRun({
       store,
       box,
@@ -1463,6 +1503,7 @@ app.post("/datasets/:id/auto", async (c) => {
       body,
       tfApiUrl: origin,
       campaignToken: c.req.header("Authorization")?.replace(/^Bearer\s+/i, "") || "anon",
+      githubToken,
       env: c.env,
     });
     return c.json(run, 201);
@@ -1487,6 +1528,317 @@ app.get("/datasets/:id/auto", async (c) => {
   }
 });
 
+/* ── GitHub App ──────────────────────────────────────────────────── */
+
+app.get("/github/status", async (c) => {
+  try {
+    const gate = requireClerkIdentity(c);
+    if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+    const configured = githubConfigured(c.env);
+    if (!configured) {
+      return c.json({ configured: false, connected: false, installationCount: 0 });
+    }
+    const store = createGithubStore(c.env);
+    const account = await store.getAccount(gate.identity.subject);
+    const installs = account ? await store.listInstallations(gate.identity.subject) : [];
+    return c.json({
+      configured: true,
+      connected: Boolean(account),
+      login: account?.login,
+      avatarUrl: account?.avatarUrl,
+      installationCount: installs.filter((i) => !i.suspended).length,
+    });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+/** Returns { url } for the browser to navigate to GitHub App install. */
+app.post("/github/install", async (c) => {
+  try {
+    const gate = requireClerkIdentity(c);
+    if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+    if (!githubConfigured(c.env)) {
+      return c.json({ error: "GitHub App is not configured on the Worker" }, 503);
+    }
+    const body = (await c.req.json().catch(() => ({}))) as { returnTo?: string };
+    const returnTo = body.returnTo?.startsWith("/")
+      ? body.returnTo
+      : "/agents/new?github=connected";
+    const state = await signInstallState(c.env, {
+      userId: gate.identity.subject,
+      returnTo,
+    });
+    return c.json({ url: buildInstallUrl(c.env, state) });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+/** Browser redirect helper — same as POST but 302 when Authorization present. */
+app.get("/github/install", async (c) => {
+  try {
+    const gate = requireClerkIdentity(c);
+    if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+    if (!githubConfigured(c.env)) {
+      return c.json({ error: "GitHub App is not configured on the Worker" }, 503);
+    }
+    const returnTo = c.req.query("returnTo")?.startsWith("/")
+      ? c.req.query("returnTo")!
+      : "/agents/new?github=connected";
+    const state = await signInstallState(c.env, {
+      userId: gate.identity.subject,
+      returnTo,
+    });
+    return c.redirect(buildInstallUrl(c.env, state), 302);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.get("/github/callback", async (c) => {
+  const dash = dashboardOrigin(c.env);
+  try {
+    const code = c.req.query("code");
+    const state = c.req.query("state");
+    const installationIdRaw = c.req.query("installation_id");
+    const setupAction = c.req.query("setup_action");
+    if (!state) {
+      return c.redirect(`${dash}/agents/new?github=error&reason=missing_state`, 302);
+    }
+    const verified = await verifyInstallState(c.env, state);
+    const store = createGithubStore(c.env);
+    const now = Date.now();
+    const cryptoKey = tokenCryptoKey(c.env);
+
+    if (code) {
+      const { accessToken } = await exchangeOAuthCode(c.env, code);
+      const ghUser = await getGithubUser(accessToken);
+      await store.upsertAccount({
+        userId: verified.userId,
+        githubUserId: ghUser.id,
+        login: ghUser.login,
+        avatarUrl: ghUser.avatarUrl,
+        userAccessTokenEnc: await encryptUserToken(accessToken, cryptoKey),
+        createdAt: now,
+        updatedAt: now,
+      });
+      const installs = await listUserInstallations(accessToken);
+      for (const inst of installs) {
+        await store.upsertInstallation({
+          installationId: inst.installationId,
+          userId: verified.userId,
+          accountLogin: inst.accountLogin,
+          accountType: inst.accountType,
+          accountId: inst.accountId,
+          avatarUrl: inst.avatarUrl,
+          suspended: false,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+
+    if (installationIdRaw && setupAction !== "request") {
+      const installationId = Number(installationIdRaw);
+      if (Number.isFinite(installationId)) {
+        // Ensure this install is linked even if user/installations listing lags.
+        const existing = await store.getInstallation(installationId);
+        if (!existing) {
+          try {
+            const { token } = await createInstallationAccessToken(c.env, installationId);
+            const appJwt = await createAppJwt(c.env);
+            const meta = await fetch(`https://api.github.com/app/installations/${installationId}`, {
+              headers: {
+                Authorization: `Bearer ${appJwt}`,
+                Accept: "application/vnd.github+json",
+                "User-Agent": "trainfabric-router",
+                "X-GitHub-Api-Version": "2022-11-28",
+              },
+            });
+            void token;
+            if (meta.ok) {
+              const body = (await meta.json()) as {
+                id: number;
+                account?: { login: string; id: number; type: string; avatar_url?: string };
+              };
+              if (body.account) {
+                await store.upsertInstallation({
+                  installationId: body.id,
+                  userId: verified.userId,
+                  accountLogin: body.account.login,
+                  accountType: body.account.type === "Organization" ? "Organization" : "User",
+                  accountId: body.account.id,
+                  avatarUrl: body.account.avatar_url,
+                  suspended: false,
+                  createdAt: now,
+                  updatedAt: now,
+                });
+              }
+            }
+          } catch {
+            /* best-effort — user/installations path above is primary */
+          }
+        } else if (existing.userId !== verified.userId) {
+          await store.upsertInstallation({
+            ...existing,
+            userId: verified.userId,
+            updatedAt: now,
+          });
+        }
+      }
+    }
+
+    const dest = verified.returnTo.startsWith("http")
+      ? verified.returnTo
+      : `${dash}${verified.returnTo.startsWith("/") ? "" : "/"}${verified.returnTo}`;
+    const sep = dest.includes("?") ? "&" : "?";
+    return c.redirect(`${dest}${sep}github=connected`, 302);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "callback_failed";
+    return c.redirect(
+      `${dash}/agents/new?github=error&reason=${encodeURIComponent(msg.slice(0, 120))}`,
+      302,
+    );
+  }
+});
+
+app.post("/github/webhook", async (c) => {
+  try {
+    const raw = await c.req.text();
+    const secret = c.env.GITHUB_APP_WEBHOOK_SECRET?.trim();
+    if (secret) {
+      const ok = await verifyWebhookSignature(
+        secret,
+        raw,
+        c.req.header("x-hub-signature-256"),
+      );
+      if (!ok) return c.json({ error: "Invalid signature" }, 401);
+    }
+    const event = c.req.header("x-github-event") || "";
+    const payload = JSON.parse(raw || "{}") as {
+      action?: string;
+      installation?: { id: number; suspended_at?: string | null };
+    };
+    const store = createGithubStore(c.env);
+    if (event === "installation" && payload.installation?.id) {
+      const id = payload.installation.id;
+      if (payload.action === "deleted") {
+        await store.deleteInstallation(id);
+      } else if (payload.action === "suspend") {
+        await store.setInstallationSuspended(id, true);
+      } else if (payload.action === "unsuspend") {
+        await store.setInstallationSuspended(id, false);
+      }
+    }
+    return c.json({ ok: true });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.get("/github/installations", async (c) => {
+  try {
+    const gate = requireClerkIdentity(c);
+    if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+    const store = createGithubStore(c.env);
+    const installs = (await store.listInstallations(gate.identity.subject)).filter(
+      (i) => !i.suspended,
+    );
+    return c.json({
+      installations: installs.map((i) => ({
+        installationId: i.installationId,
+        accountLogin: i.accountLogin,
+        accountType: i.accountType,
+        accountId: i.accountId,
+        avatarUrl: i.avatarUrl,
+      })),
+    });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.get("/github/installations/:id/repos", async (c) => {
+  try {
+    const gate = requireClerkIdentity(c);
+    if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+    if (!githubConfigured(c.env)) {
+      return c.json({ error: "GitHub App is not configured" }, 503);
+    }
+    const installationId = Number(c.req.param("id"));
+    if (!Number.isFinite(installationId)) return c.json({ error: "Invalid installation id" }, 400);
+    const store = createGithubStore(c.env);
+    const inst = await store.getInstallation(installationId);
+    if (!inst || inst.userId !== gate.identity.subject) {
+      return c.json({ error: "Installation not found" }, 404);
+    }
+    const page = Number(c.req.query("page") || "1");
+    const repos = await listInstallationRepos(c.env, installationId, {
+      page: Number.isFinite(page) ? page : 1,
+      perPage: 50,
+    });
+    return c.json({ repos });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.post("/github/repos", async (c) => {
+  try {
+    const gate = requireClerkIdentity(c);
+    if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+    if (!githubConfigured(c.env)) {
+      return c.json({ error: "GitHub App is not configured" }, 503);
+    }
+    const body = (await c.req.json()) as CreateGithubRepoRequest;
+    if (!body.installationId || !body.name?.trim()) {
+      return c.json({ error: "installationId and name required" }, 400);
+    }
+    const store = createGithubStore(c.env);
+    const inst = await store.getInstallation(body.installationId);
+    if (!inst || inst.userId !== gate.identity.subject || inst.suspended) {
+      return c.json({ error: "Installation not found" }, 404);
+    }
+    const created = await createRepoUnderInstallation(c.env, {
+      installationId: body.installationId,
+      accountLogin: inst.accountLogin,
+      accountType: inst.accountType,
+      name: body.name,
+      private: body.private,
+      description: body.description,
+      defaultBranch: body.defaultBranch,
+    });
+    return c.json(
+      {
+        fullName: created.fullName,
+        htmlUrl: created.htmlUrl,
+        cloneUrl: created.cloneUrl,
+        defaultBranch: created.defaultBranch,
+        installationId: body.installationId,
+        githubRepoId: created.id,
+        private: created.private,
+      },
+      201,
+    );
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.delete("/github/connection", async (c) => {
+  try {
+    const gate = requireClerkIdentity(c);
+    if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+    const store = createGithubStore(c.env);
+    await store.deleteInstallationsForUser(gate.identity.subject);
+    await store.deleteAccount(gate.identity.subject);
+    return c.json({ ok: true });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
 app.post("/auto", async (c) => {
   try {
     const identity = identityOrAnon(c.get("identity"), c.env);
@@ -1503,7 +1855,17 @@ app.post("/auto", async (c) => {
     }
     const store = createAutoStore(c.env);
     const box = boxClientFromEnv(c.env);
-    const origin = c.env.PUBLIC_API_URL || new URL(c.req.url).origin;
+    const origin = c.env.PUBLIC_API_URL || c.env.PUBLIC_API_BASE || new URL(c.req.url).origin;
+    let githubToken: string | undefined;
+    if (body.installationId && githubConfigured(c.env)) {
+      const ghStore = createGithubStore(c.env);
+      const inst = await ghStore.getInstallation(body.installationId);
+      if (!inst || inst.userId !== identity.subject || inst.suspended) {
+        return c.json({ error: "GitHub installation not found for this user" }, 403);
+      }
+      const minted = await createInstallationAccessToken(c.env, body.installationId);
+      githubToken = minted.token;
+    }
     const run = await createAutoRun({
       store,
       box,
@@ -1512,6 +1874,7 @@ app.post("/auto", async (c) => {
       body,
       tfApiUrl: origin,
       campaignToken: c.req.header("Authorization")?.replace(/^Bearer\s+/i, "") || "anon",
+      githubToken,
       env: c.env,
     });
     return c.json(run, 201);
@@ -1699,6 +2062,52 @@ app.post("/auto/:id/messages/stream", async (c) => {
   }
 });
 
+/** Mint a short-lived installation token for daemon/GPU git auth. */
+app.post("/auto/:id/github-credentials", async (c) => {
+  try {
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    if (!githubConfigured(c.env)) {
+      return c.json({ error: "GitHub App is not configured" }, 503);
+    }
+    const store = createAutoStore(c.env);
+    const run = await store.getAutoRun(c.req.param("id"));
+    if (!run) return c.json({ error: "Not found" }, 404);
+    if (run.ownerId !== identity.subject && c.get("authVia") !== "agent") {
+      // Campaign token is minted as the owner — agent/campaign bearer shares owner subject.
+      return c.json({ error: "Forbidden" }, 403);
+    }
+    const installationId = run.repo.installationId;
+    if (!installationId) {
+      return c.json({ error: "AutoRun has no GitHub installation bound" }, 400);
+    }
+    const ghStore = createGithubStore(c.env);
+    const inst = await ghStore.getInstallation(installationId);
+    if (!inst || inst.suspended) {
+      return c.json({ error: "GitHub installation unavailable" }, 404);
+    }
+    // Owner or campaign token for this run's owner.
+    if (inst.userId !== run.ownerId) {
+      return c.json({ error: "Installation ownership mismatch" }, 403);
+    }
+    if (identity.subject !== run.ownerId) {
+      return c.json({ error: "Forbidden" }, 403);
+    }
+    const minted = await createInstallationAccessToken(c.env, installationId);
+    const fullName =
+      run.repo.fullName ||
+      run.repo.url.replace(/^https?:\/\/(www\.)?github\.com\//, "").replace(/\.git$/, "");
+    return c.json({
+      token: minted.token,
+      expiresAt: minted.expiresAt,
+      cloneUrl: authenticatedCloneUrl(minted.token, fullName),
+      fullName,
+    });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
 app.post("/auto/:id/heartbeat", async (c) => {
   try {
     const identity = identityOrAnon(c.get("identity"), c.env);
@@ -1780,13 +2189,24 @@ app.post("/auto/:id/trials", async (c) => {
       hypothesis?: string;
       commitSha?: string;
     };
-    const origin = c.env.PUBLIC_API_URL || new URL(c.req.url).origin;
+    const origin = c.env.PUBLIC_API_URL || c.env.PUBLIC_API_BASE || new URL(c.req.url).origin;
+    let githubToken: string | undefined;
+    if (run.repo.installationId && githubConfigured(c.env)) {
+      try {
+        githubToken = (
+          await createInstallationAccessToken(c.env, run.repo.installationId)
+        ).token;
+      } catch {
+        /* public clone fallback */
+      }
+    }
     const trial = await enqueueTrial({
       store,
       run,
       hypothesis: body.hypothesis,
       commitSha: body.commitSha,
       callbackBaseUrl: origin,
+      githubToken,
       env: c.env,
     });
     return c.json(trial, 201);
@@ -1863,7 +2283,19 @@ app.post("/runners/claim", async (c) => {
     const trial = await store.claimPendingTrial(runner.id);
     if (!trial) return c.json({ trial: null });
     const run = await store.getAutoRun(trial.autoRunId);
-    return c.json({ trial, run });
+    let cloneUrl: string | undefined;
+    if (run?.repo.installationId && githubConfigured(c.env)) {
+      try {
+        const minted = await createInstallationAccessToken(c.env, run.repo.installationId);
+        const fullName =
+          run.repo.fullName ||
+          run.repo.url.replace(/^https?:\/\/(www\.)?github\.com\//, "").replace(/\.git$/, "");
+        cloneUrl = authenticatedCloneUrl(minted.token, fullName);
+      } catch {
+        /* public clone fallback */
+      }
+    }
+    return c.json({ trial, run, cloneUrl });
   } catch (e) {
     return errResponse(e);
   }
@@ -2148,7 +2580,16 @@ function buildMcpContext(c: {
     startAuto: async (args) => {
       if (!identity) throw new AuthError("Auth required");
       const store = createAutoStore(c.env);
-      const origin = c.env.PUBLIC_API_URL || new URL(c.req.url).origin;
+      const origin = c.env.PUBLIC_API_URL || c.env.PUBLIC_API_BASE || new URL(c.req.url).origin;
+      let githubToken: string | undefined;
+      if (args.installation_id && githubConfigured(c.env)) {
+        const ghStore = createGithubStore(c.env);
+        const inst = await ghStore.getInstallation(args.installation_id);
+        if (!inst || inst.userId !== identity.subject || inst.suspended) {
+          throw new AuthError("GitHub installation not found for this user");
+        }
+        githubToken = (await createInstallationAccessToken(c.env, args.installation_id)).token;
+      }
       return createAutoRun({
         store,
         box: boxClientFromEnv(c.env),
@@ -2157,6 +2598,8 @@ function buildMcpContext(c: {
         body: {
           goal: args.goal,
           repoUrl: args.repo_url,
+          repoFullName: args.repo_full_name,
+          installationId: args.installation_id,
           defaultBranch: args.default_branch,
           datasetId: args.dataset_id,
           protocol: args.protocol,
@@ -2165,6 +2608,7 @@ function buildMcpContext(c: {
         },
         tfApiUrl: origin,
         campaignToken: "mcp",
+        githubToken,
         env: c.env,
       });
     },
@@ -2327,6 +2771,7 @@ export default {
       path.startsWith("/jobs/") ||
       path === "/auto" ||
       path.startsWith("/auto/") ||
+      path.startsWith("/github") ||
       path.startsWith("/runners") ||
       path.startsWith("/results/") ||
       path.startsWith("/r2/") ||

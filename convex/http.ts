@@ -421,4 +421,103 @@ http.route({
   }),
 });
 
+http.route({
+  path: "/api/github/accounts/upsert",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    await ctx.runMutation(api.github.upsertAccount, body);
+    return Response.json({ ok: true });
+  }),
+});
+
+http.route({
+  path: "/api/github/accounts/get",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const { userId } = await req.json();
+    const row = await ctx.runQuery(api.github.getAccount, { userId });
+    return Response.json(row);
+  }),
+});
+
+http.route({
+  path: "/api/github/accounts/delete",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const { userId } = await req.json();
+    await ctx.runMutation(api.github.deleteAccount, { userId });
+    return Response.json({ ok: true });
+  }),
+});
+
+http.route({
+  path: "/api/github/installations/upsert",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const body = await req.json();
+    await ctx.runMutation(api.github.upsertInstallation, body);
+    return Response.json({ ok: true });
+  }),
+});
+
+http.route({
+  path: "/api/github/installations/list",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const { userId } = await req.json();
+    const rows = await ctx.runQuery(api.github.listInstallations, { userId });
+    return Response.json(rows);
+  }),
+});
+
+http.route({
+  path: "/api/github/installations/get",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const { installationId } = await req.json();
+    const row = await ctx.runQuery(api.github.getInstallation, { installationId });
+    return Response.json(row);
+  }),
+});
+
+http.route({
+  path: "/api/github/installations/delete",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const { installationId } = await req.json();
+    await ctx.runMutation(api.github.deleteInstallation, { installationId });
+    return Response.json({ ok: true });
+  }),
+});
+
+http.route({
+  path: "/api/github/installations/delete-for-user",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const { userId } = await req.json();
+    await ctx.runMutation(api.github.deleteInstallationsForUser, { userId });
+    return Response.json({ ok: true });
+  }),
+});
+
+http.route({
+  path: "/api/github/installations/set-suspended",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!checkServiceKey(req)) return new Response("Unauthorized", { status: 401 });
+    const { installationId, suspended } = await req.json();
+    await ctx.runMutation(api.github.setInstallationSuspended, { installationId, suspended });
+    return Response.json({ ok: true });
+  }),
+});
+
 export default http;

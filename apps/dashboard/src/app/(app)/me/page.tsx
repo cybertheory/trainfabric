@@ -2,11 +2,17 @@
 
 import { useEffect, useState } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
-import type { DatasetConnection, DatasetMeta } from "@trainfabric/shared";
-import { Database, Link2, Loader2 } from "lucide-react";
+import type {
+  DatasetConnection,
+  DatasetMeta,
+  GithubConnectionStatus,
+} from "@trainfabric/shared";
+import { Database, Github, Link2, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 import { DatasetCard } from "@/components/dataset-card";
 import { apiFetch } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { isClerkClientEnabled } from "@/lib/clerk";
 
 export default function MePage() {
@@ -49,6 +55,8 @@ function ProfileContent({
   const [ownedDatasets, setOwnedDatasets] = useState<DatasetMeta[]>([]);
   const [connectedDatasets, setConnectedDatasets] = useState<DatasetMeta[]>([]);
   const [connections, setConnections] = useState<DatasetConnection[]>([]);
+  const [ghStatus, setGhStatus] = useState<GithubConnectionStatus | null>(null);
+  const [ghBusy, setGhBusy] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -62,11 +70,15 @@ function ProfileContent({
             { token },
           )
         : Promise.resolve({ connections: [], datasets: [] }),
+      token
+        ? apiFetch<GithubConnectionStatus>("/github/status", { token }).catch(() => null)
+        : Promise.resolve(null),
     ])
-      .then(([owned, connected]) => {
+      .then(([owned, connected, gh]) => {
         setOwnedDatasets(owned.datasets ?? []);
         setConnections(connected.connections ?? []);
         setConnectedDatasets(connected.datasets ?? []);
+        setGhStatus(gh);
       })
       .catch(() => {
         setOwnedDatasets([]);
@@ -75,6 +87,40 @@ function ProfileContent({
       })
       .finally(() => setLoading(false));
   }, [token]);
+
+  async function connectGithub() {
+    if (!token) return;
+    setGhBusy(true);
+    try {
+      const out = await apiFetch<{ url: string }>("/github/install", {
+        method: "POST",
+        token,
+        body: JSON.stringify({ returnTo: "/me?github=connected" }),
+      });
+      window.location.href = out.url;
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Connect failed");
+      setGhBusy(false);
+    }
+  }
+
+  async function disconnectGithub() {
+    if (!token) return;
+    setGhBusy(true);
+    try {
+      await apiFetch("/github/connection", { method: "DELETE", token });
+      setGhStatus({
+        configured: ghStatus?.configured ?? true,
+        connected: false,
+        installationCount: 0,
+      });
+      toast.success("GitHub disconnected");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Disconnect failed");
+    } finally {
+      setGhBusy(false);
+    }
+  }
 
   const connectionByDataset = new Map(
     connections.map((connection) => [connection.datasetId, connection]),
@@ -111,6 +157,56 @@ function ProfileContent({
           <Loader2 className="h-4 w-4 animate-spin" />
           Loading profile datasets…
         </div>
+      ) : null}
+
+      {ghStatus?.configured ? (
+        <section className="space-y-3 rounded-xl border p-4">
+          <div className="flex items-center gap-2">
+            <Github className="h-5 w-5 text-primary" />
+            <h2 className="text-xl font-semibold tracking-tight">GitHub</h2>
+          </div>
+          {ghStatus.connected ? (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm text-muted-foreground">
+                Connected as{" "}
+                <span className="font-medium text-foreground">@{ghStatus.login}</span>
+                {ghStatus.installationCount
+                  ? ` · ${ghStatus.installationCount} installation${ghStatus.installationCount === 1 ? "" : "s"}`
+                  : null}
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={ghBusy}
+                  onClick={() => void connectGithub()}
+                >
+                  Manage
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={ghBusy}
+                  onClick={() => void disconnectGithub()}
+                >
+                  Disconnect
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm text-muted-foreground">
+                Connect the Trainfabric GitHub App to create repos and run private autoresearch.
+              </p>
+              <Button type="button" size="sm" disabled={ghBusy} onClick={() => void connectGithub()}>
+                {ghBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Github className="h-3.5 w-3.5" />}
+                Connect GitHub
+              </Button>
+            </div>
+          )}
+        </section>
       ) : null}
 
       <section className="space-y-3">

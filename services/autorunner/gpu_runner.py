@@ -104,14 +104,16 @@ def claim_loop(base: str, token: str, poll_sec: float, workdir: Path) -> None:
 
         trial_id = trial["id"]
         auto_run_id = trial["autoRunId"]
-        repo_url = run["repo"]["url"]
-        branch = run["repo"].get("defaultBranch") or "main"
+        repo_meta = run.get("repo") or {}
+        repo_url = claimed.get("cloneUrl") or repo_meta.get("url") or ""
+        branch = repo_meta.get("defaultBranch") or "main"
         sha = trial.get("commitSha")
         protocol = run.get("protocol") or {}
         budget = int((protocol.get("budget") or {}).get("maxGpuSec") or 600)
         entrypoint = os.environ.get("TRIAL_ENTRYPOINT", "python train.py")
 
-        print(f"claimed {trial_id} repo={repo_url} sha={sha or branch}")
+        public_name = repo_meta.get("fullName") or repo_meta.get("url") or repo_url
+        print(f"claimed {trial_id} repo={public_name} sha={sha or branch}")
         with tempfile.TemporaryDirectory(dir=str(workdir)) as tmp:
             repo = Path(tmp) / "repo"
             subprocess.run(

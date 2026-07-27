@@ -63,6 +63,32 @@ function validateProtocol(p: AutoProtocol): void {
   }
 }
 
+function resolveRepoBind(body: CreateAutoRunRequest): {
+  url: string;
+  defaultBranch: string;
+  installationId?: number;
+  fullName?: string;
+  githubRepoId?: number;
+  createdFromPlatform?: boolean;
+} {
+  const fullName = body.repoFullName?.replace(/\.git$/, "").replace(/^https?:\/\/(www\.)?github\.com\//, "");
+  const urlFromName = fullName ? `https://github.com/${fullName}` : undefined;
+  const url = (body.repoUrl || urlFromName || "").trim();
+  if (!url) throw new Error("repoUrl or repoFullName required");
+  const inferredFull =
+    fullName ||
+    url.replace(/^https?:\/\/(www\.)?github\.com\//, "").replace(/\.git$/, "") ||
+    undefined;
+  return {
+    url: url.replace(/\.git$/, ""),
+    defaultBranch: body.defaultBranch ?? "main",
+    installationId: body.installationId,
+    fullName: inferredFull,
+    githubRepoId: body.githubRepoId,
+    createdFromPlatform: body.createdFromPlatform,
+  };
+}
+
 export async function createAutoRun(opts: {
   store: AutoStore;
   box: BoxClient | null;
@@ -72,6 +98,8 @@ export async function createAutoRun(opts: {
   body: CreateAutoRunRequest;
   tfApiUrl: string;
   campaignToken: string;
+  /** Short-lived GitHub App installation token for clone/push (not persisted). */
+  githubToken?: string;
   env: {
     MODAL_TOKEN?: string;
     MODAL_APP_REF?: string;
@@ -80,7 +108,7 @@ export async function createAutoRun(opts: {
   };
 }): Promise<AutoRun> {
   validateProtocol(opts.body.protocol);
-  if (!opts.body.repoUrl) throw new Error("repoUrl required");
+  const repoBind = resolveRepoBind(opts.body);
   const compute: AutoComputeConfig = opts.body.compute;
   if (compute.provider !== "modal" && compute.provider !== "runner") {
     throw new Error("compute.provider must be modal|runner");
@@ -100,8 +128,12 @@ export async function createAutoRun(opts: {
     ownerId: opts.ownerId,
     status: "provisioning",
     repo: {
-      url: opts.body.repoUrl,
-      defaultBranch: opts.body.defaultBranch ?? "main",
+      url: repoBind.url,
+      defaultBranch: repoBind.defaultBranch,
+      installationId: repoBind.installationId,
+      fullName: repoBind.fullName,
+      githubRepoId: repoBind.githubRepoId,
+      createdFromPlatform: repoBind.createdFromPlatform,
     },
     protocol: opts.body.protocol,
     box: { templateId: opts.body.templateId || opts.env.BOX_TEMPLATE_ID },
@@ -116,6 +148,7 @@ export async function createAutoRun(opts: {
     goal,
     datasetId,
     repo: run.repo.url,
+    installationId: run.repo.installationId,
   });
 
   try {
@@ -131,7 +164,12 @@ export async function createAutoRun(opts: {
           AUTORUN_GOAL: goal ?? "",
           PROTOCOL_JSON: JSON.stringify(run.protocol),
           REPO_URL: run.repo.url,
+          REPO_FULL_NAME: run.repo.fullName ?? "",
           REPO_BRANCH: run.repo.defaultBranch,
+          GITHUB_TOKEN: opts.githubToken ?? "",
+          GITHUB_INSTALLATION_ID: run.repo.installationId
+            ? String(run.repo.installationId)
+            : "",
           COMPUTE_PROVIDER: compute.provider,
           MODAL_REF: compute.modalRef ?? "",
           RUNNER_ID: compute.runnerId ?? "",
@@ -307,6 +345,8 @@ export async function enqueueTrial(opts: {
   hypothesis?: string;
   commitSha?: string;
   callbackBaseUrl: string;
+  /** When set, Modal/GPU clones via authenticated URL (token not stored on AutoRun). */
+  githubToken?: string;
   env: { MODAL_TOKEN?: string; MODAL_APP_REF?: string; MODAL_API_BASE?: string };
 }): Promise<AutoTrial> {
   const trialId = randomId("trial");
@@ -321,14 +361,22 @@ export async function enqueueTrial(opts: {
   };
   await opts.store.upsertAutoTrial(trial);
 
+  const fullName =
+    opts.run.repo.fullName ||
+    opts.run.repo.url.replace(/^https?:\/\/(www\.)?github\.com\//, "").replace(/\.git$/, "");
+  const repoUrl = opts.githubToken
+    ? `https://x-access-token:${opts.githubToken}@github.com/${fullName}.git`
+    : opts.run.repo.url;
+
   const provider = resolveComputeProvider(opts.run.compute, opts.env);
   const { externalId } = await provider.submitTrial({
     trialId,
     autoRunId: opts.run.id,
-    repoUrl: opts.run.repo.url,
+    repoUrl,
     commitSha: opts.commitSha,
     budgetSec: Math.min(opts.run.protocol.budget.maxWallClockSec, 3600),
     callbackUrl: `${opts.callbackBaseUrl}/auto/${opts.run.id}/trials/${trialId}/complete`,
+    env: opts.githubToken ? { GITHUB_TOKEN: opts.githubToken } : undefined,
   });
 
   // Modal web endpoints often complete (via callback) before submitTrial returns.

@@ -16,3 +16,16 @@ BOX_API_BASE=https://ascii.dev/api/box/v1
 MODAL_TOKEN=
 MODAL_APP_REF=
 # MODAL_API_BASE=  # optional override for Modal trial endpoint
+
+# GitHub App (install + user OAuth during installation)
+# Callback: ${PUBLIC_API_BASE}/github/callback
+# Webhook:  ${PUBLIC_API_BASE}/github/webhook
+GITHUB_APP_ID=
+GITHUB_APP_SLUG=
+GITHUB_APP_CLIENT_ID=
+GITHUB_APP_CLIENT_SECRET=
+GITHUB_APP_PRIVATE_KEY=
+GITHUB_APP_WEBHOOK_SECRET=
+GITHUB_APP_STATE_SECRET=
+GITHUB_TOKEN_CRYPTO_KEY=
+# DASHBOARD_URL=http://localhost:3000

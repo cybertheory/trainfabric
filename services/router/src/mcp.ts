@@ -58,7 +58,9 @@ export interface McpContext {
   startAuto?: (args: {
     goal?: string;
     dataset_id?: string;
-    repo_url: string;
+    repo_url?: string;
+    repo_full_name?: string;
+    installation_id?: number;
     default_branch?: string;
     protocol: CreateAutoRunRequest["protocol"];
     compute: CreateAutoRunRequest["compute"];
@@ -309,7 +311,15 @@ export const MCP_TOOLS = [
             "Optional brief override. Prefer encoding the goal in the repo (TRAINFABRIC.md / AGENTS.md / README.md)",
         },
         dataset_id: { type: "string", description: "Optional starting-dataset hint" },
-        repo_url: { type: "string", description: "GitHub repo that owns the research brief and code" },
+        repo_url: {
+          type: "string",
+          description: "GitHub repo URL (or use repo_full_name + installation_id)",
+        },
+        repo_full_name: { type: "string", description: "owner/repo when using GitHub App install" },
+        installation_id: {
+          type: "number",
+          description: "GitHub App installation id for authenticated clone/push",
+        },
         default_branch: { type: "string" },
         protocol: {
           type: "object",
@@ -322,7 +332,7 @@ export const MCP_TOOLS = [
         },
         template_id: { type: "string" },
       },
-      required: ["repo_url", "protocol", "compute"],
+      required: ["protocol", "compute"],
     },
   },
   {
@@ -623,7 +633,9 @@ export async function handleMcpTool(
       if (!ctx.startAuto) throw new Error("Auto store not configured");
       const goal = args.goal as string | undefined;
       const datasetId = args.dataset_id ? String(args.dataset_id) : undefined;
-      if (!args.repo_url) throw new Error("repo_url required — Autoresearch is repo-driven");
+      if (!args.repo_url && !args.repo_full_name) {
+        throw new Error("repo_url or repo_full_name required — Autoresearch is repo-driven");
+      }
       if (datasetId) {
         const ds = await ctx.deps.getDataset(datasetId);
         if (!ds) throw new NotFoundError();
@@ -632,7 +644,10 @@ export async function handleMcpTool(
       const run = await ctx.startAuto({
         goal,
         dataset_id: datasetId,
-        repo_url: String(args.repo_url),
+        repo_url: args.repo_url ? String(args.repo_url) : undefined,
+        repo_full_name: args.repo_full_name ? String(args.repo_full_name) : undefined,
+        installation_id:
+          args.installation_id != null ? Number(args.installation_id) : undefined,
         default_branch: args.default_branch as string | undefined,
         protocol: args.protocol as CreateAutoRunRequest["protocol"],
         compute: args.compute as CreateAutoRunRequest["compute"],

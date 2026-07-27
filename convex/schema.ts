@@ -343,4 +343,29 @@ export default defineSchema({
     .index("by_runnerId", ["runnerId"])
     .index("by_ownerId", ["ownerId"])
     .index("by_tokenHash", ["tokenHash"]),
+
+  githubAccounts: defineTable({
+    userId: v.string(),
+    githubUserId: v.number(),
+    login: v.string(),
+    avatarUrl: v.optional(v.string()),
+    userAccessTokenEnc: v.string(),
+    tokenExpiresAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_userId", ["userId"]),
+
+  githubInstallations: defineTable({
+    installationId: v.number(),
+    userId: v.string(),
+    accountLogin: v.string(),
+    accountType: v.union(v.literal("User"), v.literal("Organization")),
+    accountId: v.number(),
+    avatarUrl: v.optional(v.string()),
+    suspended: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_installationId", ["installationId"])
+    .index("by_userId", ["userId"]),
 });
