@@ -210,12 +210,18 @@ export function buildInstallUrl(env: GithubAppEnv, state: string): string {
   return u.href;
 }
 
-/** User-to-server OAuth authorize (used when install callback omits `code`). */
+/** User-to-server OAuth authorize (preferred Connect entrypoint). */
 export function buildUserOAuthUrl(env: GithubAppEnv, state: string): string {
   const u = new URL("https://github.com/login/oauth/authorize");
   u.searchParams.set("client_id", requireEnv(env, "GITHUB_APP_CLIENT_ID"));
   u.searchParams.set("state", state);
+  u.searchParams.set("redirect_uri", `${publicApiOrigin(env)}/github/callback`);
   return u.href;
+}
+
+/** URL returned by Connect GitHub — OAuth first, then App install if needed. */
+export function buildConnectUrl(env: GithubAppEnv, state: string): string {
+  return buildUserOAuthUrl(env, state);
 }
 
 export async function exchangeOAuthCode(
@@ -233,6 +239,7 @@ export async function exchangeOAuthCode(
       client_id: requireEnv(env, "GITHUB_APP_CLIENT_ID"),
       client_secret: requireEnv(env, "GITHUB_APP_CLIENT_SECRET"),
       code,
+      redirect_uri: `${publicApiOrigin(env)}/github/callback`,
     }),
   });
   if (!res.ok) {

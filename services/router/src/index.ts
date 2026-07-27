@@ -70,6 +70,7 @@ import {
 } from "./auto";
 import {
   authenticatedCloneUrl,
+  buildConnectUrl,
   buildInstallUrl,
   buildUserOAuthUrl,
   createAppJwt,
@@ -1575,7 +1576,7 @@ app.post("/github/install", async (c) => {
       userId: gate.identity.subject,
       returnTo,
     });
-    return c.json({ url: buildInstallUrl(c.env, state) });
+    return c.json({ url: buildConnectUrl(c.env, state) });
   } catch (e) {
     return errResponse(e);
   }
@@ -1596,7 +1597,7 @@ app.get("/github/install", async (c) => {
       userId: gate.identity.subject,
       returnTo,
     });
-    return c.redirect(buildInstallUrl(c.env, state), 302);
+    return c.redirect(buildConnectUrl(c.env, state), 302);
   } catch (e) {
     return errResponse(e);
   }
@@ -1626,8 +1627,8 @@ app.get("/github/callback", async (c) => {
           ? verified.installationId
           : null;
 
-    async function upsertInstallationFromApp(installationId: number): Promise<void> {
-      const existing = await store.getInstallation(installationId);
+    async function upsertInstallationFromApp(id: number): Promise<void> {
+      const existing = await store.getInstallation(id);
       if (existing) {
         if (existing.userId !== verified.userId) {
           await store.upsertInstallation({
@@ -1638,38 +1639,36 @@ app.get("/github/callback", async (c) => {
         }
         return;
       }
-      try {
-        const { token } = await createInstallationAccessToken(c.env, installationId);
-        const appJwt = await createAppJwt(c.env);
-        const meta = await fetch(`https://api.github.com/app/installations/${installationId}`, {
-          headers: {
-            Authorization: `Bearer ${appJwt}`,
-            Accept: "application/vnd.github+json",
-            "User-Agent": "trainfabric-router",
-            "X-GitHub-Api-Version": "2022-11-28",
-          },
-        });
-        void token;
-        if (!meta.ok) return;
-        const body = (await meta.json()) as {
-          id: number;
-          account?: { login: string; id: number; type: string; avatar_url?: string };
-        };
-        if (!body.account) return;
-        await store.upsertInstallation({
-          installationId: body.id,
-          userId: verified.userId,
-          accountLogin: body.account.login,
-          accountType: body.account.type === "Organization" ? "Organization" : "User",
-          accountId: body.account.id,
-          avatarUrl: body.account.avatar_url,
-          suspended: false,
-          createdAt: now,
-          updatedAt: now,
-        });
-      } catch {
-        /* best-effort — user/installations path below is primary when OAuth code exists */
+      // App JWT is enough for installation metadata — do not require an install token.
+      const appJwt = await createAppJwt(c.env);
+      const meta = await fetch(`https://api.github.com/app/installations/${id}`, {
+        headers: {
+          Authorization: `Bearer ${appJwt}`,
+          Accept: "application/vnd.github+json",
+          "User-Agent": "trainfabric-router",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      });
+      if (!meta.ok) {
+        const text = await meta.text();
+        throw new Error(`installation_meta_${meta.status}:${text.slice(0, 80)}`);
       }
+      const body = (await meta.json()) as {
+        id: number;
+        account?: { login: string; id: number; type: string; avatar_url?: string };
+      };
+      if (!body.account) throw new Error("installation_missing_account");
+      await store.upsertInstallation({
+        installationId: body.id,
+        userId: verified.userId,
+        accountLogin: body.account.login,
+        accountType: body.account.type === "Organization" ? "Organization" : "User",
+        accountId: body.account.id,
+        avatarUrl: body.account.avatar_url,
+        suspended: false,
+        createdAt: now,
+        updatedAt: now,
+      });
     }
 
     if (installationId != null) {
@@ -1702,18 +1701,39 @@ app.get("/github/callback", async (c) => {
           updatedAt: now,
         });
       }
+
+      // Authorized but App not installed yet → send them to install.
+      const linked = (await store.listInstallations(verified.userId)).filter((i) => !i.suspended);
+      if (linked.length === 0) {
+        const installState = await signInstallState(c.env, {
+          userId: verified.userId,
+          returnTo: verified.returnTo,
+        });
+        return c.redirect(buildInstallUrl(c.env, installState), 302);
+      }
     } else if (installationId != null) {
-      // Install finished without user OAuth (App setting off, or GitHub skipped it).
-      // Send the user through authorize so we can bind their GitHub identity + list installs.
-      const oauthState = await signInstallState(c.env, {
-        userId: verified.userId,
-        returnTo: verified.returnTo,
-        installationId,
-      });
-      return c.redirect(buildUserOAuthUrl(c.env, oauthState), 302);
+      // Install finished without user OAuth — complete identity if missing.
+      const account = await store.getAccount(verified.userId);
+      if (!account) {
+        const oauthState = await signInstallState(c.env, {
+          userId: verified.userId,
+          returnTo: verified.returnTo,
+          installationId,
+        });
+        return c.redirect(buildUserOAuthUrl(c.env, oauthState), 302);
+      }
     } else {
       return c.redirect(
         `${dash}/agents/new?github=error&reason=${encodeURIComponent("missing_oauth_code")}`,
+        302,
+      );
+    }
+
+    const account = await store.getAccount(verified.userId);
+    const linkedInstalls = await store.listInstallations(verified.userId);
+    if (!account && linkedInstalls.length === 0) {
+      return c.redirect(
+        `${dash}/agents/new?github=error&reason=${encodeURIComponent("link_incomplete")}`,
         302,
       );
     }

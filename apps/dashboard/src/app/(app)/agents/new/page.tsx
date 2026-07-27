@@ -506,8 +506,8 @@ function NewAgentWizard() {
             {ghStatus?.configured && !ghStatus.connected ? (
               <div className="space-y-2 rounded-md border border-primary/20 bg-primary/5 px-3 py-3">
                 <p className="text-xs text-muted-foreground">
-                  Connect GitHub to browse private repos, create seeded autoresearch repos, and
-                  authorize clone/push for the agent.
+                  Authorize GitHub, then install the Trainfabric App on your account or org. That
+                  unlocks private repos, seeded repo create, and clone/push for the agent.
                 </p>
                 <Button type="button" size="sm" onClick={() => void connectGithub()} disabled={connectingGh}>
                   {connectingGh ? (
