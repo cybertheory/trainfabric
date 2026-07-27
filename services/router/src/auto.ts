@@ -114,7 +114,13 @@ export async function createAutoRun(opts: {
     throw new Error("compute.provider must be modal|runner");
   }
 
-  const datasetId = opts.datasetId ?? opts.body.datasetId;
+  const fromBody = [
+    ...(Array.isArray(opts.body.datasetIds) ? opts.body.datasetIds : []),
+    opts.body.datasetId,
+    opts.datasetId,
+  ].filter((id): id is string => Boolean(id && String(id).trim()));
+  const datasetIds = [...new Set(fromBody.map((id) => String(id).trim()))];
+  const datasetId = datasetIds[0];
   // Goal is optional at create — prefer loading from the connected repo after clone.
   const goal = opts.body.goal;
 
@@ -123,7 +129,7 @@ export async function createAutoRun(opts: {
   const run: AutoRun = {
     id,
     datasetId,
-    boundDatasets: datasetId ? [datasetId] : [],
+    boundDatasets: datasetIds,
     goal,
     ownerId: opts.ownerId,
     status: "provisioning",
@@ -147,6 +153,7 @@ export async function createAutoRun(opts: {
   await logActivity(opts.store, id, "status", "Campaign created", {
     goal,
     datasetId,
+    datasetIds,
     repo: run.repo.url,
     installationId: run.repo.installationId,
   });

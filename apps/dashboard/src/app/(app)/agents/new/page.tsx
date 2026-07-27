@@ -27,6 +27,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { apiFetch, publicApiOrigin } from "@/lib/api";
 import { useJobTracker } from "@/lib/job-tracker";
 import { cn } from "@/lib/utils";
+import { DatasetMultiSelect } from "@/components/dataset-multi-select";
 
 const STEPS = ["Repo", "Protocol", "Compute", "Review"] as const;
 
@@ -104,7 +105,10 @@ function NewAgentWizard() {
   const [newRepoPrivate, setNewRepoPrivate] = useState(true);
   const [newRepoDesc, setNewRepoDesc] = useState("");
   const [connectingGh, setConnectingGh] = useState(false);
-  const [datasetHint, setDatasetHint] = useState(searchParams.get("dataset") ?? "");
+  const initialDataset = searchParams.get("dataset");
+  const [selectedDatasetIds, setSelectedDatasetIds] = useState<string[]>(
+    initialDataset ? [initialDataset] : [],
+  );
   const [metric, setMetric] = useState("val_bpb");
   const [direction, setDirection] = useState<"min" | "max">("min");
   const [maxTrials, setMaxTrials] = useState(20);
@@ -322,9 +326,12 @@ function NewAgentWizard() {
     }
   }
 
-  const selectedHint = useMemo(
-    () => datasets.find((d) => d.id === datasetHint) ?? null,
-    [datasets, datasetHint],
+  const selectedDatasets = useMemo(
+    () =>
+      selectedDatasetIds
+        .map((id) => datasets.find((d) => d.id === id))
+        .filter(Boolean) as DatasetMeta[],
+    [datasets, selectedDatasetIds],
   );
 
   function canNext(): boolean {
@@ -360,7 +367,8 @@ function NewAgentWizard() {
           githubRepoId,
           createdFromPlatform: createdFromPlatform || undefined,
           defaultBranch: branch.trim() || "main",
-          datasetId: datasetHint || undefined,
+          datasetIds: selectedDatasetIds.length ? selectedDatasetIds : undefined,
+          datasetId: selectedDatasetIds[0],
           protocol: {
             metric: { name: metric.trim() || "score", direction },
             budget: {
@@ -389,7 +397,9 @@ function NewAgentWizard() {
         name: `Auto · ${display}`,
       });
       toast.success("Agent started", {
-        description: "Cloning the repo for goals and instructions, then binding a dataset.",
+        description: selectedDatasetIds.length
+          ? "Cloning the repo, then running with your selected dataset(s)."
+          : "Cloning the repo for goals and instructions, then choosing a dataset.",
       });
       router.push(`/auto/${run.id}`);
     } catch (e) {
@@ -715,23 +725,15 @@ function NewAgentWizard() {
               </ul>
             </div>
             <div className="space-y-1">
-              <Label className="text-xs">Dataset hint (optional)</Label>
-              <select
-                className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                value={datasetHint}
-                onChange={(e) => setDatasetHint(e.target.value)}
-              >
-                <option value="">Let the agent choose from the repo brief</option>
-                {datasets.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.owner}/{d.name}
-                  </option>
-                ))}
-              </select>
+              <Label className="text-xs">Datasets (optional)</Label>
+              <DatasetMultiSelect
+                datasets={datasets}
+                value={selectedDatasetIds}
+                onChange={setSelectedDatasetIds}
+              />
               <p className="text-[11px] text-muted-foreground">
-                {selectedHint
-                  ? "Starts bound to this dataset; the agent may still bind others."
-                  : "After clone, the agent searches the lakehouse using the repo brief."}
+                Optional. Leave empty and the agent chooses data from the repo brief or agent
+                description. Select one or more to constrain which lakehouse datasets it may use.
               </p>
             </div>
           </div>
@@ -935,11 +937,11 @@ function NewAgentWizard() {
                 v="Loaded from TRAINFABRIC.md / AGENTS.md / README.md after clone"
               />
               <Row
-                k="Dataset"
+                k="Datasets"
                 v={
-                  selectedHint
-                    ? `${selectedHint.owner}/${selectedHint.name} (hint)`
-                    : "Agent chooses from repo brief"
+                  selectedDatasets.length
+                    ? selectedDatasets.map((d) => `${d.owner}/${d.name}`).join(", ")
+                    : "Agent chooses from repo / description"
                 }
               />
               <Row k="Metric" v={`${metric} · ${direction}`} />

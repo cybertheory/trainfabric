@@ -1873,13 +1873,17 @@ app.post("/auto", async (c) => {
     const identity = identityOrAnon(c.get("identity"), c.env);
     if (!identity) return c.json({ error: "Unauthorized" }, 401);
     const body = (await c.req.json()) as CreateAutoRunRequest;
-    // If a dataset hint is given, authorize it.
-    if (body.datasetId) {
+    const datasetIds = [
+      ...(Array.isArray(body.datasetIds) ? body.datasetIds : []),
+      body.datasetId,
+    ].filter((id): id is string => Boolean(id && String(id).trim()));
+    const uniqueIds = [...new Set(datasetIds.map((id) => String(id).trim()))];
+    if (uniqueIds.length) {
       const deps = depsFrom(c);
-      const ds = await deps.getDataset(body.datasetId);
-      if (ds) {
-        const { authorizeDataset } = await import("./resolver");
-        authorizeDataset(ds, identity);
+      const { authorizeDataset } = await import("./resolver");
+      for (const id of uniqueIds) {
+        const ds = await deps.getDataset(id);
+        if (ds) authorizeDataset(ds, identity);
       }
     }
     const store = createAutoStore(c.env);
@@ -1898,9 +1902,9 @@ app.post("/auto", async (c) => {
     const run = await createAutoRun({
       store,
       box,
-      datasetId: body.datasetId,
+      datasetId: uniqueIds[0],
       ownerId: identity.subject,
-      body,
+      body: { ...body, datasetIds: uniqueIds, datasetId: uniqueIds[0] },
       tfApiUrl: origin,
       campaignToken: c.req.header("Authorization")?.replace(/^Bearer\s+/i, "") || "anon",
       githubToken,
@@ -2622,7 +2626,7 @@ function buildMcpContext(c: {
       return createAutoRun({
         store,
         box: boxClientFromEnv(c.env),
-        datasetId: args.dataset_id,
+        datasetId: args.dataset_id ?? args.dataset_ids?.[0],
         ownerId: identity.subject,
         body: {
           goal: args.goal,
@@ -2630,7 +2634,8 @@ function buildMcpContext(c: {
           repoFullName: args.repo_full_name,
           installationId: args.installation_id,
           defaultBranch: args.default_branch,
-          datasetId: args.dataset_id,
+          datasetId: args.dataset_id ?? args.dataset_ids?.[0],
+          datasetIds: args.dataset_ids,
           protocol: args.protocol,
           compute: args.compute,
           templateId: args.template_id,

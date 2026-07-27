@@ -58,6 +58,7 @@ export interface McpContext {
   startAuto?: (args: {
     goal?: string;
     dataset_id?: string;
+    dataset_ids?: string[];
     repo_url?: string;
     repo_full_name?: string;
     installation_id?: number;
@@ -310,7 +311,13 @@ export const MCP_TOOLS = [
           description:
             "Optional brief override. Prefer encoding the goal in the repo (TRAINFABRIC.md / AGENTS.md / README.md)",
         },
-        dataset_id: { type: "string", description: "Optional starting-dataset hint" },
+        dataset_id: { type: "string", description: "Optional primary dataset (or use dataset_ids)" },
+        dataset_ids: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Optional datasets the agent should use. Omit to let the agent pick from the repo brief.",
+        },
         repo_url: {
           type: "string",
           description: "GitHub repo URL (or use repo_full_name + installation_id)",
@@ -632,18 +639,24 @@ export async function handleMcpTool(
       if (!ctx.identity) throw new AuthError("Auth required to start AutoRun");
       if (!ctx.startAuto) throw new Error("Auto store not configured");
       const goal = args.goal as string | undefined;
-      const datasetId = args.dataset_id ? String(args.dataset_id) : undefined;
+      const datasetIds = [
+        ...(Array.isArray(args.dataset_ids) ? args.dataset_ids.map(String) : []),
+        args.dataset_id ? String(args.dataset_id) : undefined,
+      ].filter((id): id is string => Boolean(id));
+      const uniqueIds = [...new Set(datasetIds)];
+      const datasetId = uniqueIds[0];
       if (!args.repo_url && !args.repo_full_name) {
         throw new Error("repo_url or repo_full_name required — Autoresearch is repo-driven");
       }
-      if (datasetId) {
-        const ds = await ctx.deps.getDataset(datasetId);
+      for (const id of uniqueIds) {
+        const ds = await ctx.deps.getDataset(id);
         if (!ds) throw new NotFoundError();
         authorizeDataset(ds, ctx.identity);
       }
       const run = await ctx.startAuto({
         goal,
         dataset_id: datasetId,
+        dataset_ids: uniqueIds,
         repo_url: args.repo_url ? String(args.repo_url) : undefined,
         repo_full_name: args.repo_full_name ? String(args.repo_full_name) : undefined,
         installation_id:
@@ -653,11 +666,11 @@ export async function handleMcpTool(
         compute: args.compute as CreateAutoRunRequest["compute"],
         template_id: args.template_id as string | undefined,
       });
-      if (datasetId) await ctx.autoConnect?.(datasetId, "agent");
+      for (const id of uniqueIds) await ctx.autoConnect?.(id, "agent");
       return ok({
         run,
-        next: datasetId
-          ? `Poll check_auto with auto_run_id="${run.id}". The agent clones the repo and runs trials.`
+        next: uniqueIds.length
+          ? `Poll check_auto with auto_run_id="${run.id}". The agent clones the repo and runs trials on the selected dataset(s).`
           : `Poll check_auto with auto_run_id="${run.id}". The agent loads TRAINFABRIC.md / AGENTS.md / README.md from the repo, then discovers and binds a dataset.`,
       });
     }

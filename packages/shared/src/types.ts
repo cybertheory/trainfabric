@@ -459,6 +459,12 @@ export interface CreateAutoRunRequest {
   defaultBranch?: string;
   /** Optional starting-dataset hint; the agent may discover + bind others from the repo brief. */
   datasetId?: string;
+  /**
+   * Optional pre-selected datasets the agent should use.
+   * When empty/omitted, the agent picks from the repo brief / description.
+   * `datasetId` remains as the primary (first) for backward compatibility.
+   */
+  datasetIds?: string[];
   protocol: AutoProtocol;
   compute: AutoComputeConfig;
   templateId?: string;

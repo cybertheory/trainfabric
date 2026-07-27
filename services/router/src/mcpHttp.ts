@@ -187,6 +187,7 @@ function registerTools(server: McpServer, ctx: McpContext) {
       inputSchema: {
         goal: z.string().optional(),
         dataset_id: z.string().optional(),
+        dataset_ids: z.array(z.string()).optional(),
         repo_url: z.string().optional(),
         repo_full_name: z.string().optional(),
         installation_id: z.number().optional(),
