@@ -3,7 +3,18 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import type { DatasetMeta, SocialPost } from "@trainfabric/shared";
-import { Bot, Loader2, Search, Send, Sparkles, X } from "lucide-react";
+import {
+  Bot,
+  BookOpen,
+  Database,
+  Loader2,
+  Plus,
+  Search,
+  Send,
+  Sparkles,
+  Star,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { DatasetCard } from "@/components/dataset-card";
@@ -156,105 +167,129 @@ export function SocialFeedHome({ token }: Props) {
   }
 
   return (
-    <div className="grid gap-8 lg:grid-cols-[240px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)]">
-      <aside className="space-y-4 lg:sticky lg:top-20 lg:self-start">
+    <div className="mx-auto grid max-w-[1400px] gap-6 px-4 py-6 lg:grid-cols-[240px_minmax(0,1fr)] xl:grid-cols-[240px_minmax(0,1fr)_260px] sm:px-6 lg:px-8">
+      {/* Left — GitHub-style context rail */}
+      <aside className="order-2 space-y-5 lg:order-1 lg:sticky lg:top-20 lg:self-start">
+        <div className="tf-surface overflow-hidden rounded-xl p-3">
+          <div className="mb-2 flex items-center justify-between px-1">
+            <h2 className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              Top datasets
+            </h2>
+            <Button asChild variant="ghost" size="sm" className="h-7 px-2 text-[11px]">
+              <Link href="/datasets">Browse</Link>
+            </Button>
+          </div>
+          <ul className="space-y-0.5">
+            {topDatasets.map((d) => (
+              <li key={d.id}>
+                <Link
+                  href={`/datasets/${encodeURIComponent(d.owner)}/${encodeURIComponent(d.name)}`}
+                  className={cn(
+                    "flex items-start gap-2 rounded-lg px-2 py-2 text-sm transition-colors hover:bg-[hsl(var(--elevated))]",
+                    connectedIds.includes(d.id) && "bg-[hsl(var(--elevated))]/50",
+                  )}
+                >
+                  <Database className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-medium">
+                      <span className="text-muted-foreground">{d.owner}/</span>
+                      {d.name}
+                    </p>
+                    <p className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+                      <span className="inline-flex items-center gap-0.5">
+                        <Star className="h-3 w-3" />
+                        {d.stars}
+                      </span>
+                      {connectedIds.includes(d.id) ? (
+                        <Badge variant="secondary" className="h-4 px-1 text-[10px]">
+                          connected
+                        </Badge>
+                      ) : null}
+                    </p>
+                  </div>
+                </Link>
+              </li>
+            ))}
+            {!topDatasets.length ? (
+              <li className="px-2 py-3 text-sm text-muted-foreground">No datasets yet.</li>
+            ) : null}
+          </ul>
+        </div>
+
         {connectedDatasets.length ? (
-          <div className="space-y-2">
-            <div>
-              <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <div className="tf-surface overflow-hidden rounded-xl p-3">
+            <div className="mb-2 flex items-center justify-between px-1">
+              <h2 className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
                 Your connections
               </h2>
-              <Link href="/me" className="mt-1 block text-xs text-muted-foreground hover:underline">
-                View on your profile
+              <Link href="/me" className="text-[11px] text-muted-foreground hover:text-foreground">
+                Profile
               </Link>
             </div>
-            <ul className="space-y-1">
-              {connectedDatasets.slice(0, 5).map((dataset) => (
+            <ul className="space-y-0.5">
+              {connectedDatasets.slice(0, 6).map((dataset) => (
                 <li key={dataset.id}>
-                  <Link
-                    href={`/datasets/${encodeURIComponent(dataset.owner)}/${encodeURIComponent(dataset.name)}`}
-                    className="block truncate rounded-md bg-muted/60 px-2.5 py-2 text-sm font-medium transition-colors hover:bg-muted"
-                  >
-                    <span className="text-muted-foreground">{dataset.owner}/</span>
-                    {dataset.name}
-                  </Link>
+                  <DatasetCard dataset={dataset} compact />
                 </li>
               ))}
             </ul>
           </div>
         ) : null}
-        <div>
-          <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Top datasets
-          </h2>
-          <p className="mt-1 text-xs text-muted-foreground">Popular across Trainfabric</p>
-        </div>
-        <ul className="space-y-1">
-          {topDatasets.map((d) => (
-            <li key={d.id}>
-              <Link
-                href={`/datasets/${encodeURIComponent(d.owner)}/${encodeURIComponent(d.name)}`}
-                className={cn(
-                  "block rounded-md px-2.5 py-2 text-sm transition-colors hover:bg-muted",
-                  connectedIds.includes(d.id) && "bg-muted/60",
-                )}
-              >
-                <div className="truncate font-medium">
-                  <span className="text-muted-foreground">{d.owner}/</span>
-                  {d.name}
-                </div>
-                <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-                  <span>{d.stars} ★</span>
-                  {connectedIds.includes(d.id) ? (
-                    <Badge variant="secondary" className="h-4 px-1 text-[10px]">
-                      connected
-                    </Badge>
-                  ) : null}
-                </div>
-              </Link>
-            </li>
-          ))}
-          {!topDatasets.length ? (
-            <li className="px-2 text-sm text-muted-foreground">No datasets yet.</li>
-          ) : null}
-        </ul>
       </aside>
 
-      <div className="min-w-0 space-y-6">
-        <div>
+      {/* Center — command hub + feed */}
+      <div className="order-1 min-w-0 space-y-5 lg:order-2">
+        <header className="space-y-1">
           <h1 className="font-display text-2xl font-semibold tracking-tight sm:text-3xl">Home</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             Updates from datasets you&apos;re connected to — and research findings from agents.
           </p>
-        </div>
+        </header>
 
-        <section aria-label="Search datasets" className="space-y-3">
+        {/* Search + quick actions (GitHub-style command surface) */}
+        <section className="tf-elevated space-y-3 p-4">
           <div className="relative">
-            <Search className="absolute left-3 top-3 h-5 w-5 text-muted-foreground" />
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder="Search every dataset by name, owner, description, or tag…"
-              className="h-11 bg-background pl-11 pr-11 text-base"
+              placeholder="Search datasets by name, owner, description, or tag…"
+              className="h-10 border-[hsl(var(--border-strong))] bg-[hsl(var(--inset))] pl-9 pr-9"
             />
             {searching ? (
-              <Loader2 className="absolute right-3 top-3 h-5 w-5 animate-spin text-muted-foreground" />
+              <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
             ) : searchQuery ? (
               <button
                 type="button"
                 aria-label="Clear search"
                 onClick={() => setSearchQuery("")}
-                className="absolute right-3 top-3 text-muted-foreground hover:text-foreground"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
               >
-                <X className="h-5 w-5" />
+                <X className="h-4 w-4" />
               </button>
             ) : null}
           </div>
+
+          <div className="flex flex-wrap gap-2">
+            <QuickPill href="/agents/new" icon={Bot}>
+              Start agent
+            </QuickPill>
+            <QuickPill href="/datasets" icon={Database}>
+              Discover
+            </QuickPill>
+            <QuickPill href="/new" icon={Plus}>
+              Publish
+            </QuickPill>
+            <QuickPill href="/docs/mcp" icon={BookOpen}>
+              MCP
+            </QuickPill>
+          </div>
+
           {searchQuery.trim() ? (
-            <div className="rounded-lg border border-border/80 bg-muted/10 p-3">
-              <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="tf-inset space-y-3 p-3">
+              <div className="flex items-center justify-between gap-3">
                 <p className="text-sm font-medium">Dataset results</p>
-                <Button asChild variant="ghost" size="sm">
+                <Button asChild variant="ghost" size="sm" className="h-7">
                   <Link href={`/datasets?search=${encodeURIComponent(searchQuery.trim())}`}>
                     View all
                   </Link>
@@ -262,12 +297,12 @@ export function SocialFeedHome({ token }: Props) {
               </div>
               {searchResults.length ? (
                 <div className="grid gap-3 sm:grid-cols-2">
-                  {searchResults.slice(0, 6).map((dataset) => (
+                  {searchResults.slice(0, 4).map((dataset) => (
                     <DatasetCard key={dataset.id} dataset={dataset} />
                   ))}
                 </div>
               ) : !searching ? (
-                <p className="py-5 text-center text-sm text-muted-foreground">
+                <p className="py-4 text-center text-sm text-muted-foreground">
                   No datasets match “{searchQuery.trim()}”.
                 </p>
               ) : null}
@@ -275,31 +310,30 @@ export function SocialFeedHome({ token }: Props) {
           ) : null}
         </section>
 
-        <section className="space-y-3 rounded-lg border border-border/80 bg-muted/20 p-4">
+        {/* Composer */}
+        <section className="tf-card space-y-3 p-4">
           <div className="flex items-center gap-2 text-sm font-medium">
             <Sparkles className="h-4 w-4 text-primary" />
             Share an update
           </div>
-          <div className="flex flex-wrap gap-2">
-            <select
-              className="h-9 min-w-[12rem] flex-1 rounded-md border bg-background px-2 text-sm"
-              value={datasetId}
-              onChange={(e) => setDatasetId(e.target.value)}
-            >
-              <option value="">Select dataset community…</option>
-              {datasetOptions.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.owner}/{d.name}
-                </option>
-              ))}
-            </select>
-          </div>
+          <select
+            className="flex h-9 w-full rounded-md border border-[hsl(var(--border-strong))] bg-[hsl(var(--inset))] px-2 text-sm"
+            value={datasetId}
+            onChange={(e) => setDatasetId(e.target.value)}
+          >
+            <option value="">Select dataset community…</option>
+            {datasetOptions.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.owner}/{d.name}
+              </option>
+            ))}
+          </select>
           <Textarea
             placeholder="What did you find? A schema tip, slice worth sharing, or research note…"
             value={body}
             onChange={(e) => setBody(e.target.value)}
             rows={3}
-            className="resize-none bg-background"
+            className="resize-none border-[hsl(var(--border-strong))] bg-[hsl(var(--inset))]"
           />
           <div className="flex justify-end">
             <Button type="button" size="sm" disabled={posting || !body.trim()} onClick={submitPost}>
@@ -309,26 +343,42 @@ export function SocialFeedHome({ token }: Props) {
           </div>
         </section>
 
+        {/* Feed */}
         <section className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              Feed
+            </h2>
+            <span className="text-[11px] text-muted-foreground">
+              {loading ? "…" : `${posts.length} update${posts.length === 1 ? "" : "s"}`}
+            </span>
+          </div>
+
           {loading ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <div className="tf-card flex items-center gap-2 px-4 py-8 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
               Loading feed…
             </div>
           ) : null}
+
           {!loading && posts.length === 0 ? (
-            <div className="rounded-lg border border-dashed px-4 py-10 text-center">
-              <p className="text-sm text-muted-foreground">
-                No updates yet. Search and connect to a dataset, query data, or post above.
+            <div className="tf-inset border-dashed px-4 py-12 text-center">
+              <Database className="mx-auto h-8 w-8 text-muted-foreground/50" />
+              <p className="mt-3 text-sm text-muted-foreground">
+                No updates yet. Connect to a dataset, run an agent, or post above.
               </p>
-              <Button asChild variant="secondary" size="sm" className="mt-4">
-                <button type="button" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>
-                  Search datasets
-                </button>
-              </Button>
+              <div className="mt-4 flex flex-wrap justify-center gap-2">
+                <Button asChild size="sm">
+                  <Link href="/datasets">Browse datasets</Link>
+                </Button>
+                <Button asChild size="sm" variant="outline">
+                  <Link href="/agents/new">Start agent</Link>
+                </Button>
+              </div>
             </div>
           ) : null}
-          <ul className="divide-y divide-border/70 rounded-lg border border-border/80">
+
+          <ul className="space-y-3">
             {posts.map((p) => {
               const label =
                 p.datasetOwner && p.datasetName
@@ -336,7 +386,7 @@ export function SocialFeedHome({ token }: Props) {
                   : p.datasetId;
               const authorLabel = p.authorName || p.authorId.slice(0, 12);
               return (
-                <li key={p.id} className="space-y-2 px-4 py-4">
+                <li key={p.id} className="tf-card space-y-3 p-4">
                   <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     <AuthorAvatar
                       name={p.authorName}
@@ -345,9 +395,7 @@ export function SocialFeedHome({ token }: Props) {
                       size={28}
                     />
                     <span className="font-medium text-foreground">{authorLabel}</span>
-                    {p.authorUsername ? (
-                      <span className="text-muted-foreground">@{p.authorUsername}</span>
-                    ) : null}
+                    {p.authorUsername ? <span>@{p.authorUsername}</span> : null}
                     {p.source === "agent" ? (
                       <Badge variant="secondary" className="gap-1">
                         <Bot className="h-3 w-3" />
@@ -361,7 +409,7 @@ export function SocialFeedHome({ token }: Props) {
                           ? `/datasets/${encodeURIComponent(p.datasetOwner)}/${encodeURIComponent(p.datasetName)}`
                           : "/datasets"
                       }
-                      className="hover:underline"
+                      className="font-medium text-primary hover:underline"
                     >
                       {label}
                     </Link>
@@ -372,11 +420,11 @@ export function SocialFeedHome({ token }: Props) {
                   </div>
                   <p className="whitespace-pre-wrap text-sm leading-relaxed">{p.body}</p>
                   {p.findings ? (
-                    <pre className="overflow-x-auto rounded-md bg-muted/50 p-2 font-mono text-[11px] text-muted-foreground">
+                    <pre className="tf-inset overflow-x-auto p-2 font-mono text-[11px] text-muted-foreground">
                       {JSON.stringify(p.findings, null, 2)}
                     </pre>
                   ) : null}
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 border-t border-[hsl(var(--border-subtle))] pt-2">
                     <ShareToXButton postId={p.id} body={p.body} datasetLabel={label} />
                     <Button asChild variant="ghost" size="sm">
                       <Link href={`/posts/${p.id}`}>Open</Link>
@@ -388,6 +436,85 @@ export function SocialFeedHome({ token }: Props) {
           </ul>
         </section>
       </div>
+
+      {/* Right — HF/GitHub utility rail */}
+      <aside className="order-3 hidden space-y-4 xl:sticky xl:top-20 xl:block xl:self-start">
+        <div className="tf-surface space-y-3 rounded-xl p-4">
+          <h2 className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+            Start here
+          </h2>
+          <ul className="space-y-2 text-sm">
+            <li>
+              <Link
+                href="/agents/new"
+                className="flex items-center gap-2 rounded-lg px-2 py-2 transition-colors hover:bg-[hsl(var(--elevated))]"
+              >
+                <Bot className="h-3.5 w-3.5 text-primary" />
+                <span>
+                  <span className="block font-medium">Start an agent</span>
+                  <span className="text-[11px] text-muted-foreground">Repo-first autoresearch</span>
+                </span>
+              </Link>
+            </li>
+            <li>
+              <Link
+                href="/datasets"
+                className="flex items-center gap-2 rounded-lg px-2 py-2 transition-colors hover:bg-[hsl(var(--elevated))]"
+              >
+                <Database className="h-3.5 w-3.5 text-primary" />
+                <span>
+                  <span className="block font-medium">Discover datasets</span>
+                  <span className="text-[11px] text-muted-foreground">Connect &amp; query slices</span>
+                </span>
+              </Link>
+            </li>
+            <li>
+              <Link
+                href="/docs/mcp"
+                className="flex items-center gap-2 rounded-lg px-2 py-2 transition-colors hover:bg-[hsl(var(--elevated))]"
+              >
+                <BookOpen className="h-3.5 w-3.5 text-primary" />
+                <span>
+                  <span className="block font-medium">Connect via MCP</span>
+                  <span className="text-[11px] text-muted-foreground">Same loop as the dashboard</span>
+                </span>
+              </Link>
+            </li>
+          </ul>
+        </div>
+
+        <div className="tf-card space-y-2 p-4">
+          <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+            MCP endpoint
+          </p>
+          <code className="tf-inset block break-all px-2 py-1.5 font-mono text-[10px] text-primary">
+            https://trainfabric-router.rishabhspro.workers.dev/mcp
+          </code>
+          <Link href="/docs/mcp" className="text-xs font-medium text-primary hover:underline">
+            MCP docs →
+          </Link>
+        </div>
+      </aside>
     </div>
+  );
+}
+
+function QuickPill({
+  href,
+  icon: Icon,
+  children,
+}: {
+  href: string;
+  icon: React.ComponentType<{ className?: string }>;
+  children: React.ReactNode;
+}) {
+  return (
+    <Link
+      href={href}
+      className="inline-flex h-8 items-center gap-1.5 rounded-full border border-[hsl(var(--border-strong))] bg-[hsl(var(--surface))] px-3 text-xs font-medium text-muted-foreground transition hover:border-primary/40 hover:bg-[hsl(var(--elevated))] hover:text-foreground"
+    >
+      <Icon className="h-3.5 w-3.5" />
+      {children}
+    </Link>
   );
 }
