@@ -61,6 +61,7 @@ import {
   enqueueTrial,
   logActivity,
   pauseAutoRun,
+  heartbeatAutoRun,
   postAutoMessage,
   registerRunner,
   reportInstructions,
@@ -1653,7 +1654,6 @@ app.post("/auto/:id/messages", async (c) => {
       role: body.role,
       source: body.source ?? "api",
       meta: body.meta,
-      ai: c.env.AI,
     });
     return c.json(out, 201);
   } catch (e) {
@@ -1688,9 +1688,32 @@ app.post("/auto/:id/messages/stream", async (c) => {
       run,
       content,
       source: "dashboard",
-      ai: c.env.AI,
     });
-    return streamAiMessage(out.assistantMessage.id, out.assistantMessage.content);
+    const assistant = out.assistantMessage;
+    if (!assistant) {
+      return c.json({ error: "No assistant reply" }, 500);
+    }
+    return streamAiMessage(assistant.id, assistant.content);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.post("/auto/:id/heartbeat", async (c) => {
+  try {
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const store = createAutoStore(c.env);
+    const run = await store.getAutoRun(c.req.param("id"));
+    if (!run) return c.json({ error: "Not found" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      phase?: string;
+      message?: string;
+      trial?: number;
+      meta?: Record<string, unknown>;
+    };
+    const next = await heartbeatAutoRun({ store, run, body });
+    return c.json(next);
   } catch (e) {
     return errResponse(e);
   }
@@ -2198,7 +2221,6 @@ function buildMcpContext(c: {
         run,
         content: message,
         source: "mcp",
-        ai: c.env.AI,
       });
     },
     listAutoMessages: async (autoRunId, limit) => {

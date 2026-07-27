@@ -75,7 +75,7 @@ export interface McpContext {
   messageAutoAgent?: (
     auto_run_id: string,
     message: string,
-  ) => Promise<{ userMessage: AutoMessage; assistantMessage: AutoMessage }>;
+  ) => Promise<{ userMessage: AutoMessage; assistantMessage: AutoMessage | null }>;
   listAutoMessages?: (auto_run_id: string, limit?: number) => Promise<AutoMessage[]>;
   registerGpuRunner?: (args: {
     name: string;
@@ -668,7 +668,7 @@ export async function handleMcpTool(
       if (!message) throw new Error("message required");
       const out = await ctx.messageAutoAgent(String(args.auto_run_id), message);
       return ok({
-        reply: out.assistantMessage.content,
+        reply: out.assistantMessage?.content ?? null,
         userMessage: out.userMessage,
         assistantMessage: out.assistantMessage,
         next: "Poll list_auto_messages for further replies as the agent works.",

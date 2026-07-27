@@ -30,6 +30,11 @@ from typing import Any, Optional
 REPO_DIR = Path(os.environ.get("REPO_DIR", os.path.expanduser("~/repo")))
 POLL_SEC = float(os.environ.get("AUTORUN_POLL_SEC", "15"))
 MAX_IDLE_LOOPS = int(os.environ.get("AUTORUN_MAX_IDLE", "4"))
+CHAT_PORT = int(os.environ.get("AUTORUN_CHAT_PORT", "8787"))
+
+# In-process steer queue + status for the hosted /chat endpoint.
+_STEER: list[str] = []
+_STATE: dict[str, Any] = {"phase": "starting", "trial": 0, "ok": True}
 
 
 def env(name: str, default: str = "") -> str:
@@ -211,7 +216,7 @@ def discover_and_bind(auto_run_id: str, goal: str, source: str = "repo") -> Opti
 
 
 def send_message(auto_run_id: str, content: str) -> None:
-    """Post an assistant-side message so the shared thread reflects agent activity."""
+    """Post an assistant-side message so the shared thread reflects agent talk-back."""
     try:
         api(
             "POST",
@@ -222,17 +227,112 @@ def send_message(auto_run_id: str, content: str) -> None:
         print(f"message skipped: {e}", file=sys.stderr)
 
 
+def heartbeat(auto_run_id: str, phase: str, trial: int = 0, message: str | None = None) -> None:
+    """Volunteer liveness to the control plane (API does not cron-poll sandboxes)."""
+    _STATE["phase"] = phase
+    _STATE["trial"] = trial
+    # Local status file for chat_shim /health and /chat replies.
+    try:
+        status_path = Path.home() / "trainfabric" / "status.json"
+        status_path.parent.mkdir(parents=True, exist_ok=True)
+        status_path.write_text(
+            json.dumps({"phase": phase, "trial": trial, "autoRunId": auto_run_id}),
+            encoding="utf-8",
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        body: dict[str, Any] = {"phase": phase, "trial": trial}
+        if message:
+            body["message"] = message
+        api("POST", f"/auto/{auto_run_id}/heartbeat", body)
+    except Exception as e:  # noqa: BLE001
+        print(f"heartbeat skipped: {e}", file=sys.stderr)
+
+
 def read_steer() -> list[str]:
-    """Drain steer instructions dropped by the router into the inbox."""
+    """Drain steer from /chat queue and file inbox dropped by the router."""
+    out: list[str] = []
+    if _STEER:
+        out.extend(_STEER)
+        _STEER.clear()
     inbox = Path.home() / "trainfabric" / "inbox" / "steer.log"
     if not inbox.exists():
-        return []
+        return out
     try:
         lines = [ln.strip() for ln in inbox.read_text().splitlines() if ln.strip()]
         inbox.write_text("")
-        return lines
+        out.extend(lines)
     except Exception:  # noqa: BLE001
-        return []
+        pass
+    return out
+
+
+def start_chat_server() -> None:
+    """HTTP :8787 — skip if chat_shim (or another process) already owns the port."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import threading
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
+            print(f"chat: {fmt % args}", file=sys.stderr)
+
+        def _json(self, code: int, body: dict[str, Any]) -> None:
+            raw = json.dumps(body).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_GET(self) -> None:  # noqa: N802
+            path = urllib.parse.urlparse(self.path).path
+            if path in ("/health", "/", "/status"):
+                self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "autoRunId": env("AUTORUN_ID"),
+                        "phase": _STATE.get("phase"),
+                        "trial": _STATE.get("trial"),
+                    },
+                )
+                return
+            self._json(404, {"error": "not found"})
+
+        def do_POST(self) -> None:  # noqa: N802
+            path = urllib.parse.urlparse(self.path).path
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                body = json.loads(raw.decode("utf-8") or "{}")
+            except json.JSONDecodeError:
+                body = {}
+            if path != "/chat":
+                self._json(404, {"error": "not found"})
+                return
+            content = str(body.get("content") or "").strip()
+            if not content:
+                self._json(400, {"error": "content required"})
+                return
+            _STEER.append(content)
+            phase = _STATE.get("phase") or "running"
+            trial = _STATE.get("trial") or 0
+            reply = (
+                f"Got it — queued for the next loop. "
+                f"I'm currently {phase} (trial {trial}). "
+                f"Instruction: {content[:240]}"
+            )
+            self._json(200, {"ok": True, "reply": reply, "queued": True})
+
+    try:
+        server = ThreadingHTTPServer(("0.0.0.0", CHAT_PORT), Handler)
+    except OSError as e:
+        print(f"chat server not started (port {CHAT_PORT} in use — chat_shim ok): {e}", file=sys.stderr)
+        return
+    thread = threading.Thread(target=server.serve_forever, daemon=True, name="tf-chat")
+    thread.start()
+    print(f"chat server listening on :{CHAT_PORT}", file=sys.stderr)
 
 
 def git_sha() -> str:
@@ -288,15 +388,20 @@ def run_loop() -> None:
     if not auto_run_id:
         raise RuntimeError("AUTORUN_ID required")
 
+    start_chat_server()
+    heartbeat(auto_run_id, "starting", 0, "Daemon online — chat server listening")
+
     protocol = load_protocol()
     # Repo-first: clone, then load goal/instructions from the tree.
     ensure_repo()
     goal, goal_source = load_repo_instructions(env("AUTORUN_GOAL"))
     report_instructions(auto_run_id, goal, goal_source)
     assert_immutable(protocol)
+    heartbeat(auto_run_id, "repo_loaded", 0)
 
     # If no dataset was pre-bound, discover + bind from the repo brief.
     if not dataset_id:
+        heartbeat(auto_run_id, "discovering", 0, "Discovering datasets from repo brief")
         dataset_id = discover_and_bind(auto_run_id, goal, goal_source) or ""
     if not dataset_id:
         send_message(
@@ -306,6 +411,7 @@ def run_loop() -> None:
         )
         # Wait for a human/agent to bind via /auto/:id/bind-dataset.
         for _ in range(MAX_IDLE_LOOPS * 4):
+            heartbeat(auto_run_id, "awaiting_dataset", 0)
             detail = api("GET", f"/auto/{auto_run_id}")
             run = detail.get("run") or {}
             if run.get("status") in ("cancelled", "done", "error"):
@@ -313,6 +419,13 @@ def run_loop() -> None:
             if run.get("datasetId"):
                 dataset_id = run["datasetId"]
                 break
+            # Apply any chat steers while waiting.
+            steer = read_steer()
+            if steer:
+                send_message(
+                    auto_run_id,
+                    f"Acknowledged while waiting for dataset: {' '.join(steer)[:300]}",
+                )
             time.sleep(POLL_SEC)
     if not dataset_id:
         raise RuntimeError("no dataset bound; exiting")
@@ -326,6 +439,7 @@ def run_loop() -> None:
     started = time.time()
     idle = 0
     trial_n = 0
+    heartbeat(auto_run_id, "running", 0, "Starting trial loop")
 
     while trial_n < max_trials and (time.time() - started) < wall:
         detail = api("GET", f"/auto/{auto_run_id}")
@@ -333,13 +447,15 @@ def run_loop() -> None:
         status = run.get("status")
         if status in ("paused", "cancelled", "done", "error"):
             print(f"run status={status}; exiting")
+            heartbeat(auto_run_id, status, trial_n)
             break
 
         steer = read_steer()
         if steer:
             send_message(
                 auto_run_id,
-                f"Acknowledged {len(steer)} instruction(s); factoring into the next trial.",
+                f"Acknowledged {len(steer)} instruction(s); factoring into the next trial. "
+                f"→ {' | '.join(steer)[:400]}",
             )
 
         sha_before = git_sha()
@@ -365,6 +481,7 @@ def run_loop() -> None:
 
         assert_immutable(protocol)
         sha = git_sha()
+        heartbeat(auto_run_id, "enqueueing", trial_n, f"Enqueuing trial {trial_n + 1}")
         trial = enqueue_trial(auto_run_id, hypothesis, sha)
         trial_id = trial.get("id")
         if not trial_id:
@@ -374,11 +491,23 @@ def run_loop() -> None:
             time.sleep(POLL_SEC)
             continue
 
+        send_message(
+            auto_run_id,
+            f"Trial {trial_n + 1} enqueued ({trial_id}) — waiting on GPU compute.",
+        )
+        heartbeat(auto_run_id, "waiting_gpu", trial_n + 1)
         result = wait_trial(auto_run_id, trial_id, min(wall, int(budget.get("maxGpuSec") or wall)))
         kept = bool(result.get("kept"))
         ratchet(kept, sha_before)
         trial_n += 1
         idle = 0
+
+        send_message(
+            auto_run_id,
+            f"Trial {trial_n} finished: score={result.get('score')} kept={kept} "
+            f"sha={(result.get('commitSha') or sha)[:12]}",
+        )
+        heartbeat(auto_run_id, "running", trial_n)
 
         post_finding(
             dataset_id,
@@ -391,6 +520,7 @@ def run_loop() -> None:
             },
         )
 
+    heartbeat(auto_run_id, "done", trial_n, f"Daemon finished trials={trial_n}")
     print(f"daemon finished trials={trial_n}")
 
 

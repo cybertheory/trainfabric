@@ -25,7 +25,7 @@ import modal
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("git")
-    .pip_install("numpy", "scikit-learn")
+    .pip_install("fastapi[standard]", "numpy", "scikit-learn")
 )
 
 app = modal.App("trainfabric-trial", image=image)

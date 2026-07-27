@@ -331,6 +331,26 @@ export async function enqueueTrial(opts: {
     callbackUrl: `${opts.callbackBaseUrl}/auto/${opts.run.id}/trials/${trialId}/complete`,
   });
 
+  // Modal web endpoints often complete (via callback) before submitTrial returns.
+  // Don't clobber a terminal status that the callback already wrote.
+  const after = await opts.store.getAutoTrial(trialId);
+  if (
+    after &&
+    (after.status === "done" || after.status === "error" || after.status === "cancelled")
+  ) {
+    const withExt =
+      after.externalId === externalId
+        ? after
+        : { ...after, externalId, updatedAt: Date.now() };
+    if (withExt !== after) await opts.store.upsertAutoTrial(withExt);
+    await logActivity(opts.store, opts.run.id, "trial", `Trial enqueued (${opts.run.compute.provider})`, {
+      trialId,
+      hypothesis: opts.hypothesis,
+      commitSha: opts.commitSha,
+    });
+    return withExt;
+  }
+
   const running: AutoTrial = {
     ...trial,
     status: opts.run.compute.provider === "runner" ? "pending" : "running",
@@ -402,23 +422,34 @@ export async function completeTrial(opts: {
   return { trial, run };
 }
 
-/** Deliver a steer instruction to the running Box agent (best-effort). */
+/** Deliver a steer instruction to the running Box agent for this AutoRun only. */
 async function injectInstruction(
   box: BoxClient | null,
   run: AutoRun,
   content: string,
-): Promise<boolean> {
+): Promise<{ delivered: boolean; agentReply?: string }> {
   const boxId = run.box.boxId;
-  if (!box || !boxId || boxId.startsWith("stub_")) return false;
-  // Preferred: daemon HTTP chat endpoint hosted from the box.
+  if (!box || !boxId || boxId.startsWith("stub_")) {
+    return { delivered: false };
+  }
+  // Preferred: daemon HTTP chat on this run's hosted URL (bound at provision).
   if (run.box.daemonHostUrl) {
     try {
       const res = await fetch(`${run.box.daemonHostUrl.replace(/\/$/, "")}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, autoRunId: run.id }),
       });
-      if (res.ok) return true;
+      if (res.ok) {
+        let agentReply: string | undefined;
+        try {
+          const json = (await res.json()) as { reply?: string; message?: string };
+          agentReply = (json.reply || json.message || "").trim() || undefined;
+        } catch {
+          /* non-JSON body is still a successful delivery */
+        }
+        return { delivered: true, agentReply };
+      }
     } catch {
       /* fall through to file drop */
     }
@@ -430,9 +461,9 @@ async function injectInstruction(
       boxId,
       `mkdir -p ~/trainfabric/inbox && printf '%s\\n' '${safe}' >> ~/trainfabric/inbox/steer.log`,
     );
-    return true;
+    return { delivered: true };
   } catch {
-    return false;
+    return { delivered: false };
   }
 }
 
@@ -450,9 +481,10 @@ function summarizeRun(run: AutoRun): string {
 }
 
 /**
- * Post a message to an AutoRun's shared thread (dashboard chat, REST, or MCP),
- * inject it into the running Box agent, and store an assistant reply so every
- * client (human or external agent) sees the same conversation.
+ * Shared AutoRun thread.
+ * - User/dashboard/MCP messages → routed to that run's Box sandbox; assistant
+ *   reply prefers the daemon's /chat response (real talk-back).
+ * - Daemon/assistant messages → stored only (no re-inject, no fake copilot).
  */
 export async function postAutoMessage(opts: {
   store: AutoStore;
@@ -463,66 +495,92 @@ export async function postAutoMessage(opts: {
   source: AutoMessage["source"];
   meta?: Record<string, unknown>;
   ai?: unknown;
-}): Promise<{ userMessage: AutoMessage; assistantMessage: AutoMessage }> {
+}): Promise<{ userMessage: AutoMessage; assistantMessage: AutoMessage | null }> {
   const content = opts.content.trim();
   if (!content) throw new Error("content required");
+
+  const role = opts.role ?? "user";
+  const fromAgent =
+    opts.source === "daemon" || role === "assistant" || role === "system" || role === "tool";
+
+  // Agent talk-back: persist only. Do not inject back into Box or invent replies.
+  if (fromAgent) {
+    const userMessage = await opts.store.appendMessage({
+      id: randomId("msg"),
+      autoRunId: opts.run.id,
+      role,
+      source: opts.source,
+      content,
+      meta: opts.meta,
+    });
+    await logActivity(opts.store, opts.run.id, "message", `agent → ${opts.source}`, {
+      preview: content.slice(0, 140),
+    });
+    return { userMessage, assistantMessage: null };
+  }
 
   const userMessage = await opts.store.appendMessage({
     id: randomId("msg"),
     autoRunId: opts.run.id,
-    role: opts.role ?? "user",
+    role: "user",
     source: opts.source,
     content,
     meta: opts.meta,
   });
   await logActivity(opts.store, opts.run.id, "message", `${opts.source} → agent`, {
     preview: content.slice(0, 140),
+    boxId: opts.run.box.boxId,
   });
 
-  const delivered = await injectInstruction(opts.box, opts.run, content);
+  const { delivered, agentReply } = await injectInstruction(opts.box, opts.run, content);
 
-  let reply = "";
-  const ai = opts.ai as
-    | { run?: (model: string, input: unknown) => Promise<{ response?: string }> }
-    | undefined;
-  if (ai?.run) {
-    try {
-      const out = await ai.run("@cf/meta/llama-3.1-8b-instruct", {
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are the steering copilot for a long-running autoresearch agent. Reply in <=3 sentences. Acknowledge the instruction, restate current run status, and say what the agent will do next. Do not invent metrics.",
-          },
-          {
-            role: "user",
-            content: `Run status: ${summarizeRun(opts.run)}. Instruction ${
-              delivered ? "was delivered to the Box agent" : "was queued (agent offline)"
-            }: "${content}"`,
-          },
-        ],
-      });
-      reply = (out.response ?? "").trim();
-    } catch {
-      /* fall back to deterministic summary */
-    }
-  }
+  let reply = (agentReply || "").trim();
   if (!reply) {
     reply = delivered
-      ? `Got it — I forwarded that to the agent. Current run: ${summarizeRun(opts.run)}.`
-      : `Noted and queued for when the agent reconnects. Current run: ${summarizeRun(opts.run)}.`;
+      ? `Delivered to Box ${opts.run.box.boxId ?? "sandbox"}. ${summarizeRun(opts.run)}. The agent will acknowledge on its next loop.`
+      : `Queued for when the agent reconnects. ${summarizeRun(opts.run)}.`;
   }
 
   const assistantMessage = await opts.store.appendMessage({
     id: randomId("msg"),
     autoRunId: opts.run.id,
     role: "assistant",
-    source: "api",
+    source: agentReply ? "daemon" : "api",
     content: reply,
-    meta: { delivered },
+    meta: { delivered, boxId: opts.run.box.boxId, via: agentReply ? "box-chat" : "ack" },
   });
 
   return { userMessage, assistantMessage };
+}
+
+/** Daemon heartbeat — sandbox volunteers liveness (not polled by a cron). */
+export async function heartbeatAutoRun(opts: {
+  store: AutoStore;
+  run: AutoRun;
+  body: { phase?: string; message?: string; trial?: number; meta?: Record<string, unknown> };
+}): Promise<AutoRun> {
+  const now = Date.now();
+  const progress = {
+    ...opts.run.progress,
+    updatedAt: now,
+    ...(typeof opts.body.trial === "number" ? { trial: opts.body.trial } : {}),
+  };
+  const next: AutoRun = {
+    ...opts.run,
+    progress,
+    updatedAt: now,
+  };
+  await opts.store.upsertAutoRun(next);
+  if (opts.body.message || opts.body.phase) {
+    await logActivity(
+      opts.store,
+      next.id,
+      "status",
+      opts.body.message || `Agent heartbeat — ${opts.body.phase}`,
+      { phase: opts.body.phase, ...(opts.body.meta || {}) },
+    );
+  }
+  return next;
 }
 
 export async function registerRunner(opts: {

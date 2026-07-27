@@ -19,6 +19,23 @@ Started with env from the router on `POST /auto`:
 
 `AUTORUN_ID`, `TF_API_URL`, `TF_TOKEN`, `TF_DATASET_ID` (optional), `AUTORUN_GOAL` (optional override), `PROTOCOL_JSON`, `REPO_URL`, `REPO_BRANCH`.
 
+## Status: push, not cron-poll
+
+Sandboxes **volunteer** status to the API:
+
+| Signal | Who pushes |
+|--------|------------|
+| `POST /auto/:id/heartbeat` | Box daemon (phase, trial) |
+| `POST /auto/:id/messages` (role=assistant) | Box daemon talk-back |
+| `POST /auto/:id/trials` + complete | Daemon / Modal / HTTP runner |
+| `POST /runners/heartbeat` | HTTP GPU runners |
+
+The dashboard **polls** `GET /auto/:id` (which also lazily fetches Box event logs for that run’s `boxId`). There is no background cron that walks all sandboxes.
+
+## Chat routing
+
+`POST /auto/:id/messages` looks up that AutoRun’s `boxId` / `daemonHostUrl` and POSTs to that sandbox’s `/chat` only — never a different campaign’s box.
+
 ## Modal
 
 Deploy the trial web endpoint, then point the Worker at it:

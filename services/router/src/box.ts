@@ -197,10 +197,53 @@ export function createBoxClient(cfg: BoxClientConfig) {
       }
       await this.selectRepo(opts.repoUrl).catch(() => undefined);
 
-      // Bootstrap daemon if not baked into template
+      // Always install chat shim so THIS box answers /chat (talk-back) even if
+      // the template's autorunner is stale. Then start the daemon and host :8787.
+      const chatShim = `#!/usr/bin/env python3
+import json,os,urllib.parse
+from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+from pathlib import Path
+PORT=int(os.environ.get("AUTORUN_CHAT_PORT","8787")); HOME=Path.home()/"trainfabric"; INBOX=HOME/"inbox"/"steer.log"; STATUS=HOME/"status.json"
+def st():
+  try:
+    return json.loads(STATUS.read_text()) if STATUS.exists() else {}
+  except Exception:
+    return {}
+class H(BaseHTTPRequestHandler):
+  def log_message(self,*a): pass
+  def j(self,c,b):
+    r=json.dumps(b).encode(); self.send_response(c); self.send_header("Content-Type","application/json"); self.send_header("Content-Length",str(len(r))); self.end_headers(); self.wfile.write(r)
+  def do_GET(self):
+    p=urllib.parse.urlparse(self.path).path
+    if p in ("/health","/","/status"):
+      s=st(); self.j(200,{"ok":True,"autoRunId":os.environ.get("AUTORUN_ID",""),"phase":s.get("phase","running"),"trial":s.get("trial",0)}); return
+    self.j(404,{"error":"not found"})
+  def do_POST(self):
+    p=urllib.parse.urlparse(self.path).path; n=int(self.headers.get("Content-Length") or 0)
+    try: body=json.loads(self.rfile.read(n).decode() or "{}")
+    except Exception: body={}
+    if p!="/chat": self.j(404,{"error":"not found"}); return
+    content=str(body.get("content") or "").strip()
+    if not content: self.j(400,{"error":"content required"}); return
+    HOME.mkdir(parents=True,exist_ok=True); INBOX.parent.mkdir(parents=True,exist_ok=True)
+    INBOX.open("a").write(content.replace("\\n"," ")+"\\n"); s=st()
+    reply=f"Received on this Box sandbox. Currently {s.get('phase','running')} (trial {s.get('trial',0)}). Queued. Instruction: {content[:240]}"
+    self.j(200,{"ok":True,"reply":reply,"queued":True})
+ThreadingHTTPServer(("0.0.0.0",PORT),H).serve_forever()
+`;
+
       const start =
         opts.daemonStartCmd ??
-        "mkdir -p ~/trainfabric && (systemctl --user start trainfabric-autorunner 2>/dev/null || nohup python3 ~/trainfabric/autorunner_daemon.py >/tmp/autorunner.log 2>&1 &)";
+        [
+          "mkdir -p ~/trainfabric/inbox",
+          `cat > ~/trainfabric/chat_shim.py <<'PY'\n${chatShim}\nPY`,
+          // Pull latest daemon from main so heartbeats/talk-back stay current without re-baking the Box template.
+          "curl -fsSL https://raw.githubusercontent.com/cybertheory/trainfabric/main/services/autorunner/autorunner_daemon.py -o ~/trainfabric/autorunner_daemon.py || true",
+          "pkill -f 'chat_shim.py' 2>/dev/null || true",
+          "pkill -f 'autorunner_daemon.py' 2>/dev/null || true",
+          "nohup python3 ~/trainfabric/chat_shim.py >/tmp/tf-chat.log 2>&1 &",
+          "systemctl --user start trainfabric-autorunner 2>/dev/null || nohup python3 ~/trainfabric/autorunner_daemon.py >/tmp/autorunner.log 2>&1 &",
+        ].join(" && ");
       await this.command(box.id, start).catch(() => undefined);
 
       let daemonHostUrl: string | undefined;

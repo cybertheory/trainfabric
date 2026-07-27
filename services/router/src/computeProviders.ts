@@ -58,8 +58,8 @@ export function createModalProvider(cfg: {
       // token_id:token_secret → Modal-Key / Modal-Secret (proxy auth) or Bearer
       if (cfg.token.includes(":")) {
         const [key, secret] = cfg.token.split(":", 2);
-        headers["Modal-Key"] = key;
-        headers["Modal-Secret"] = secret;
+        headers["Modal-Key"] = key ?? "";
+        headers["Modal-Secret"] = secret ?? "";
         headers.Authorization = `Bearer ${cfg.token}`;
       } else if (cfg.token) {
         headers.Authorization = `Bearer ${cfg.token}`;
