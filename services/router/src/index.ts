@@ -1823,11 +1823,17 @@ app.get("/github/installations/:id/repos", async (c) => {
       return c.json({ error: "Installation not found" }, 404);
     }
     const page = Number(c.req.query("page") || "1");
-    const repos = await listInstallationRepos(c.env, installationId, {
+    const all = c.req.query("all") !== "0";
+    const out = await listInstallationRepos(c.env, installationId, {
       page: Number.isFinite(page) ? page : 1,
-      perPage: 50,
+      perPage: 100,
+      allPages: all,
     });
-    return c.json({ repos });
+    return c.json({
+      repos: out.repos,
+      totalCount: out.totalCount,
+      repositorySelection: out.repositorySelection,
+    });
   } catch (e) {
     return errResponse(e);
   }

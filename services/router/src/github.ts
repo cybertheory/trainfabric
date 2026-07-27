@@ -320,35 +320,64 @@ export async function listUserInstallations(
 export async function listInstallationRepos(
   env: GithubAppEnv,
   installationId: number,
-  opts?: { page?: number; perPage?: number },
-): Promise<GithubRepoSummary[]> {
+  opts?: { page?: number; perPage?: number; allPages?: boolean },
+): Promise<{
+  repos: GithubRepoSummary[];
+  totalCount: number;
+  repositorySelection?: "all" | "selected";
+}> {
   const { token } = await createInstallationAccessToken(env, installationId);
-  const page = opts?.page ?? 1;
-  const perPage = opts?.perPage ?? 50;
-  const batch = await ghFetch<{
-    repositories: Array<{
-      id: number;
-      full_name: string;
-      name: string;
-      private: boolean;
-      default_branch: string;
-      html_url: string;
-      clone_url: string;
-      description?: string | null;
-      updated_at?: string | null;
-    }>;
-  }>(`/installation/repositories?per_page=${perPage}&page=${page}`, { token });
-  return (batch.repositories ?? []).map((r) => ({
-    id: r.id,
-    fullName: r.full_name,
-    name: r.name,
-    private: r.private,
-    defaultBranch: r.default_branch || "main",
-    htmlUrl: r.html_url,
-    cloneUrl: r.clone_url,
-    description: r.description,
-    updatedAt: r.updated_at,
-  }));
+  const perPage = Math.min(Math.max(opts?.perPage ?? 100, 1), 100);
+  const allPages = opts?.allPages !== false;
+  const startPage = opts?.page ?? 1;
+
+  const repos: GithubRepoSummary[] = [];
+  let totalCount = 0;
+  let repositorySelection: "all" | "selected" | undefined;
+  let page = startPage;
+
+  for (;;) {
+    const batch = await ghFetch<{
+      total_count?: number;
+      repository_selection?: "all" | "selected";
+      repositories: Array<{
+        id: number;
+        full_name: string;
+        name: string;
+        private: boolean;
+        default_branch: string;
+        html_url: string;
+        clone_url: string;
+        description?: string | null;
+        updated_at?: string | null;
+      }>;
+    }>(`/installation/repositories?per_page=${perPage}&page=${page}`, { token });
+
+    if (typeof batch.total_count === "number") totalCount = batch.total_count;
+    if (batch.repository_selection) repositorySelection = batch.repository_selection;
+
+    for (const r of batch.repositories ?? []) {
+      repos.push({
+        id: r.id,
+        fullName: r.full_name,
+        name: r.name,
+        private: r.private,
+        defaultBranch: r.default_branch || "main",
+        htmlUrl: r.html_url,
+        cloneUrl: r.clone_url,
+        description: r.description,
+        updatedAt: r.updated_at,
+      });
+    }
+
+    const got = batch.repositories?.length ?? 0;
+    if (!allPages || got < perPage || repos.length >= (totalCount || Infinity)) break;
+    page += 1;
+    if (page > 50) break; // hard cap ~5k repos
+  }
+
+  if (!totalCount) totalCount = repos.length;
+  return { repos, totalCount, repositorySelection };
 }
 
 export const REPO_STARTER_FILES: Record<string, string> = {
