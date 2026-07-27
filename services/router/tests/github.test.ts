@@ -31,10 +31,12 @@ describe("install state", () => {
     const state = await signInstallState(env, {
       userId: "user_abc",
       returnTo: "/agents/new",
+      installationId: 99,
     });
     const verified = await verifyInstallState(env, state);
     expect(verified.userId).toBe("user_abc");
     expect(verified.returnTo).toBe("/agents/new");
+    expect(verified.installationId).toBe(99);
     expect(verified.exp).toBeGreaterThan(Math.floor(Date.now() / 1000));
   });
 

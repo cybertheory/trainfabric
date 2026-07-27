@@ -151,8 +151,8 @@ function NewAgentWizard() {
       .catch(() => setRunners([]));
   }, [authToken]);
 
-  async function refreshGithub() {
-    if (!authToken) return;
+  async function refreshGithub(): Promise<GithubConnectionStatus | null> {
+    if (!authToken) return null;
     setGhLoading(true);
     try {
       const status = await apiFetch<GithubConnectionStatus>("/github/status", { token: authToken });
@@ -163,12 +163,20 @@ function NewAgentWizard() {
         });
         const list = inst.installations ?? [];
         setGhInstalls(list);
-        if (!installationId && list[0]) setInstallationId(list[0].installationId);
+        setInstallationId((prev) => prev ?? list[0]?.installationId ?? null);
       } else {
         setGhInstalls([]);
+        setInstallationId(null);
       }
+      return status;
     } catch {
-      setGhStatus({ configured: false, connected: false, installationCount: 0 });
+      const fallback: GithubConnectionStatus = {
+        configured: false,
+        connected: false,
+        installationCount: 0,
+      };
+      setGhStatus(fallback);
+      return fallback;
     } finally {
       setGhLoading(false);
     }
@@ -181,14 +189,23 @@ function NewAgentWizard() {
 
   useEffect(() => {
     const flag = searchParams.get("github");
+    if (!flag || !authToken) return;
     if (flag === "connected") {
-      toast.success("GitHub connected");
-      void refreshGithub();
+      void (async () => {
+        const status = await refreshGithub();
+        if (status?.connected) {
+          toast.success("GitHub connected");
+        } else {
+          toast.error("GitHub install finished but no account was linked. Try Connect GitHub again.");
+        }
+        router.replace("/agents/new", { scroll: false });
+      })();
     } else if (flag === "error") {
       toast.error(searchParams.get("reason") || "GitHub connection failed");
+      router.replace("/agents/new", { scroll: false });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
+  }, [searchParams, authToken]);
 
   useEffect(() => {
     if (!authToken || !installationId) {
@@ -552,39 +569,49 @@ function NewAgentWizard() {
 
                 {repoTab === "repos" ? (
                   <div className="space-y-2">
-                    <Input
-                      value={repoSearch}
-                      onChange={(e) => setRepoSearch(e.target.value)}
-                      placeholder="Search repos…"
-                      className="h-8 text-sm"
-                    />
-                    <ul className="max-h-48 space-y-1 overflow-y-auto rounded-md border p-1">
-                      {filteredRepos.map((r) => (
-                        <li key={r.id}>
-                          <button
-                            type="button"
-                            onClick={() => selectRepo(r)}
-                            className={cn(
-                              "flex w-full flex-col rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted/60",
-                              selectedFullName === r.fullName && "bg-primary/10",
-                            )}
-                          >
-                            <span className="font-medium">{r.fullName}</span>
-                            <span className="text-[11px] text-muted-foreground">
-                              {r.private ? "private" : "public"} · {r.defaultBranch}
-                            </span>
-                          </button>
-                        </li>
-                      ))}
-                      {filteredRepos.length === 0 ? (
-                        <li className="px-2 py-3 text-xs text-muted-foreground">
-                          No repos in this installation. Create one or grant the App access.
-                        </li>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Select repo</Label>
+                      {ghRepos.length > 8 ? (
+                        <Input
+                          value={repoSearch}
+                          onChange={(e) => setRepoSearch(e.target.value)}
+                          placeholder="Filter repos…"
+                          className="h-8 text-sm"
+                        />
                       ) : null}
-                    </ul>
-                    {selectedFullName ? (
+                      <select
+                        className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                        value={selectedFullName}
+                        onChange={(e) => {
+                          const full = e.target.value;
+                          const r = ghRepos.find((x) => x.fullName === full);
+                          if (r) selectRepo(r);
+                          else {
+                            setSelectedFullName("");
+                            setGithubRepoId(undefined);
+                            setRepoUrl("");
+                            setCreatedFromPlatform(false);
+                          }
+                        }}
+                        disabled={ghRepos.length === 0}
+                      >
+                        <option value="">
+                          {ghRepos.length === 0
+                            ? "No repos in this installation"
+                            : "Choose a repository…"}
+                        </option>
+                        {filteredRepos.map((r) => (
+                          <option key={r.id} value={r.fullName}>
+                            {r.fullName}
+                            {r.private ? " (private)" : ""} · {r.defaultBranch}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    {ghRepos.length === 0 ? (
                       <p className="text-[11px] text-muted-foreground">
-                        Selected <span className="font-medium text-foreground">{selectedFullName}</span>
+                        No repos in this installation. Create one or grant the App access under Manage
+                        install.
                       </p>
                     ) : null}
                   </div>

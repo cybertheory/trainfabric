@@ -71,6 +71,7 @@ import {
 import {
   authenticatedCloneUrl,
   buildInstallUrl,
+  buildUserOAuthUrl,
   createAppJwt,
   createInstallationAccessToken,
   createRepoUnderInstallation,
@@ -1540,13 +1541,18 @@ app.get("/github/status", async (c) => {
     }
     const store = createGithubStore(c.env);
     const account = await store.getAccount(gate.identity.subject);
-    const installs = account ? await store.listInstallations(gate.identity.subject) : [];
+    // Installations are keyed by Clerk user even when user OAuth account row is missing
+    // (e.g. App install without "Request user authorization during installation").
+    const installs = (await store.listInstallations(gate.identity.subject)).filter(
+      (i) => !i.suspended,
+    );
+    const connected = Boolean(account) || installs.length > 0;
     return c.json({
       configured: true,
-      connected: Boolean(account),
-      login: account?.login,
-      avatarUrl: account?.avatarUrl,
-      installationCount: installs.filter((i) => !i.suspended).length,
+      connected,
+      login: account?.login ?? installs[0]?.accountLogin,
+      avatarUrl: account?.avatarUrl ?? installs[0]?.avatarUrl,
+      installationCount: installs.length,
     });
   } catch (e) {
     return errResponse(e);
@@ -1611,6 +1617,65 @@ app.get("/github/callback", async (c) => {
     const now = Date.now();
     const cryptoKey = tokenCryptoKey(c.env);
 
+    const installationIdFromQuery =
+      installationIdRaw && setupAction !== "request" ? Number(installationIdRaw) : NaN;
+    const installationId =
+      Number.isFinite(installationIdFromQuery)
+        ? installationIdFromQuery
+        : verified.installationId != null && Number.isFinite(verified.installationId)
+          ? verified.installationId
+          : null;
+
+    async function upsertInstallationFromApp(installationId: number): Promise<void> {
+      const existing = await store.getInstallation(installationId);
+      if (existing) {
+        if (existing.userId !== verified.userId) {
+          await store.upsertInstallation({
+            ...existing,
+            userId: verified.userId,
+            updatedAt: now,
+          });
+        }
+        return;
+      }
+      try {
+        const { token } = await createInstallationAccessToken(c.env, installationId);
+        const appJwt = await createAppJwt(c.env);
+        const meta = await fetch(`https://api.github.com/app/installations/${installationId}`, {
+          headers: {
+            Authorization: `Bearer ${appJwt}`,
+            Accept: "application/vnd.github+json",
+            "User-Agent": "trainfabric-router",
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+        });
+        void token;
+        if (!meta.ok) return;
+        const body = (await meta.json()) as {
+          id: number;
+          account?: { login: string; id: number; type: string; avatar_url?: string };
+        };
+        if (!body.account) return;
+        await store.upsertInstallation({
+          installationId: body.id,
+          userId: verified.userId,
+          accountLogin: body.account.login,
+          accountType: body.account.type === "Organization" ? "Organization" : "User",
+          accountId: body.account.id,
+          avatarUrl: body.account.avatar_url,
+          suspended: false,
+          createdAt: now,
+          updatedAt: now,
+        });
+      } catch {
+        /* best-effort — user/installations path below is primary when OAuth code exists */
+      }
+    }
+
+    if (installationId != null) {
+      await upsertInstallationFromApp(installationId);
+    }
+
     if (code) {
       const { accessToken } = await exchangeOAuthCode(c.env, code);
       const ghUser = await getGithubUser(accessToken);
@@ -1637,56 +1702,20 @@ app.get("/github/callback", async (c) => {
           updatedAt: now,
         });
       }
-    }
-
-    if (installationIdRaw && setupAction !== "request") {
-      const installationId = Number(installationIdRaw);
-      if (Number.isFinite(installationId)) {
-        // Ensure this install is linked even if user/installations listing lags.
-        const existing = await store.getInstallation(installationId);
-        if (!existing) {
-          try {
-            const { token } = await createInstallationAccessToken(c.env, installationId);
-            const appJwt = await createAppJwt(c.env);
-            const meta = await fetch(`https://api.github.com/app/installations/${installationId}`, {
-              headers: {
-                Authorization: `Bearer ${appJwt}`,
-                Accept: "application/vnd.github+json",
-                "User-Agent": "trainfabric-router",
-                "X-GitHub-Api-Version": "2022-11-28",
-              },
-            });
-            void token;
-            if (meta.ok) {
-              const body = (await meta.json()) as {
-                id: number;
-                account?: { login: string; id: number; type: string; avatar_url?: string };
-              };
-              if (body.account) {
-                await store.upsertInstallation({
-                  installationId: body.id,
-                  userId: verified.userId,
-                  accountLogin: body.account.login,
-                  accountType: body.account.type === "Organization" ? "Organization" : "User",
-                  accountId: body.account.id,
-                  avatarUrl: body.account.avatar_url,
-                  suspended: false,
-                  createdAt: now,
-                  updatedAt: now,
-                });
-              }
-            }
-          } catch {
-            /* best-effort — user/installations path above is primary */
-          }
-        } else if (existing.userId !== verified.userId) {
-          await store.upsertInstallation({
-            ...existing,
-            userId: verified.userId,
-            updatedAt: now,
-          });
-        }
-      }
+    } else if (installationId != null) {
+      // Install finished without user OAuth (App setting off, or GitHub skipped it).
+      // Send the user through authorize so we can bind their GitHub identity + list installs.
+      const oauthState = await signInstallState(c.env, {
+        userId: verified.userId,
+        returnTo: verified.returnTo,
+        installationId,
+      });
+      return c.redirect(buildUserOAuthUrl(c.env, oauthState), 302);
+    } else {
+      return c.redirect(
+        `${dash}/agents/new?github=error&reason=${encodeURIComponent("missing_oauth_code")}`,
+        302,
+      );
     }
 
     const dest = verified.returnTo.startsWith("http")

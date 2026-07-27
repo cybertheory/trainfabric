@@ -140,6 +140,8 @@ export type SignedInstallState = {
   returnTo: string;
   nonce: string;
   exp: number;
+  /** Carried across install → user OAuth when App install returns without `code`. */
+  installationId?: number;
 };
 
 function toB64Url(bytes: Uint8Array): string {
@@ -177,6 +179,7 @@ export async function signInstallState(
     returnTo: payload.returnTo,
     nonce: payload.nonce ?? crypto.randomUUID(),
     exp: Math.floor(Date.now() / 1000) + (payload.expSec ?? 600),
+    ...(payload.installationId != null ? { installationId: payload.installationId } : {}),
   };
   const json = JSON.stringify(body);
   const payloadB64 = toB64Url(new TextEncoder().encode(json));
@@ -203,6 +206,14 @@ export async function verifyInstallState(
 export function buildInstallUrl(env: GithubAppEnv, state: string): string {
   const slug = requireEnv(env, "GITHUB_APP_SLUG");
   const u = new URL(`https://github.com/apps/${slug}/installations/new`);
+  u.searchParams.set("state", state);
+  return u.href;
+}
+
+/** User-to-server OAuth authorize (used when install callback omits `code`). */
+export function buildUserOAuthUrl(env: GithubAppEnv, state: string): string {
+  const u = new URL("https://github.com/login/oauth/authorize");
+  u.searchParams.set("client_id", requireEnv(env, "GITHUB_APP_CLIENT_ID"));
   u.searchParams.set("state", state);
   return u.href;
 }
