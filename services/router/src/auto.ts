@@ -422,6 +422,18 @@ export async function completeTrial(opts: {
   return { trial, run };
 }
 
+/** Join a Box hosted URL (may include ?_token=…) with a path like /chat. */
+function boxHostPath(daemonHostUrl: string, path: string): string {
+  try {
+    const u = new URL(daemonHostUrl);
+    const basePath = u.pathname.replace(/\/$/, "");
+    u.pathname = `${basePath}${path.startsWith("/") ? path : `/${path}`}`;
+    return u.toString();
+  } catch {
+    return `${daemonHostUrl.replace(/\/$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
+  }
+}
+
 /** Deliver a steer instruction to the running Box agent for this AutoRun only. */
 async function injectInstruction(
   box: BoxClient | null,
@@ -435,7 +447,7 @@ async function injectInstruction(
   // Preferred: daemon HTTP chat on this run's hosted URL (bound at provision).
   if (run.box.daemonHostUrl) {
     try {
-      const res = await fetch(`${run.box.daemonHostUrl.replace(/\/$/, "")}/chat`, {
+      const res = await fetch(boxHostPath(run.box.daemonHostUrl, "/chat"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content, autoRunId: run.id }),
