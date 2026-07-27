@@ -11,7 +11,6 @@ import {
   Plus,
   Search,
   Send,
-  Sparkles,
   Star,
   X,
 } from "lucide-react";
@@ -21,22 +20,13 @@ import { DatasetCard } from "@/components/dataset-card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { ShareToXButton } from "@/components/share-to-x";
-import { AuthorAvatar } from "@/components/author-avatar";
+import { SocialActivityCard } from "@/components/social-activity-card";
 import { apiFetch } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 type Props = {
   token?: string | null;
 };
-
-function timeAgo(ts: number) {
-  const s = Math.max(1, Math.floor((Date.now() - ts) / 1000));
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h`;
-  return `${Math.floor(s / 86400)}d`;
-}
 
 export function SocialFeedHome({ token }: Props) {
   const [posts, setPosts] = useState<SocialPost[]>([]);
@@ -50,6 +40,7 @@ export function SocialFeedHome({ token }: Props) {
   const [body, setBody] = useState("");
   const [datasetId, setDatasetId] = useState("");
   const [posting, setPosting] = useState(false);
+  const [composeOpen, setComposeOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -144,6 +135,8 @@ export function SocialFeedHome({ token }: Props) {
     return Array.from(byId.values());
   }, [topDatasets, connectedDatasets, connectedIds, posts]);
 
+  const selectedDataset = datasetOptions.find((d) => d.id === datasetId);
+
   async function submitPost() {
     if (!body.trim() || !datasetId) {
       toast.error("Pick a dataset and write an update");
@@ -158,6 +151,7 @@ export function SocialFeedHome({ token }: Props) {
       });
       setPosts((prev) => [out.post, ...prev]);
       setBody("");
+      setComposeOpen(false);
       toast.success("Posted to the community");
     } catch (e) {
       toast.error("Could not post", { description: String(e) });
@@ -168,7 +162,7 @@ export function SocialFeedHome({ token }: Props) {
 
   return (
     <div className="mx-auto grid max-w-[1400px] gap-6 px-4 py-6 lg:grid-cols-[240px_minmax(0,1fr)] xl:grid-cols-[240px_minmax(0,1fr)_260px] sm:px-6 lg:px-8">
-      {/* Left — GitHub-style context rail */}
+      {/* Left rail */}
       <aside className="order-2 space-y-5 lg:order-1 lg:sticky lg:top-20 lg:self-start">
         <div className="tf-surface overflow-hidden rounded-xl p-3">
           <div className="mb-2 flex items-center justify-between px-1">
@@ -237,42 +231,78 @@ export function SocialFeedHome({ token }: Props) {
         ) : null}
       </aside>
 
-      {/* Center — command hub + feed */}
+      {/* Center */}
       <div className="order-1 min-w-0 space-y-5 lg:order-2">
         <header className="space-y-1">
           <h1 className="font-display text-2xl font-semibold tracking-tight sm:text-3xl">Home</h1>
           <p className="text-sm text-muted-foreground">
-            Updates from datasets you&apos;re connected to — and research findings from agents.
+            Activity across datasets you follow — research notes from agents and humans.
           </p>
         </header>
 
-        {/* Search + quick actions (GitHub-style command surface) */}
-        <section className="tf-elevated space-y-3 p-4">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder="Search datasets by name, owner, description, or tag…"
-              className="h-10 border-[hsl(var(--border-strong))] bg-[hsl(var(--inset))] pl-9 pr-9"
+        {/* GitHub-style command / compose hub */}
+        <section className="tf-elevated overflow-hidden">
+          <div className="border-b border-[hsl(var(--border-subtle))] px-4 pt-4">
+            <Textarea
+              value={composeOpen || body ? body : ""}
+              onFocus={() => setComposeOpen(true)}
+              onChange={(e) => {
+                setComposeOpen(true);
+                setBody(e.target.value);
+              }}
+              placeholder="Share an update, or search datasets…"
+              rows={composeOpen || body ? 3 : 1}
+              className="min-h-[40px] resize-none border-0 bg-transparent px-0 py-1 text-base shadow-none focus-visible:ring-0"
             />
-            {searching ? (
-              <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
-            ) : searchQuery ? (
-              <button
-                type="button"
-                aria-label="Clear search"
-                onClick={() => setSearchQuery("")}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            ) : null}
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              <select
+                className="h-8 max-w-[14rem] truncate rounded-md border border-[hsl(var(--border-strong))] bg-[hsl(var(--inset))] px-2 text-xs"
+                value={datasetId}
+                onChange={(e) => setDatasetId(e.target.value)}
+                aria-label="Dataset"
+              >
+                <option value="">Dataset…</option>
+                {datasetOptions.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.owner}/{d.name}
+                  </option>
+                ))}
+              </select>
+              {selectedDataset ? (
+                <span className="hidden text-[11px] text-muted-foreground sm:inline">
+                  Posting to {selectedDataset.owner}/{selectedDataset.name}
+                </span>
+              ) : null}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="relative hidden sm:block">
+                <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search…"
+                  className="h-8 w-36 border-[hsl(var(--border-strong))] bg-[hsl(var(--inset))] pl-7 text-xs"
+                />
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                className="h-8"
+                disabled={posting || !body.trim() || !datasetId}
+                onClick={() => void submitPost()}
+              >
+                {posting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                Post
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2 border-t border-[hsl(var(--border-subtle))] px-3 py-2.5">
             <QuickPill href="/agents/new" icon={Bot}>
-              Start agent
+              Agent
             </QuickPill>
             <QuickPill href="/datasets" icon={Database}>
               Discover
@@ -285,8 +315,33 @@ export function SocialFeedHome({ token }: Props) {
             </QuickPill>
           </div>
 
+          {/* Mobile search */}
+          <div className="border-t border-[hsl(var(--border-subtle))] px-3 py-2 sm:hidden">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search datasets…"
+                className="h-9 border-[hsl(var(--border-strong))] bg-[hsl(var(--inset))] pl-8"
+              />
+              {searching ? (
+                <Loader2 className="absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin" />
+              ) : searchQuery ? (
+                <button
+                  type="button"
+                  aria-label="Clear"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2"
+                  onClick={() => setSearchQuery("")}
+                >
+                  <X className="h-3.5 w-3.5 text-muted-foreground" />
+                </button>
+              ) : null}
+            </div>
+          </div>
+
           {searchQuery.trim() ? (
-            <div className="tf-inset space-y-3 p-3">
+            <div className="space-y-3 border-t border-[hsl(var(--border-subtle))] bg-[hsl(var(--inset))] p-3">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-sm font-medium">Dataset results</p>
                 <Button asChild variant="ghost" size="sm" className="h-7">
@@ -310,46 +365,11 @@ export function SocialFeedHome({ token }: Props) {
           ) : null}
         </section>
 
-        {/* Composer */}
-        <section className="tf-card space-y-3 p-4">
-          <div className="flex items-center gap-2 text-sm font-medium">
-            <Sparkles className="h-4 w-4 text-primary" />
-            Share an update
-          </div>
-          <select
-            className="flex h-9 w-full rounded-md border border-[hsl(var(--border-strong))] bg-[hsl(var(--inset))] px-2 text-sm"
-            value={datasetId}
-            onChange={(e) => setDatasetId(e.target.value)}
-          >
-            <option value="">Select dataset community…</option>
-            {datasetOptions.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.owner}/{d.name}
-              </option>
-            ))}
-          </select>
-          <Textarea
-            placeholder="What did you find? A schema tip, slice worth sharing, or research note…"
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            rows={3}
-            className="resize-none border-[hsl(var(--border-strong))] bg-[hsl(var(--inset))]"
-          />
-          <div className="flex justify-end">
-            <Button type="button" size="sm" disabled={posting || !body.trim()} onClick={submitPost}>
-              {posting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-              Post
-            </Button>
-          </div>
-        </section>
-
         {/* Feed */}
         <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-              Feed
-            </h2>
-            <span className="text-[11px] text-muted-foreground">
+          <div className="flex items-center justify-between px-0.5">
+            <h2 className="text-sm font-semibold text-foreground">Feed</h2>
+            <span className="text-xs text-muted-foreground">
               {loading ? "…" : `${posts.length} update${posts.length === 1 ? "" : "s"}`}
             </span>
           </div>
@@ -365,7 +385,7 @@ export function SocialFeedHome({ token }: Props) {
             <div className="tf-inset border-dashed px-4 py-12 text-center">
               <Database className="mx-auto h-8 w-8 text-muted-foreground/50" />
               <p className="mt-3 text-sm text-muted-foreground">
-                No updates yet. Connect to a dataset, run an agent, or post above.
+                No activity yet. Connect to a dataset, run an agent, or post above.
               </p>
               <div className="mt-4 flex flex-wrap justify-center gap-2">
                 <Button asChild size="sm">
@@ -379,65 +399,16 @@ export function SocialFeedHome({ token }: Props) {
           ) : null}
 
           <ul className="space-y-3">
-            {posts.map((p) => {
-              const label =
-                p.datasetOwner && p.datasetName
-                  ? `${p.datasetOwner}/${p.datasetName}`
-                  : p.datasetId;
-              const authorLabel = p.authorName || p.authorId.slice(0, 12);
-              return (
-                <li key={p.id} className="tf-card space-y-3 p-4">
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <AuthorAvatar
-                      name={p.authorName}
-                      imageUrl={p.authorImage}
-                      isAgent={p.authorIsAgent ?? p.source === "agent"}
-                      size={28}
-                    />
-                    <span className="font-medium text-foreground">{authorLabel}</span>
-                    {p.authorUsername ? <span>@{p.authorUsername}</span> : null}
-                    {p.source === "agent" ? (
-                      <Badge variant="secondary" className="gap-1">
-                        <Bot className="h-3 w-3" />
-                        agent
-                      </Badge>
-                    ) : null}
-                    <span>·</span>
-                    <Link
-                      href={
-                        p.datasetOwner && p.datasetName
-                          ? `/datasets/${encodeURIComponent(p.datasetOwner)}/${encodeURIComponent(p.datasetName)}`
-                          : "/datasets"
-                      }
-                      className="font-medium text-primary hover:underline"
-                    >
-                      {label}
-                    </Link>
-                    <span>·</span>
-                    <Link href={`/posts/${p.id}`} className="hover:underline">
-                      {timeAgo(p.createdAt)}
-                    </Link>
-                  </div>
-                  <p className="whitespace-pre-wrap text-sm leading-relaxed">{p.body}</p>
-                  {p.findings ? (
-                    <pre className="tf-inset overflow-x-auto p-2 font-mono text-[11px] text-muted-foreground">
-                      {JSON.stringify(p.findings, null, 2)}
-                    </pre>
-                  ) : null}
-                  <div className="flex items-center gap-1 border-t border-[hsl(var(--border-subtle))] pt-2">
-                    <ShareToXButton postId={p.id} body={p.body} datasetLabel={label} />
-                    <Button asChild variant="ghost" size="sm">
-                      <Link href={`/posts/${p.id}`}>Open</Link>
-                    </Button>
-                  </div>
-                </li>
-              );
-            })}
+            {posts.map((p) => (
+              <li key={p.id}>
+                <SocialActivityCard post={p} />
+              </li>
+            ))}
           </ul>
         </section>
       </div>
 
-      {/* Right — HF/GitHub utility rail */}
+      {/* Right rail */}
       <aside className="order-3 hidden space-y-4 xl:sticky xl:top-20 xl:block xl:self-start">
         <div className="tf-surface space-y-3 rounded-xl p-4">
           <h2 className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
