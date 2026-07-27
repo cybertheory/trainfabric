@@ -329,7 +329,7 @@ function AgentStartCoach() {
           protocol: {
             metric: { name: metric.trim() || "score", direction },
             budget: {
-              maxTrials: Number(maxTrials) || 10,
+              maxTrials: Number(maxTrials) || DEFAULT_PROTOCOL.budget.maxTrials,
               maxWallClockSec: Number(wallSec) || 3600,
             },
             mutablePaths: mutablePaths
@@ -364,7 +364,7 @@ function AgentStartCoach() {
   }
 
   return (
-    <div className="mx-auto max-w-xl space-y-8 px-4 py-10 sm:px-6">
+    <div className="mx-auto max-w-xl space-y-6">
       <header className="space-y-2">
         <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
           Same path as MCP start_auto
@@ -385,12 +385,12 @@ function AgentStartCoach() {
                 if (i <= moment || (i === moment + 1 && canAdvance())) setMoment(i);
               }}
               className={cn(
-                "rounded-full border px-3 py-1 text-xs transition",
+                "rounded-full border px-3 py-1.5 text-xs transition",
                 i === moment
-                  ? "border-primary bg-primary/10 text-foreground"
+                  ? "border-primary bg-primary/15 text-foreground"
                   : i < moment
-                    ? "border-border text-foreground"
-                    : "border-border/60 text-muted-foreground",
+                    ? "border-[hsl(var(--border-strong))] bg-[hsl(var(--elevated))] text-foreground"
+                    : "border-[hsl(var(--border-subtle))] text-muted-foreground",
               )}
             >
               {i + 1}. {label}
@@ -399,7 +399,7 @@ function AgentStartCoach() {
         ))}
       </ol>
 
-      <div className="min-h-[280px] space-y-5">
+      <div className="tf-card min-h-[280px] space-y-5 p-5 sm:p-6">
         {moment === 0 ? (
           <section className="space-y-4">
             <h2 className="text-base font-semibold">Can we clone and push?</h2>
@@ -414,7 +414,7 @@ function AgentStartCoach() {
               </p>
             ) : null}
             {ghStatus?.connected ? (
-              <div className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-4">
+              <div className="tf-inset px-4 py-4">
                 <p className="text-sm">
                   Connected as{" "}
                   <span className="font-medium">@{ghStatus.login}</span>
@@ -433,7 +433,7 @@ function AgentStartCoach() {
                 </Button>
               </div>
             ) : (
-              <div className="rounded-xl border px-4 py-5">
+              <div className="tf-inset flex flex-col items-start gap-3 px-4 py-5">
                 <Button
                   type="button"
                   onClick={() => void connectGithub()}
@@ -447,7 +447,7 @@ function AgentStartCoach() {
                   Connect GitHub
                 </Button>
                 {!authToken ? (
-                  <p className="mt-3 text-xs text-muted-foreground">
+                  <p className="text-xs text-muted-foreground">
                     <Link href="/sign-in" className="text-primary hover:underline">
                       Sign in
                     </Link>{" "}
@@ -502,8 +502,8 @@ function AgentStartCoach() {
                   className={cn(
                     "rounded-full border px-2.5 py-1 text-[11px]",
                     repoMode === id
-                      ? "border-primary bg-primary/10"
-                      : "border-border text-muted-foreground",
+                      ? "border-primary bg-primary/15"
+                      : "border-[hsl(var(--border-subtle))] text-muted-foreground",
                   )}
                 >
                   {label}
@@ -661,7 +661,7 @@ function AgentStartCoach() {
         {moment === 3 ? (
           <section className="space-y-4">
             <h2 className="text-base font-semibold">Ready to launch</h2>
-            <dl className="space-y-3 rounded-xl border bg-muted/20 px-4 py-4 text-sm">
+            <dl className="tf-inset space-y-3 px-4 py-4 text-sm">
               <div>
                 <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">Repo</dt>
                 <dd className="mt-0.5 font-medium">
@@ -697,7 +697,7 @@ function AgentStartCoach() {
             </button>
 
             {showAdvanced ? (
-              <div className="space-y-3 rounded-xl border p-4">
+              <div className="tf-inset space-y-3 p-4">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="space-y-1">
                     <Label className="text-xs">Metric</Label>
@@ -773,7 +773,7 @@ function AgentStartCoach() {
         ) : null}
       </div>
 
-      <footer className="flex items-center justify-between gap-3 border-t pt-4">
+      <footer className="tf-surface sticky bottom-4 flex items-center justify-between gap-3 rounded-xl px-4 py-3">
         <Button
           type="button"
           variant="ghost"
@@ -797,6 +797,7 @@ function AgentStartCoach() {
             type="button"
             disabled={starting || !canAdvance() || (!selectedFullName && !isLikelyGitUrl(repoUrl))}
             onClick={() => void start()}
+            className="bg-[hsl(var(--success))] text-[hsl(var(--success-foreground))] hover:bg-[hsl(var(--success))]/90"
           >
             {starting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
             Start agent

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { SiteHeader } from "@/components/site-header";
+import { AgentShell } from "@/components/agent-shell";
 import { isClerkServerEnabled } from "@/lib/clerk";
 
 /**
@@ -26,7 +27,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           </Link>
         </div>
       ) : null}
-      <main className="mx-auto min-h-[calc(100vh-3.5rem)] max-w-7xl px-4 py-8">{children}</main>
+      <AgentShell>{children}</AgentShell>
     </>
   );
 }

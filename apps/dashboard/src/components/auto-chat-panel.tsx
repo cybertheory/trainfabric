@@ -111,11 +111,10 @@ export function AutoChatPanel({ autoRunId }: { autoRunId: string }) {
   }
 
   return (
-    <div className="flex h-full min-h-[420px] flex-col rounded-lg border">
-      <div className="flex items-center justify-between border-b px-3 py-2">
-        <h2 className="text-sm font-semibold">Chat</h2>
+    <div className="tf-inset flex h-full min-h-[420px] flex-col overflow-hidden">
+      <div className="flex items-center justify-between border-b border-[hsl(var(--border-subtle))] px-3 py-2">
         <span className="text-[11px] text-muted-foreground">
-          {serverCount} message{serverCount === 1 ? "" : "s"} · shared with MCP
+          Shared with MCP · {serverCount} message{serverCount === 1 ? "" : "s"}
         </span>
       </div>
 
@@ -145,8 +144,8 @@ export function AutoChatPanel({ autoRunId }: { autoRunId: string }) {
                     isUser
                       ? "bg-primary text-primary-foreground"
                       : isSystem
-                        ? "border border-dashed bg-muted/40 text-muted-foreground"
-                        : "bg-muted",
+                        ? "border border-dashed border-[hsl(var(--border-strong))] bg-[hsl(var(--surface))] text-muted-foreground"
+                        : "bg-[hsl(var(--elevated))] text-foreground",
                   )}
                 >
                   {messageText(m) || (busy ? "…" : "")}
@@ -157,7 +156,7 @@ export function AutoChatPanel({ autoRunId }: { autoRunId: string }) {
         )}
       </div>
 
-      <div className="flex items-end gap-2 border-t p-2">
+      <div className="flex items-end gap-2 border-t border-[hsl(var(--border-subtle))] bg-[hsl(var(--surface))] p-2">
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -169,7 +168,7 @@ export function AutoChatPanel({ autoRunId }: { autoRunId: string }) {
           }}
           placeholder="Message the agent…"
           rows={2}
-          className="flex-1 resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring"
+          className="flex-1 resize-none rounded-md border border-[hsl(var(--border-strong))] bg-[hsl(var(--inset))] px-2 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring"
         />
         <Button type="button" size="icon" disabled={busy || !input.trim()} onClick={submit}>
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}

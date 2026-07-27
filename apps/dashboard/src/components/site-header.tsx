@@ -1,45 +1,70 @@
 "use client";
 
 import Link from "next/link";
-import { Database, Plus } from "lucide-react";
+import { usePathname } from "next/navigation";
+import { Bot, Database, Plus, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { AuthControls } from "@/components/auth-controls";
 import { AlertBellButton, JobProgressChip } from "@/components/alert-drawer";
+import { cn } from "@/lib/utils";
 
 export function SiteHeader() {
+  const pathname = usePathname();
+
+  function navClass(href: string) {
+    const active = pathname === href || (href !== "/home" && pathname.startsWith(href));
+    return cn(
+      "rounded-md px-2 py-1 transition-colors hover:text-foreground",
+      active ? "bg-[hsl(var(--elevated))] text-foreground" : "text-muted-foreground",
+    );
+  }
+
   return (
-    <header className="sticky top-0 z-40 border-b bg-background/90 backdrop-blur">
-      <div className="mx-auto flex h-14 max-w-6xl items-center gap-4 px-4">
-        <Link href="/home" className="flex items-center gap-2 font-semibold tracking-tight">
+    <header className="sticky top-0 z-40 border-b border-[hsl(var(--border-subtle))] bg-[hsl(var(--surface))]/95 backdrop-blur">
+      <div className="mx-auto flex h-14 max-w-[1400px] items-center gap-3 px-4">
+        <Link href="/home" className="flex shrink-0 items-center gap-2 font-semibold tracking-tight">
           <Database className="h-5 w-5 text-primary" />
-          Trainfabric
+          <span className="font-display">Trainfabric</span>
         </Link>
-        <nav className="flex items-center gap-3 text-sm text-muted-foreground">
-          <Link href="/home" className="hover:text-foreground">
+
+        <nav className="hidden items-center gap-0.5 text-sm md:flex">
+          <Link href="/home" className={navClass("/home")}>
             Home
           </Link>
-          <Link href="/agents" className="hover:text-foreground">
+          <Link href="/agents" className={navClass("/agents")}>
             Agents
           </Link>
-          <Link href="/datasets" className="hover:text-foreground">
+          <Link href="/datasets" className={navClass("/datasets")}>
             Discover
           </Link>
-          <Link href="/docs" className="hover:text-foreground">
+          <Link href="/docs" className={navClass("/docs")}>
             Docs
           </Link>
-          <Link href="/docs/mcp" className="hidden hover:text-foreground sm:inline">
+          <Link href="/docs/mcp" className={cn(navClass("/docs/mcp"), "hidden lg:inline-flex")}>
             MCP
           </Link>
-          <Link href="/docs/api" className="hidden hover:text-foreground sm:inline">
-            API
-          </Link>
         </nav>
+
+        <Link
+          href="/datasets"
+          className="tf-inset ml-2 hidden h-9 max-w-sm flex-1 items-center gap-2 px-3 text-sm text-muted-foreground transition hover:border-[hsl(var(--border-strong))] sm:flex"
+        >
+          <Search className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">Search datasets, agents…</span>
+        </Link>
+
         <div className="ml-auto flex items-center gap-2">
           <JobProgressChip />
           <AlertBellButton />
           <ThemeToggle />
-          <Button asChild size="sm">
+          <Button asChild size="sm" className="hidden sm:inline-flex">
+            <Link href="/agents/new">
+              <Bot className="h-4 w-4" />
+              Start agent
+            </Link>
+          </Button>
+          <Button asChild size="sm" variant="outline" className="hidden md:inline-flex">
             <Link href="/new">
               <Plus className="h-4 w-4" />
               Publish

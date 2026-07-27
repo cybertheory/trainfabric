@@ -21,26 +21,46 @@
     --border: 40 10% 88%;
     --input: 40 10% 88%;
     --ring: 215 70% 35%;
-    --radius: 0.5rem;
+    --radius: 0.75rem;
+    /* Layered surfaces (light) */
+    --canvas: 40 18% 96%;
+    --surface: 0 0% 100%;
+    --surface-2: 40 20% 99%;
+    --inset: 40 14% 94%;
+    --elevated: 0 0% 100%;
+    --border-subtle: 40 10% 90%;
+    --border-strong: 40 12% 82%;
+    --success: 142 55% 32%;
+    --success-foreground: 0 0% 100%;
   }
   .dark {
-    --background: 220 20% 8%;
-    --foreground: 40 10% 96%;
+    --background: 220 25% 5%;
+    --foreground: 210 20% 96%;
     --card: 220 18% 11%;
-    --card-foreground: 40 10% 96%;
-    --primary: 210 80% 60%;
-    --primary-foreground: 220 20% 8%;
-    --secondary: 220 14% 16%;
-    --secondary-foreground: 40 10% 96%;
-    --muted: 220 14% 16%;
-    --muted-foreground: 220 8% 65%;
-    --accent: 175 30% 18%;
-    --accent-foreground: 175 40% 80%;
-    --destructive: 0 60% 40%;
+    --card-foreground: 210 20% 96%;
+    --primary: 200 85% 55%;
+    --primary-foreground: 220 25% 6%;
+    --secondary: 220 16% 12%;
+    --secondary-foreground: 210 20% 96%;
+    --muted: 220 14% 12%;
+    --muted-foreground: 215 12% 62%;
+    --accent: 175 28% 16%;
+    --accent-foreground: 175 45% 78%;
+    --destructive: 0 60% 42%;
     --destructive-foreground: 0 0% 100%;
-    --border: 220 14% 18%;
-    --input: 220 14% 18%;
-    --ring: 210 80% 60%;
+    --border: 220 14% 16%;
+    --input: 220 14% 14%;
+    --ring: 200 85% 55%;
+    /* Layered surfaces (HF/GitHub-like depth) */
+    --canvas: 220 28% 4%;
+    --surface: 220 22% 7%;
+    --surface-2: 220 18% 10%;
+    --inset: 220 24% 5.5%;
+    --elevated: 220 16% 13%;
+    --border-subtle: 220 14% 14%;
+    --border-strong: 220 12% 20%;
+    --success: 142 50% 38%;
+    --success-foreground: 0 0% 100%;
   }
   * {
     @apply border-border;
@@ -53,6 +73,28 @@
 @layer utilities {
   .font-display {
     font-family: var(--font-display), var(--font-sans), system-ui, sans-serif;
+  }
+  .tf-canvas {
+    background-color: hsl(var(--canvas));
+  }
+  .tf-surface {
+    background-color: hsl(var(--surface));
+    border: 1px solid hsl(var(--border-subtle));
+  }
+  .tf-card {
+    background-color: hsl(var(--surface-2));
+    border: 1px solid hsl(var(--border-strong));
+    border-radius: var(--radius);
+  }
+  .tf-inset {
+    background-color: hsl(var(--inset));
+    border: 1px solid hsl(var(--border-subtle));
+    border-radius: calc(var(--radius) - 2px);
+  }
+  .tf-elevated {
+    background-color: hsl(var(--elevated));
+    border: 1px solid hsl(var(--border-strong));
+    border-radius: var(--radius);
   }
 }
 

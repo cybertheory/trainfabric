@@ -99,9 +99,9 @@ export function DatasetMultiSelect({
       </Button>
 
       {open ? (
-        <div className="absolute z-40 mt-1 w-full overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-md">
+        <div className="tf-elevated absolute z-40 mt-1 w-full overflow-hidden shadow-lg">
           <Command shouldFilter={false} className="max-h-64 overflow-hidden">
-            <div className="flex items-center gap-2 border-b px-2">
+            <div className="flex items-center gap-2 border-b border-[hsl(var(--border-subtle))] px-2">
               <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               <Command.Input
                 value={query}
