@@ -86,9 +86,10 @@ export function buildHfConnectUrl(env: HfOAuthEnv, state: string): string {
   u.searchParams.set("client_id", requireEnv(env, "HF_OAUTH_CLIENT_ID"));
   u.searchParams.set("redirect_uri", `${hfPublicApiOrigin(env)}/huggingface/callback`);
   u.searchParams.set("response_type", "code");
-  u.searchParams.set("scope", "openid profile read-repos");
+  // Must match scopes enabled on the HF OAuth app settings page.
+  // read-repos = private; gated-repos = public gated the user can access.
+  u.searchParams.set("scope", "openid profile read-repos gated-repos");
   u.searchParams.set("state", state);
-  u.searchParams.set("prompt", "consent");
   return u.href;
 }
 
@@ -96,18 +97,22 @@ export async function exchangeHfOAuthCode(
   env: HfOAuthEnv,
   code: string,
 ): Promise<{ accessToken: string; refreshToken?: string; expiresIn?: number }> {
+  const clientId = requireEnv(env, "HF_OAUTH_CLIENT_ID");
+  const clientSecret = requireEnv(env, "HF_OAUTH_CLIENT_SECRET");
+  const redirectUri = `${hfPublicApiOrigin(env)}/huggingface/callback`;
   const body = new URLSearchParams({
     grant_type: "authorization_code",
     code,
-    redirect_uri: `${hfPublicApiOrigin(env)}/huggingface/callback`,
-    client_id: requireEnv(env, "HF_OAUTH_CLIENT_ID"),
-    client_secret: requireEnv(env, "HF_OAUTH_CLIENT_SECRET"),
+    redirect_uri: redirectUri,
+    client_id: clientId,
   });
+  const basic = btoa(`${clientId}:${clientSecret}`);
   const res = await fetch(HF_TOKEN, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "application/json",
+      Authorization: `Basic ${basic}`,
       "User-Agent": "trainfabric-router",
     },
     body,

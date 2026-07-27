@@ -54,7 +54,7 @@ Used by Agents (GitHub) and Publish → Connect & pull (GitHub + HF). Clerk rema
 | `DELETE` | `/huggingface/connection` | Disconnect |
 | `GET` | `/huggingface/datasets` | List readable datasets (`search`, `author`) |
 
-HF OAuth app: create at huggingface.co → settings → applications. Redirect URI must be `{PUBLIC_API_BASE}/huggingface/callback`. Worker secrets: `HF_OAUTH_CLIENT_ID`, `HF_OAUTH_CLIENT_SECRET` (token crypto reuses `GITHUB_TOKEN_CRYPTO_KEY`).
+HF OAuth app: create at huggingface.co → settings → applications. Redirect URI must be `{PUBLIC_API_BASE}/huggingface/callback`. Enable scopes `openid`, `profile`, `read-repos`, and `gated-repos`, then Update. Worker secrets: `HF_OAUTH_CLIENT_ID`, `HF_OAUTH_CLIENT_SECRET` (token crypto reuses `GITHUB_TOKEN_CRYPTO_KEY`).
 
 ## Social feed & notifications
 

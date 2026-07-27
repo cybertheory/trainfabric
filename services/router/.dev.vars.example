@@ -33,7 +33,8 @@ GITHUB_TOKEN_CRYPTO_KEY=
 # Hugging Face OAuth (Sign in with HF — private/gated dataset pulls on Publish)
 # Create an OAuth app at https://huggingface.co/settings/applications
 # Redirect URI: ${PUBLIC_API_BASE}/huggingface/callback
-# Scopes used: openid profile read-repos
+# Scopes used: openid profile read-repos gated-repos
+# Enable those same scopes on the HF app, then Update.
 HF_OAUTH_CLIENT_ID=
 HF_OAUTH_CLIENT_SECRET=
 # Optional; falls back to GITHUB_APP_STATE_SECRET / AGENT_TOKEN_SECRET
