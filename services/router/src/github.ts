@@ -380,6 +380,89 @@ export async function listInstallationRepos(
   return { repos, totalCount, repositorySelection };
 }
 
+export type GithubTreeEntry = {
+  path: string;
+  type: "file" | "dir";
+  size?: number;
+  /** True when file has an ingest-allowed extension */
+  ingestible?: boolean;
+};
+
+/** List files/dirs under a path for the publish picker (non-recursive one level, or recursive tabular files). */
+export async function listInstallationRepoTree(
+  env: GithubAppEnv,
+  installationId: number,
+  opts: {
+    owner: string;
+    repo: string;
+    ref?: string;
+    path?: string;
+    recursive?: boolean;
+  },
+): Promise<{ ref: string; entries: GithubTreeEntry[] }> {
+  const { token } = await createInstallationAccessToken(env, installationId);
+  const ref = opts.ref || "main";
+  const path = (opts.path || "").replace(/^\/+|\/+$/g, "");
+
+  if (opts.recursive) {
+    // Resolve SHA then recursive tree; filter to ingestible files under path prefix.
+    let sha: string | undefined;
+    try {
+      const refMeta = await ghFetch<{ object?: { sha?: string }; sha?: string }>(
+        `/repos/${opts.owner}/${opts.repo}/git/ref/heads/${encodeURIComponent(ref)}`,
+        { token },
+      );
+      sha = refMeta.object?.sha ?? refMeta.sha;
+    } catch {
+      const commit = await ghFetch<{ sha?: string }>(
+        `/repos/${opts.owner}/${opts.repo}/commits/${encodeURIComponent(ref)}`,
+        { token },
+      );
+      sha = commit.sha;
+    }
+    if (!sha) return { ref, entries: [] };
+    const tree = await ghFetch<{
+      tree: { path: string; type: string; size?: number }[];
+    }>(`/repos/${opts.owner}/${opts.repo}/git/trees/${sha}?recursive=1`, { token });
+    const prefix = path;
+    const entries: GithubTreeEntry[] = [];
+    for (const node of tree.tree ?? []) {
+      if (node.type !== "blob") continue;
+      if (prefix && node.path !== prefix && !node.path.startsWith(prefix + "/")) continue;
+      const lower = node.path.toLowerCase();
+      const ingestible = [".parquet", ".parq", ".csv", ".json", ".jsonl", ".ndjson"].some((e) =>
+        lower.endsWith(e),
+      );
+      if (!ingestible) continue;
+      entries.push({ path: node.path, type: "file", size: node.size, ingestible: true });
+      if (entries.length >= 200) break;
+    }
+    return { ref, entries };
+  }
+
+  const q = path
+    ? `/repos/${opts.owner}/${opts.repo}/contents/${path}?ref=${encodeURIComponent(ref)}`
+    : `/repos/${opts.owner}/${opts.repo}/contents?ref=${encodeURIComponent(ref)}`;
+  const data = await ghFetch<
+    | { type: string; path: string; size?: number; name: string }
+    | Array<{ type: string; path: string; size?: number; name: string }>
+  >(q, { token });
+  const rows = Array.isArray(data) ? data : [data];
+  const entries: GithubTreeEntry[] = rows.map((r) => {
+    const lower = r.path.toLowerCase();
+    const ingestible =
+      r.type === "file" &&
+      [".parquet", ".parq", ".csv", ".json", ".jsonl", ".ndjson"].some((e) => lower.endsWith(e));
+    return {
+      path: r.path,
+      type: r.type === "dir" ? "dir" : "file",
+      size: r.size,
+      ingestible: r.type === "file" ? ingestible : undefined,
+    };
+  });
+  return { ref, entries };
+}
+
 export const REPO_STARTER_FILES: Record<string, string> = {
   "TRAINFABRIC.md": `# Autoresearch brief
 

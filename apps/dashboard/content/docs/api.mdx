@@ -28,7 +28,7 @@ GET /health
 | `GET` | `/datasets/:id/schema` | Schema contract |
 | `GET` | `/datasets/:id/snapshots` | Iceberg snapshots |
 | `GET` | `/datasets/:id/lineage` | Lineage graph |
-| `POST` | `/datasets` | Publish / ingest |
+| `POST` | `/datasets` | Publish / ingest (`source_url` + optional `source_auth`: `none` \| `github` \| `huggingface`) |
 | `POST` | `/datasets/derived` | Create derived dataset |
 | `POST` | `/datasets/:id/query` | Query slice |
 | `POST` | `/datasets/:id/estimate` | Estimate query |
@@ -37,6 +37,24 @@ GET /health
 | `POST` | `/datasets/:id/rebuild` | Rebuild derived |
 | `GET` / `POST` | `/datasets/:id/connect` | Connection status / toggle (subscribe) |
 | `GET` | `/me/connections` | List connected datasets |
+
+## GitHub App & Hugging Face OAuth
+
+Used by Agents (GitHub) and Publish → Connect & pull (GitHub + HF). Clerk remains Trainfabric identity; GH/HF tokens are keyed by Clerk `userId`.
+
+| Method | Path | Notes |
+|--------|------|-------|
+| `GET` | `/github/status` | Connection status |
+| `POST` | `/github/install` | `{ url }` → App install / OAuth |
+| `GET` | `/github/installations/:id/repos` | Repos for install |
+| `GET` | `/github/installations/:id/tree` | Repo tree for publish picker (`owner`, `repo`, `path`, `recursive`) |
+| `GET` | `/huggingface/status` | HF OAuth status |
+| `POST` | `/huggingface/connect` | `{ url }` → HF authorize |
+| `GET` | `/huggingface/callback` | OAuth redirect (browser) |
+| `DELETE` | `/huggingface/connection` | Disconnect |
+| `GET` | `/huggingface/datasets` | List readable datasets (`search`, `author`) |
+
+HF OAuth app: create at huggingface.co → settings → applications. Redirect URI must be `{PUBLIC_API_BASE}/huggingface/callback`. Worker secrets: `HF_OAUTH_CLIENT_ID`, `HF_OAUTH_CLIENT_SECRET` (token crypto reuses `GITHUB_TOKEN_CRYPTO_KEY`).
 
 ## Social feed & notifications
 

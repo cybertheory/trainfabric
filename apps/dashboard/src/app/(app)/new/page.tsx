@@ -1,5 +1,6 @@
 "use client";
 
+import { Suspense } from "react";
 import dynamic from "next/dynamic";
 import { isClerkClientEnabled } from "@/lib/clerk";
 import { PublishForm } from "@/app/(app)/new/publish-form";
@@ -10,6 +11,13 @@ const PublishWithClerk = dynamic(() => import("@/app/(app)/new/publish-with-cler
 });
 
 export default function NewDatasetPage() {
-  if (isClerkClientEnabled()) return <PublishWithClerk />;
-  return <PublishForm getToken={async () => null} />;
+  return (
+    <Suspense fallback={null}>
+      {isClerkClientEnabled() ? (
+        <PublishWithClerk />
+      ) : (
+        <PublishForm getToken={async () => null} />
+      )}
+    </Suspense>
+  );
 }

@@ -1,6 +1,6 @@
 /**
- * Resolve public Hugging Face / GitHub URLs to downloadable tabular files.
- * Folders are walked recursively. Private links fail with a clear error.
+ * Resolve Hugging Face / GitHub URLs to downloadable tabular files.
+ * Folders are walked recursively. Pass tokens for private/gated sources.
  */
 
 export const REMOTE_EXTS = [".parquet", ".parq", ".csv", ".json", ".jsonl", ".ndjson"] as const;
@@ -9,6 +9,11 @@ export const MAX_REMOTE_FILES = 50;
 export const MAX_REMOTE_BYTES = 500 * 1024 * 1024;
 
 export type RemoteKind = "hf" | "github";
+
+export type RemoteAuth = {
+  githubToken?: string;
+  hfToken?: string;
+};
 
 export type ParsedRemote =
   | {
@@ -59,6 +64,28 @@ function stripQuery(url: string): string {
   }
 }
 
+function authHeaders(auth?: RemoteAuth, kind?: RemoteKind): Record<string, string> {
+  const h: Record<string, string> = { "User-Agent": "trainfabric-router" };
+  if (kind === "github" && auth?.githubToken) {
+    h.Authorization = `Bearer ${auth.githubToken}`;
+    h.Accept = "application/vnd.github+json";
+  } else if (kind === "hf" && auth?.hfToken) {
+    h.Authorization = `Bearer ${auth.hfToken}`;
+  }
+  return h;
+}
+
+function forbiddenMessage(kind: RemoteKind, hadToken: boolean): string {
+  if (hadToken) {
+    return kind === "hf"
+      ? "Hugging Face denied access — check the dataset is shared with your account, or reconnect HF."
+      : "GitHub denied access — install the Trainfabric GitHub App on that repo, or reconnect GitHub.";
+  }
+  return kind === "hf"
+    ? "This Hugging Face dataset is private or gated — connect Hugging Face and try again."
+    : "This GitHub path is private — connect GitHub (App install) and try again.";
+}
+
 /** Parse a user-pasted HF or GitHub URL. */
 export function parseSourceUrl(raw: string): ParsedRemote {
   let href = raw.trim();
@@ -75,7 +102,6 @@ export function parseSourceUrl(raw: string): ParsedRemote {
   const host = u.hostname.toLowerCase();
 
   if (host === "raw.githubusercontent.com") {
-    // /owner/repo/ref/path...
     const parts = u.pathname.split("/").filter(Boolean);
     if (parts.length < 4) {
       throw new RemoteSourceError("Invalid raw.githubusercontent.com URL");
@@ -93,8 +119,6 @@ export function parseSourceUrl(raw: string): ParsedRemote {
   }
 
   if (host === "github.com" || host === "www.github.com") {
-    // /owner/repo/(tree|blob)/ref/path...
-    // /owner/repo (defaults to tree/main)
     const parts = u.pathname.split("/").filter(Boolean);
     if (parts.length < 2) throw new RemoteSourceError("Invalid GitHub URL");
     const [owner, repo, kind, ref, ...rest] = parts;
@@ -123,16 +147,12 @@ export function parseSourceUrl(raw: string): ParsedRemote {
   }
 
   if (host === "huggingface.co" || host === "www.huggingface.co" || host === "hf.co") {
-    // /datasets/owner/name
-    // /datasets/owner/name/tree/revision/path
-    // /datasets/owner/name/blob/revision/path
-    // /datasets/owner/name/resolve/revision/path
     const parts = u.pathname.split("/").filter(Boolean);
     if (parts[0] !== "datasets" || parts.length < 3) {
       throw new RemoteSourceError("Use a huggingface.co/datasets/... link");
     }
     const repoId = `${parts[1]}/${parts[2]}`;
-    const kind = parts[3]; // tree | blob | resolve | undefined
+    const kind = parts[3];
     if (!kind) {
       return { kind: "hf", repoId, revision: "main", path: "", isFileHint: false };
     }
@@ -147,7 +167,6 @@ export function parseSourceUrl(raw: string): ParsedRemote {
         isFileHint: kind === "blob" || kind === "resolve",
       };
     }
-    // /datasets/owner/name/something — treat as path under main
     return {
       kind: "hf",
       repoId,
@@ -160,12 +179,18 @@ export function parseSourceUrl(raw: string): ParsedRemote {
   throw new RemoteSourceError("Use a huggingface.co or github.com link");
 }
 
-async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+async function fetchJson<T>(
+  url: string,
+  kind: RemoteKind,
+  auth?: RemoteAuth,
+  init?: RequestInit,
+): Promise<T> {
+  const hadToken = kind === "github" ? Boolean(auth?.githubToken) : Boolean(auth?.hfToken);
   const res = await fetch(url, {
     ...init,
     headers: {
       Accept: "application/json",
-      "User-Agent": "trainfabric-router",
+      ...authHeaders(auth, kind),
       ...(init?.headers ?? {}),
     },
   });
@@ -182,10 +207,15 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
         429,
       );
     }
-    throw new RemoteSourceError("This link must be publicly readable.", 403);
+    throw new RemoteSourceError(forbiddenMessage(kind, hadToken), 403);
   }
   if (res.status === 404) {
-    throw new RemoteSourceError("Could not find that repository or path (is it public?).", 404);
+    throw new RemoteSourceError(
+      hadToken
+        ? "Could not find that repository or path."
+        : "Could not find that repository or path (is it public?).",
+      404,
+    );
   }
   if (!res.ok) {
     throw new RemoteSourceError(`Could not reach source (${res.status})`, 502);
@@ -198,7 +228,10 @@ type GhContent =
   | { type: "dir"; path: string }
   | { type: string; path: string };
 
-async function listGithub(parsed: Extract<ParsedRemote, { kind: "github" }>): Promise<RemoteFile[]> {
+async function listGithub(
+  parsed: Extract<ParsedRemote, { kind: "github" }>,
+  auth?: RemoteAuth,
+): Promise<RemoteFile[]> {
   if (parsed.raw || (parsed.isFileHint && hasAllowedExt(parsed.path))) {
     const downloadUrl = `https://raw.githubusercontent.com/${parsed.owner}/${parsed.repo}/${parsed.ref}/${parsed.path}`;
     if (!hasAllowedExt(parsed.path)) {
@@ -210,10 +243,13 @@ async function listGithub(parsed: Extract<ParsedRemote, { kind: "github" }>): Pr
   }
 
   try {
-    return await listGithubViaApi(parsed);
+    return await listGithubViaApi(parsed, auth);
   } catch (e) {
-    // Rate limits / API outages — fall back to jsDelivr package flat listing (public CDN).
-    if (e instanceof RemoteSourceError && (e.status === 429 || e.status === 502 || e.status === 403)) {
+    if (
+      !auth?.githubToken &&
+      e instanceof RemoteSourceError &&
+      (e.status === 429 || e.status === 502 || e.status === 403)
+    ) {
       const viaCdn = await listGithubViaJsDelivr(parsed).catch(() => null);
       if (viaCdn?.length) return viaCdn;
     }
@@ -223,26 +259,33 @@ async function listGithub(parsed: Extract<ParsedRemote, { kind: "github" }>): Pr
 
 async function listGithubViaApi(
   parsed: Extract<ParsedRemote, { kind: "github" }>,
+  auth?: RemoteAuth,
 ): Promise<RemoteFile[]> {
-  // Recursive tree via git trees API when we can resolve the ref SHA
   const refMeta = await fetchJson<{ object?: { sha?: string }; sha?: string }>(
     `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/ref/heads/${encodeURIComponent(parsed.ref)}`,
+    "github",
+    auth,
   ).catch(async () => {
-    // try as tag or commit
     return fetchJson<{ object?: { sha?: string }; sha?: string }>(
       `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/commits/${encodeURIComponent(parsed.ref)}`,
+      "github",
+      auth,
     );
   });
 
   const sha = refMeta.object?.sha ?? refMeta.sha;
   if (!sha) {
-    return listGithubContentsRecursive(parsed);
+    return listGithubContentsRecursive(parsed, auth);
   }
 
   const tree = await fetchJson<{
     tree: { path: string; type: string; size?: number; url?: string }[];
     truncated?: boolean;
-  }>(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/trees/${sha}?recursive=1`);
+  }>(
+    `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/trees/${sha}?recursive=1`,
+    "github",
+    auth,
+  );
 
   const prefix = parsed.path ? parsed.path.replace(/\/$/, "") : "";
   const files: RemoteFile[] = [];
@@ -260,16 +303,14 @@ async function listGithubViaApi(
   return files;
 }
 
-/** Public CDN listing — avoids GitHub API rate limits for folder walks. */
 async function listGithubViaJsDelivr(
   parsed: Extract<ParsedRemote, { kind: "github" }>,
 ): Promise<RemoteFile[]> {
   const url = `https://data.jsdelivr.com/v1/packages/gh/${parsed.owner}/${parsed.repo}@${encodeURIComponent(parsed.ref)}/flat`;
-  const data = await fetchJson<{ files?: { name: string; size?: number }[] }>(url);
+  const data = await fetchJson<{ files?: { name: string; size?: number }[] }>(url, "github");
   const prefix = parsed.path ? `/${parsed.path.replace(/\/$/, "")}` : "";
   const files: RemoteFile[] = [];
   for (const f of data.files ?? []) {
-    // jsDelivr names look like "/path/to/file.csv"
     const path = f.name.replace(/^\//, "");
     if (!hasAllowedExt(path)) continue;
     if (prefix) {
@@ -288,12 +329,13 @@ async function listGithubViaJsDelivr(
 
 async function listGithubContentsRecursive(
   parsed: Extract<ParsedRemote, { kind: "github" }>,
+  auth?: RemoteAuth,
   dirPath = parsed.path,
 ): Promise<RemoteFile[]> {
   const q = dirPath
     ? `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/contents/${dirPath}?ref=${encodeURIComponent(parsed.ref)}`
     : `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/contents?ref=${encodeURIComponent(parsed.ref)}`;
-  const data = await fetchJson<GhContent | GhContent[]>(q);
+  const data = await fetchJson<GhContent | GhContent[]>(q, "github", auth);
   const entries = Array.isArray(data) ? data : [data];
   const out: RemoteFile[] = [];
 
@@ -304,7 +346,7 @@ async function listGithubContentsRecursive(
       if (!file.download_url) continue;
       out.push({ path: file.path, downloadUrl: file.download_url, size: file.size });
     } else if (e.type === "dir") {
-      const nested = await listGithubContentsRecursive(parsed, e.path);
+      const nested = await listGithubContentsRecursive(parsed, auth, e.path);
       out.push(...nested);
     }
   }
@@ -318,7 +360,10 @@ type HfTreeNode = {
   oid?: string;
 };
 
-async function listHf(parsed: Extract<ParsedRemote, { kind: "hf" }>): Promise<RemoteFile[]> {
+async function listHf(
+  parsed: Extract<ParsedRemote, { kind: "hf" }>,
+  auth?: RemoteAuth,
+): Promise<RemoteFile[]> {
   if (parsed.isFileHint && hasAllowedExt(parsed.path)) {
     return [
       {
@@ -330,7 +375,7 @@ async function listHf(parsed: Extract<ParsedRemote, { kind: "hf" }>): Promise<Re
 
   const pathParam = parsed.path ? `&path=${encodeURIComponent(parsed.path)}` : "";
   const url = `https://huggingface.co/api/datasets/${parsed.repoId}/tree/${encodeURIComponent(parsed.revision)}?recursive=1${pathParam}`;
-  const nodes = await fetchJson<HfTreeNode[]>(url);
+  const nodes = await fetchJson<HfTreeNode[]>(url, "hf", auth);
 
   const prefix = parsed.path ? parsed.path.replace(/\/$/, "") : "";
   const files: RemoteFile[] = [];
@@ -348,14 +393,18 @@ async function listHf(parsed: Extract<ParsedRemote, { kind: "hf" }>): Promise<Re
   return files;
 }
 
-/** List matching tabular files under a public HF/GitHub URL (recursive). */
-export async function listRemoteFiles(sourceUrl: string): Promise<{
+/** List matching tabular files under an HF/GitHub URL (recursive). */
+export async function listRemoteFiles(
+  sourceUrl: string,
+  auth?: RemoteAuth,
+): Promise<{
   kind: RemoteKind;
   files: RemoteFile[];
   truncated: boolean;
 }> {
   const parsed = parseSourceUrl(sourceUrl);
-  const files = parsed.kind === "hf" ? await listHf(parsed) : await listGithub(parsed);
+  const files =
+    parsed.kind === "hf" ? await listHf(parsed, auth) : await listGithub(parsed, auth);
 
   if (!files.length) {
     throw new RemoteSourceError(
@@ -363,7 +412,6 @@ export async function listRemoteFiles(sourceUrl: string): Promise<{
     );
   }
 
-  // Prefer a single extension family when mixed (parquet > csv > json)
   const byExt = (p: string) => {
     const l = p.toLowerCase();
     if (l.endsWith(".parquet") || l.endsWith(".parq")) return "parquet";
@@ -378,7 +426,6 @@ export async function listRemoteFiles(sourceUrl: string): Promise<{
     selected = files.filter((f) => byExt(f.path) === pick);
   }
 
-  // Prefer smaller files first so multi-file folders stay within time/size caps.
   const ordered = [...selected].sort((a, b) => (a.size ?? 0) - (b.size ?? 0));
 
   let total = 0;
@@ -410,7 +457,7 @@ export function contentTypeForPath(path: string): string {
   return "text/csv";
 }
 
-/** Download remote files into R2 under staging/{datasetId}/… (streamed; no full-file buffering). */
+/** Download remote files into R2 under staging/{datasetId}/… */
 export async function downloadRemoteToR2(
   r2: {
     put(
@@ -422,9 +469,13 @@ export async function downloadRemoteToR2(
   datasetId: string,
   files: RemoteFile[],
   bucket = "trainfabric-data",
+  auth?: RemoteAuth,
+  kind: RemoteKind = "github",
 ): Promise<{ stagingPath: string; fileCount: number; bytes: number }> {
   let bytes = 0;
   const keys: string[] = [];
+  const hadToken =
+    kind === "github" ? Boolean(auth?.githubToken) : Boolean(auth?.hfToken);
 
   for (const f of files) {
     const known = f.size ?? 0;
@@ -437,7 +488,7 @@ export async function downloadRemoteToR2(
     let res: Response;
     try {
       res = await fetch(f.downloadUrl, {
-        headers: { "User-Agent": "trainfabric-router" },
+        headers: authHeaders(auth, kind),
         signal: abort.signal,
       });
     } catch (e) {
@@ -454,7 +505,7 @@ export async function downloadRemoteToR2(
     }
 
     if (res.status === 401 || res.status === 403) {
-      throw new RemoteSourceError("This link must be publicly readable.", 403);
+      throw new RemoteSourceError(forbiddenMessage(kind, hadToken), 403);
     }
     if (!res.ok) {
       throw new RemoteSourceError(`Failed to download ${f.path} (${res.status})`, 502);
@@ -478,7 +529,6 @@ export async function downloadRemoteToR2(
     const key = `staging/${datasetId}/${safeName}`;
     const contentType = contentTypeForPath(f.path);
 
-    // R2 requires a known-length body for streaming puts.
     if (fileBytes > 0 && res.body) {
       const { readable, writable } = new FixedLengthStream(fileBytes);
       void res.body.pipeTo(writable).catch(() => {
@@ -514,7 +564,6 @@ export async function downloadRemoteToR2(
     };
   }
 
-  // Prefix for glob ingest (trailing slash)
   return {
     stagingPath: `s3://${bucket}/staging/${datasetId}/`,
     fileCount: keys.length,
@@ -522,4 +571,4 @@ export async function downloadRemoteToR2(
   };
 }
 
-export { stripQuery };
+export { stripQuery, hasAllowedExt };

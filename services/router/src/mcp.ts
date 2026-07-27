@@ -185,11 +185,15 @@ export const MCP_TOOLS = [
   },
   {
     name: "publish_dataset",
-    description: "Publish a staged data_ref. Returns dataset id + job handle.",
+    description:
+      "Publish a staged data_ref, or pull from a public/connected Hugging Face or GitHub source_url. Returns dataset id + job handle.",
     inputSchema: {
       type: "object",
       properties: {
         data_ref: { type: "string" },
+        source_url: { type: "string" },
+        source_auth: { type: "string", enum: ["none", "github", "huggingface"] },
+        installationId: { type: "number" },
         name: { type: "string" },
         description: { type: "string" },
         tags: { type: "array", items: { type: "string" } },
@@ -197,7 +201,7 @@ export const MCP_TOOLS = [
         partition_hint: { type: "string" },
         sort_column: { type: "string" },
       },
-      required: ["data_ref", "name"],
+      required: ["name"],
     },
   },
   {
@@ -542,8 +546,14 @@ export async function handleMcpTool(
     }
     case "publish_dataset": {
       if (!ctx.identity) throw new AuthError("Auth required to publish");
+      if (!args.data_ref && !args.source_url) {
+        throw new Error("data_ref or source_url required");
+      }
       const out = await ctx.publish({
         data_ref: args.data_ref,
+        source_url: args.source_url,
+        source_auth: args.source_auth ?? "none",
+        installationId: args.installationId,
         name: args.name,
         description: args.description,
         tags: args.tags ?? [],

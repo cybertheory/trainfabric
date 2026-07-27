@@ -80,6 +80,7 @@ import {
   exchangeOAuthCode,
   getGithubUser,
   githubConfigured,
+  listInstallationRepoTree,
   listInstallationRepos,
   listUserInstallations,
   signInstallState,
@@ -91,6 +92,22 @@ import {
   encryptUserToken,
   tokenCryptoKey,
 } from "./githubStore";
+import {
+  buildHfConnectUrl,
+  exchangeHfOAuthCode,
+  getHfUser,
+  hfConfigured,
+  hfDashboardOrigin,
+  listHfDatasets,
+  signHfOAuthState,
+  verifyHfOAuthState,
+} from "./huggingface";
+import {
+  createHfStore,
+  decryptHfToken,
+  encryptHfToken,
+} from "./huggingfaceStore";
+import type { RemoteAuth } from "./remoteSource";
 
 export { CatalogDO, WarmRouterDO, ComputeContainerClass as ComputeContainer };
 
@@ -155,6 +172,10 @@ export interface Env {
   GITHUB_APP_WEBHOOK_SECRET?: string;
   GITHUB_APP_STATE_SECRET?: string;
   GITHUB_TOKEN_CRYPTO_KEY?: string;
+  /** Hugging Face OAuth (Sign in with HF for private/gated pulls). */
+  HF_OAUTH_CLIENT_ID?: string;
+  HF_OAUTH_CLIENT_SECRET?: string;
+  HF_OAUTH_STATE_SECRET?: string;
 }
 
 function computeUrlFor(env: Env): string {
@@ -1004,6 +1025,8 @@ app.post("/datasets", async (c) => {
       data_ref?: string;
       filename?: string;
       source_url?: string;
+      source_auth?: "github" | "huggingface" | "none";
+      installationId?: number;
     };
 
     meta = {
@@ -1027,11 +1050,25 @@ app.post("/datasets", async (c) => {
       if (!sourceUrl) {
         return c.json({ error: "Paste a Hugging Face or GitHub URL" }, 400);
       }
+      const sourceAuth = body.source_auth ?? "none";
+      let remoteAuth: RemoteAuth = {};
+      try {
+        remoteAuth = await resolveConnectedRemoteAuth(c.env, identity, {
+          sourceUrl,
+          sourceAuth,
+          installationId: body.installationId,
+        });
+      } catch (e) {
+        if (e instanceof RemoteSourceError) {
+          return c.json({ error: e.message }, e.status as 400);
+        }
+        throw e;
+      }
       // Validate URL + list matching files before creating a dataset/job
       let listed: Awaited<ReturnType<typeof listRemoteFiles>>;
       try {
         parseSourceUrl(sourceUrl);
-        listed = await listRemoteFiles(sourceUrl);
+        listed = await listRemoteFiles(sourceUrl, remoteAuth);
       } catch (e) {
         if (e instanceof RemoteSourceError) {
           return c.json({ error: e.message }, e.status as 400);
@@ -1048,7 +1085,7 @@ app.post("/datasets", async (c) => {
           meta.name = "remote-dataset";
         }
       }
-      return await startRemoteIngest(c as never, identity, meta, sourceUrl, listed);
+      return await startRemoteIngest(c as never, identity, meta, sourceUrl, listed, remoteAuth);
     }
 
     if (body.staging_key || body.data_ref) {
@@ -1064,7 +1101,94 @@ app.post("/datasets", async (c) => {
   }
 });
 
-/** List + download public HF/GitHub files in the background, then ingest. */
+/** Resolve GitHub App / HF OAuth tokens for connected remote pulls. */
+async function resolveConnectedRemoteAuth(
+  env: Env,
+  identity: Identity,
+  opts: {
+    sourceUrl: string;
+    sourceAuth: "github" | "huggingface" | "none";
+    installationId?: number;
+  },
+): Promise<RemoteAuth> {
+  if (opts.sourceAuth === "none") return {};
+
+  if (opts.sourceAuth === "huggingface") {
+    if (!hfConfigured(env)) {
+      throw new RemoteSourceError("Hugging Face OAuth is not configured on the Worker", 503);
+    }
+    const store = createHfStore(env);
+    const account = await store.getAccount(identity.subject);
+    if (!account) {
+      throw new RemoteSourceError("Connect Hugging Face first (Publish → Connect & pull)", 401);
+    }
+    const token = await decryptHfToken(account.accessTokenEnc, tokenCryptoKey(env));
+    return { hfToken: token };
+  }
+
+  // github
+  if (!githubConfigured(env)) {
+    throw new RemoteSourceError("GitHub App is not configured on the Worker", 503);
+  }
+  const parsed = parseSourceUrl(opts.sourceUrl);
+  if (parsed.kind !== "github") {
+    throw new RemoteSourceError("source_auth=github requires a github.com URL", 400);
+  }
+  const ghStore = createGithubStore(env);
+  let installationId = opts.installationId;
+
+  if (installationId != null) {
+    const inst = await ghStore.getInstallation(installationId);
+    if (!inst || inst.userId !== identity.subject || inst.suspended) {
+      throw new RemoteSourceError("GitHub installation not found for this account", 404);
+    }
+  } else {
+    const installs = (await ghStore.listInstallations(identity.subject)).filter((i) => !i.suspended);
+    if (!installs.length) {
+      throw new RemoteSourceError("Connect GitHub first (Publish → Connect & pull)", 401);
+    }
+    const ownerLower = parsed.owner.toLowerCase();
+    const preferred = [
+      ...installs.filter((i) => i.accountLogin.toLowerCase() === ownerLower),
+      ...installs.filter((i) => i.accountLogin.toLowerCase() !== ownerLower),
+    ];
+    let found: number | undefined;
+    for (const inst of preferred) {
+      try {
+        const { token } = await createInstallationAccessToken(env, inst.installationId);
+        const res = await fetch(
+          `https://api.github.com/repos/${parsed.owner}/${parsed.repo}`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/vnd.github+json",
+              "User-Agent": "trainfabric-router",
+              "X-GitHub-Api-Version": "2022-11-28",
+            },
+          },
+        );
+        if (res.ok) {
+          found = inst.installationId;
+          break;
+        }
+      } catch {
+        /* try next */
+      }
+    }
+    if (found == null) {
+      throw new RemoteSourceError(
+        `No connected GitHub installation can access ${parsed.owner}/${parsed.repo}. Install the App on that repo or make it public.`,
+        403,
+      );
+    }
+    installationId = found;
+  }
+
+  const { token } = await createInstallationAccessToken(env, installationId);
+  return { githubToken: token };
+}
+
+/** List + download HF/GitHub files in the background, then ingest. */
 async function startRemoteIngest(
   c: {
     env: Env;
@@ -1081,6 +1205,7 @@ async function startRemoteIngest(
   },
   _sourceUrl: string,
   listed: Awaited<ReturnType<typeof listRemoteFiles>>,
+  remoteAuth: RemoteAuth = {},
 ) {
   const datasetId = `ds_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
   const convex = createRegistry(c.env);
@@ -1117,6 +1242,8 @@ async function startRemoteIngest(
           datasetId,
           listed.files,
           bucket,
+          remoteAuth,
+          listed.kind,
         );
         await convex.setJob({ jobId, status: "running", progress: 50 });
 
@@ -1894,6 +2021,180 @@ app.delete("/github/connection", async (c) => {
   }
 });
 
+app.get("/github/installations/:id/tree", async (c) => {
+  try {
+    const gate = requireClerkIdentity(c);
+    if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+    if (!githubConfigured(c.env)) {
+      return c.json({ error: "GitHub App is not configured" }, 503);
+    }
+    const installationId = Number(c.req.param("id"));
+    if (!Number.isFinite(installationId)) return c.json({ error: "Invalid installation id" }, 400);
+    const owner = c.req.query("owner")?.trim();
+    const repo = c.req.query("repo")?.trim();
+    if (!owner || !repo) return c.json({ error: "owner and repo required" }, 400);
+    const store = createGithubStore(c.env);
+    const inst = await store.getInstallation(installationId);
+    if (!inst || inst.userId !== gate.identity.subject) {
+      return c.json({ error: "Installation not found" }, 404);
+    }
+    const out = await listInstallationRepoTree(c.env, installationId, {
+      owner,
+      repo,
+      ref: c.req.query("ref") || undefined,
+      path: c.req.query("path") || undefined,
+      recursive: c.req.query("recursive") === "1",
+    });
+    return c.json(out);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+/* ── Hugging Face OAuth ──────────────────────────────────────────── */
+
+app.get("/huggingface/status", async (c) => {
+  try {
+    const gate = requireClerkIdentity(c);
+    if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+    const configured = hfConfigured(c.env);
+    if (!configured) {
+      return c.json({ configured: false, connected: false });
+    }
+    const store = createHfStore(c.env);
+    const account = await store.getAccount(gate.identity.subject);
+    return c.json({
+      configured: true,
+      connected: Boolean(account),
+      login: account?.login,
+      avatarUrl: account?.avatarUrl,
+    });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.post("/huggingface/connect", async (c) => {
+  try {
+    const gate = requireClerkIdentity(c);
+    if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+    if (!hfConfigured(c.env)) {
+      return c.json({ error: "Hugging Face OAuth is not configured on the Worker" }, 503);
+    }
+    const body = (await c.req.json().catch(() => ({}))) as { returnTo?: string };
+    const returnTo = body.returnTo?.startsWith("/") ? body.returnTo : "/new";
+    const state = await signHfOAuthState(c.env, {
+      userId: gate.identity.subject,
+      returnTo,
+    });
+    return c.json({ url: buildHfConnectUrl(c.env, state) });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.get("/huggingface/connect", async (c) => {
+  try {
+    const gate = requireClerkIdentity(c);
+    if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+    if (!hfConfigured(c.env)) {
+      return c.json({ error: "Hugging Face OAuth is not configured on the Worker" }, 503);
+    }
+    const returnTo = c.req.query("returnTo")?.startsWith("/")
+      ? c.req.query("returnTo")!
+      : "/new";
+    const state = await signHfOAuthState(c.env, {
+      userId: gate.identity.subject,
+      returnTo,
+    });
+    return c.redirect(buildHfConnectUrl(c.env, state), 302);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.get("/huggingface/callback", async (c) => {
+  const dash = hfDashboardOrigin(c.env);
+  try {
+    const code = c.req.query("code");
+    const state = c.req.query("state");
+    const err = c.req.query("error");
+    if (err) {
+      return c.redirect(
+        `${dash}/new?huggingface=error&reason=${encodeURIComponent(err)}`,
+        302,
+      );
+    }
+    if (!code || !state) {
+      return c.redirect(`${dash}/new?huggingface=error&reason=missing_code`, 302);
+    }
+    const verified = await verifyHfOAuthState(c.env, state);
+    const tokens = await exchangeHfOAuthCode(c.env, code);
+    const user = await getHfUser(tokens.accessToken);
+    const now = Date.now();
+    const cryptoKey = tokenCryptoKey(c.env);
+    const store = createHfStore(c.env);
+    await store.upsertAccount({
+      userId: verified.userId,
+      hfSub: user.sub,
+      login: user.preferredUsername || user.name || user.sub,
+      avatarUrl: user.picture,
+      accessTokenEnc: await encryptHfToken(tokens.accessToken, cryptoKey),
+      refreshTokenEnc: tokens.refreshToken
+        ? await encryptHfToken(tokens.refreshToken, cryptoKey)
+        : undefined,
+      tokenExpiresAt: tokens.expiresIn ? now + tokens.expiresIn * 1000 : undefined,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const returnTo = verified.returnTo?.startsWith("/") ? verified.returnTo : "/new";
+    const sep = returnTo.includes("?") ? "&" : "?";
+    return c.redirect(`${dash}${returnTo}${sep}huggingface=connected`, 302);
+  } catch (e) {
+    const reason = e instanceof Error ? e.message.slice(0, 80) : "callback_failed";
+    return c.redirect(
+      `${dash}/new?huggingface=error&reason=${encodeURIComponent(reason)}`,
+      302,
+    );
+  }
+});
+
+app.delete("/huggingface/connection", async (c) => {
+  try {
+    const gate = requireClerkIdentity(c);
+    if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+    const store = createHfStore(c.env);
+    await store.deleteAccount(gate.identity.subject);
+    return c.json({ ok: true });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.get("/huggingface/datasets", async (c) => {
+  try {
+    const gate = requireClerkIdentity(c);
+    if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+    if (!hfConfigured(c.env)) {
+      return c.json({ error: "Hugging Face OAuth is not configured" }, 503);
+    }
+    const store = createHfStore(c.env);
+    const account = await store.getAccount(gate.identity.subject);
+    if (!account) return c.json({ error: "Connect Hugging Face first" }, 401);
+    const token = await decryptHfToken(account.accessTokenEnc, tokenCryptoKey(c.env));
+    const search = c.req.query("search") || undefined;
+    const authorParam = c.req.query("author");
+    const datasets = await listHfDatasets(token, {
+      search,
+      author: authorParam !== undefined ? authorParam || undefined : search ? undefined : account.login,
+      limit: Number(c.req.query("limit") || "50"),
+    });
+    return c.json({ datasets, login: account.login });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
 app.post("/auto", async (c) => {
   try {
     const identity = identityOrAnon(c.get("identity"), c.env);
@@ -2421,12 +2722,19 @@ function buildMcpContext(c: {
   env: Env;
   get: (k: "identity") => Identity | null;
   req: { url: string };
+  executionCtx?: { waitUntil: (p: Promise<unknown>) => void };
 }): McpContext {
   const deps = depsFrom(c);
   const convex = createRegistry(c.env);
   const hasCompute = Boolean(c.env.COMPUTE || c.env.COMPUTE_URL);
   const compute = hasCompute ? createComputeClientFromEnv(c.env) : null;
   const identity = c.get("identity");
+  const waitUntil =
+    c.executionCtx?.waitUntil?.bind(c.executionCtx) ??
+    ((p: Promise<unknown>) => {
+      void p;
+    });
+  const ingestCtx = { env: c.env, executionCtx: { waitUntil } };
 
   return {
     identity,
@@ -2457,16 +2765,48 @@ function buildMcpContext(c: {
       }
     },
     publish: async (args) => {
+      const meta = {
+        name: String(args.name),
+        description: args.description as string | undefined,
+        tags: (args.tags as string[]) ?? [],
+        visibility: (args.visibility as Visibility) ?? "private",
+        partition_hint: args.partition_hint as string | undefined,
+        sort_column: args.sort_column as string | undefined,
+      };
+      if (args.source_url) {
+        if (!identity) throw new Error("Auth required");
+        const sourceUrl = String(args.source_url).trim();
+        const sourceAuth =
+          (args.source_auth as "github" | "huggingface" | "none" | undefined) ?? "none";
+        const remoteAuth = await resolveConnectedRemoteAuth(c.env, identity, {
+          sourceUrl,
+          sourceAuth,
+          installationId:
+            args.installationId != null ? Number(args.installationId) : undefined,
+        });
+        const listed = await listRemoteFiles(sourceUrl, remoteAuth);
+        const res = await startRemoteIngest(
+          ingestCtx as never,
+          identity,
+          meta,
+          sourceUrl,
+          listed,
+          remoteAuth,
+        );
+        const json = (await res.json()) as { datasetId: string; jobId: string };
+        return { datasetId: json.datasetId, jobId: json.jobId };
+      }
+      if (!args.data_ref) throw new Error("data_ref or source_url required");
       // Simplified: expect data_ref already staged
       const datasetId = `ds_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
       const jobId = `job_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
       await convex.createDataset({
         datasetId,
         owner: String(args.owner),
-        visibility: (args.visibility as Visibility) ?? "private",
-        name: String(args.name),
-        description: args.description as string | undefined,
-        tags: (args.tags as string[]) ?? [],
+        visibility: meta.visibility,
+        name: meta.name,
+        description: meta.description,
+        tags: meta.tags,
         kind: "base",
       });
       await convex.setJob({ jobId, datasetId, kind: "ingest", status: "pending" });
@@ -2482,8 +2822,8 @@ function buildMcpContext(c: {
           payload: {
             staging_path: String(args.data_ref),
             dataset_id: datasetId,
-            partition_hint: args.partition_hint,
-            sort_column: args.sort_column,
+            partition_hint: meta.partition_hint,
+            sort_column: meta.sort_column,
           },
         }),
       }).then(async (res) => {
@@ -2820,6 +3160,7 @@ export default {
           env,
           get: () => identity,
           req: { url: req.url },
+          executionCtx: ctx,
         });
       });
     }
@@ -2832,6 +3173,7 @@ export default {
       path === "/auto" ||
       path.startsWith("/auto/") ||
       path.startsWith("/github") ||
+      path.startsWith("/huggingface") ||
       path.startsWith("/runners") ||
       path.startsWith("/results/") ||
       path.startsWith("/r2/") ||

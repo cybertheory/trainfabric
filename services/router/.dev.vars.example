@@ -29,3 +29,13 @@ GITHUB_APP_WEBHOOK_SECRET=
 GITHUB_APP_STATE_SECRET=
 GITHUB_TOKEN_CRYPTO_KEY=
 # DASHBOARD_URL=http://localhost:3000
+
+# Hugging Face OAuth (Sign in with HF — private/gated dataset pulls on Publish)
+# Create an OAuth app at https://huggingface.co/settings/applications
+# Redirect URI: ${PUBLIC_API_BASE}/huggingface/callback
+# Scopes used: openid profile read-repos
+HF_OAUTH_CLIENT_ID=
+HF_OAUTH_CLIENT_SECRET=
+# Optional; falls back to GITHUB_APP_STATE_SECRET / AGENT_TOKEN_SECRET
+# HF_OAUTH_STATE_SECRET=
+# Token encryption reuses GITHUB_TOKEN_CRYPTO_KEY
