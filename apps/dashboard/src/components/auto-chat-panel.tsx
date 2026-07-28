@@ -121,9 +121,8 @@ export function AutoChatPanel({ autoRunId }: { autoRunId: string }) {
       <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-3 py-3">
         {messages.length === 0 ? (
           <p className="mt-6 text-center text-xs text-muted-foreground">
-            Talk live to the Hermes agent on the Box via the API — ask for status, name a{" "}
-            <code>ds_…</code> to bind, or nudge the next trial. Same thread as MCP{" "}
-            <code>message_auto_agent</code>.
+            Talk to the agent — ask for status, suggest a dataset, or nudge the next trial. The same
+            thread is available from MCP via <code>message_auto_agent</code>.
           </p>
         ) : (
           messages.map((m) => {
