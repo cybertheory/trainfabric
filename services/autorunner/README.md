@@ -15,11 +15,26 @@ The **GPU trial worker** lives in a separate public repo (clone and run on any G
 
 Docs: `/docs/agents`. MCP: `register_gpu_runner` / `list_gpu_runners` / `start_auto` with `compute.provider: "runner"`.
 
+## Box golden template
+
+Campaign sandboxes **fork** a stopped golden Box (filesystem + packages, no secrets).
+
+```bash
+# Build / refresh the template (needs BOX_API_KEY)
+node scripts/box-golden-bootstrap.mjs
+
+# Point the Worker at it
+cd services/router
+printf '%s' 'bx_…' | wrangler secret put BOX_TEMPLATE_ID
+```
+
+Each `POST /auto` mints a durable `tfak_*` API key for the owner (`autorun:{id}`), injects it as `TF_TOKEN` into the fork, and revokes it when the campaign is cancelled or completes its trial budget. Soft-refresh still curls latest autorunner files from `main` after fork so you can iterate without rebuilding the image every time.
+
 ## Box daemon env
 
 Started with env from the router on `POST /auto`:
 
-`AUTORUN_ID`, `TF_API_URL`, `TF_TOKEN`, `TF_DATASET_ID` (optional), `AUTORUN_GOAL` (optional override), `PROTOCOL_JSON`, `REPO_URL`, `REPO_FULL_NAME`, `REPO_BRANCH`, `GITHUB_TOKEN` (short-lived App installation token), `GITHUB_INSTALLATION_ID`.
+`AUTORUN_ID`, `TF_API_URL`, `TF_TOKEN` (campaign `tfak_*`), `TF_DATASET_ID` (optional), `AUTORUN_GOAL` (optional override), `PROTOCOL_JSON`, `REPO_URL`, `REPO_FULL_NAME`, `REPO_BRANCH`, `GITHUB_TOKEN` (short-lived App installation token), `GITHUB_INSTALLATION_ID`.
 
 Cloudflare AI Gateway (Hermes parity): `CF_ACCOUNT_ID`, `CF_AI_GATEWAY_ID`, `CF_AI_GATEWAY_TOKEN`, optional `CF_AI_GATEWAY_BASE` / `CF_AI_MODEL`. Injected by the router from Worker secrets/vars when provisioning Box.
 

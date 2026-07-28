@@ -130,7 +130,7 @@ REST equivalent: `POST /datasets/:id/prompt` with `{ "prompt": "...", "execute":
 Long campaigns are a separate primitive from `prompt_query`:
 
 1. Control plane creates an **AutoRun** from a connected **GitHub repo** + protocol + compute. Goals and instructions live in the repo (`TRAINFABRIC.md` / `AGENTS.md` / `README.md`); the experiment protocol (metric, budget, mutable/immutable paths) is fixed up front; the dataset snapshot is frozen when the agent binds a dataset.
-2. A [Box](https://box.ascii.dev/) sandbox is forked from a template and runs the Trainfabric autorunner daemon: it clones the repo → loads the brief → `discover_datasets` → `bind_auto_dataset` → **Cloudflare AI Gateway mutate** (Hermes-parity `agent_mutate` + `artifacts/viz/` publish skills) → trial enqueue → keep/revert (push kept commits / republish viz).
+2. A [Box](https://box.ascii.dev/) sandbox is **forked from the golden template** (`BOX_TEMPLATE_ID`) with a durable campaign `tfak_*` as `TF_TOKEN`. The autorunner loads the brief → `discover_datasets` → `bind_auto_dataset` → **Cloudflare AI Gateway mutate** (Hermes-parity `agent_mutate` + `artifacts/viz/` publish skills) → trial enqueue → keep/revert (push kept commits / republish viz).
 3. GPU trials go to **Modal** or a self-hosted **[HTTP GPU runner](https://github.com/cybertheory/trainfabric-gpu-runner)** (`register_gpu_runner` / `POST /runners/register`, poll `/runners/claim`). No SSH. See [Agents](/docs/agents).
 
 ### Chat with a cloud agent

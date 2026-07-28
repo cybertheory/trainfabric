@@ -1991,7 +1991,8 @@ app.post("/datasets/:id/auto", async (c) => {
       ownerId: identity.subject,
       body,
       tfApiUrl: origin,
-      campaignToken: c.req.header("Authorization")?.replace(/^Bearer\s+/i, "") || "anon",
+      apiKeys: createApiKeyStore(c.env.DB),
+      campaignToken: c.req.header("Authorization")?.replace(/^Bearer\s+/i, "") || undefined,
       githubToken,
       env: c.env,
     });
@@ -2620,7 +2621,8 @@ app.post("/auto", async (c) => {
       ownerId: identity.subject,
       body: { ...body, datasetIds: uniqueIds, datasetId: uniqueIds[0] },
       tfApiUrl: origin,
-      campaignToken: c.req.header("Authorization")?.replace(/^Bearer\s+/i, "") || "anon",
+      apiKeys: createApiKeyStore(c.env.DB),
+      campaignToken: c.req.header("Authorization")?.replace(/^Bearer\s+/i, "") || undefined,
       githubToken,
       env: c.env,
     });
@@ -2640,10 +2642,13 @@ app.get("/auto", async (c) => {
       runs,
       prerequisites: {
         boxConfigured: Boolean(c.env.BOX_API_KEY),
+        boxTemplateConfigured: Boolean(c.env.BOX_TEMPLATE_ID),
         modalConfigured: Boolean(c.env.MODAL_TOKEN && c.env.MODAL_APP_REF),
         note: c.env.BOX_API_KEY
-          ? "Box API key is set on the Worker — new agents provision real sandboxes."
-          : "No BOX_API_KEY on the Worker — agents start in stub mode (control plane only). Set BOX_API_KEY in router secrets for live Box sandboxes.",
+          ? c.env.BOX_TEMPLATE_ID
+            ? "Box API key + golden template are set — new agents fork BOX_TEMPLATE_ID."
+            : "BOX_API_KEY is set but BOX_TEMPLATE_ID is missing — run scripts/box-golden-bootstrap.mjs and put the secret."
+          : "No BOX_API_KEY on the Worker — agents start in stub mode (control plane only). Set BOX_API_KEY + BOX_TEMPLATE_ID for live Box sandboxes.",
       },
     });
   } catch (e) {
@@ -2919,7 +2924,7 @@ app.post("/auto/:id/cancel", async (c) => {
     if (run.ownerId !== identity.subject && identity.subject !== "anon") {
       return c.json({ error: "Forbidden" }, 403);
     }
-    const next = await cancelAutoRun(store, boxClientFromEnv(c.env), run);
+    const next = await cancelAutoRun(store, boxClientFromEnv(c.env), run, createApiKeyStore(c.env.DB));
     return c.json(next);
   } catch (e) {
     return errResponse(e);
@@ -2970,7 +2975,7 @@ app.post("/auto/:id/trials/:trialId/complete", async (c) => {
     const trial = await store.getAutoTrial(c.req.param("trialId"));
     if (!trial || trial.autoRunId !== run.id) return c.json({ error: "Trial not found" }, 404);
     const body = (await c.req.json()) as CompleteAutoTrialRequest;
-    const out = await completeTrial({ store, run, trial, body });
+    const out = await completeTrial({ store, run, trial, body, apiKeys: createApiKeyStore(c.env.DB) });
     return c.json(out);
   } catch (e) {
     return errResponse(e);
@@ -3394,7 +3399,7 @@ function buildMcpContext(c: {
           templateId: args.template_id,
         },
         tfApiUrl: origin,
-        campaignToken: "mcp",
+        apiKeys: createApiKeyStore(c.env.DB),
         githubToken,
         env: c.env,
       });
@@ -3423,7 +3428,7 @@ function buildMcpContext(c: {
       }
       const box = boxClientFromEnv(c.env);
       if (action === "resume") return resumeAutoRun(store, box, run);
-      if (action === "cancel") return cancelAutoRun(store, box, run);
+      if (action === "cancel") return cancelAutoRun(store, box, run, createApiKeyStore(c.env.DB));
       return pauseAutoRun(store, box, run);
     },
     bindAutoDataset: async (autoRunId, datasetId, reason) => {

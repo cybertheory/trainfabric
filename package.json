@@ -13,6 +13,7 @@
     "lint": "pnpm -r run lint --if-present",
     "dev:dashboard": "pnpm --filter @trainfabric/dashboard dev",
     "dev:router": "pnpm --filter @trainfabric/router dev",
+    "box:golden": "node scripts/box-golden-bootstrap.mjs",
     "typecheck": "pnpm -r run typecheck --if-present"
   },
   "devDependencies": {

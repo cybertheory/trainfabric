@@ -11,6 +11,7 @@ PUBLIC_API_BASE=https://trainfabric-router.rishabhspro.workers.dev
 # Autoresearch /auto — Box sandboxes + Modal GPU trials.
 # Without BOX_API_KEY the router runs /auto in stub mode (control plane only).
 BOX_API_KEY=
+# Golden template box id (from: node scripts/box-golden-bootstrap.mjs). Required when BOX_API_KEY is set.
 BOX_TEMPLATE_ID=
 BOX_API_BASE=https://ascii.dev/api/box/v1
 MODAL_TOKEN=

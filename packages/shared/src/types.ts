@@ -341,6 +341,8 @@ export interface AutoBoxState {
   desktopUrl?: string;
   daemonHostUrl?: string;
   lastEventCursor?: string;
+  /** Trainfabric API key (tfak_*) minted for this campaign — revoke on cancel/done. */
+  campaignApiKeyId?: string;
 }
 
 export interface AutoComputeConfig {

@@ -15,12 +15,26 @@ import type {
   ReportAutoInstructionsRequest,
 } from "@trainfabric/shared";
 import type { AutoStore } from "./autoStore";
+import type { ApiKeyStore } from "./apiKeys";
 import type { BoxClient } from "./box";
 import { resolveComputeProvider } from "./computeProviders";
 
 function randomId(prefix: string): string {
   const hex = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
   return `${prefix}_${hex}`;
+}
+
+async function revokeCampaignApiKey(
+  apiKeys: ApiKeyStore | null | undefined,
+  run: AutoRun,
+): Promise<void> {
+  const keyId = run.box.campaignApiKeyId;
+  if (!apiKeys || !keyId) return;
+  try {
+    await apiKeys.revokeTfApiKey(run.ownerId, keyId);
+  } catch {
+    /* best-effort */
+  }
 }
 
 /** Append a timeline entry (best-effort — never blocks the lifecycle). */
@@ -97,7 +111,13 @@ export async function createAutoRun(opts: {
   ownerId: string;
   body: CreateAutoRunRequest;
   tfApiUrl: string;
-  campaignToken: string;
+  /**
+   * Fallback TF_TOKEN when apiKeys is unavailable (e.g. local stub).
+   * Prefer minting a durable tfak_* via apiKeys.
+   */
+  campaignToken?: string;
+  /** Mint per-campaign tfak_* for the Box (recommended). */
+  apiKeys?: ApiKeyStore | null;
   /** Short-lived GitHub App installation token for clone/push (not persisted). */
   githubToken?: string;
   env: {
@@ -131,6 +151,22 @@ export async function createAutoRun(opts: {
 
   const id = randomId("auto");
   const now = Date.now();
+
+  let tfToken = opts.campaignToken?.trim() || "";
+  let campaignApiKeyId: string | undefined;
+  if (opts.apiKeys) {
+    const key = await opts.apiKeys.createTfApiKey({
+      userId: opts.ownerId,
+      name: `autorun:${id}`,
+      scopes: ["trainfabric"],
+    });
+    tfToken = key.secret;
+    campaignApiKeyId = key.id;
+  }
+  if (!tfToken) {
+    throw new Error("campaign auth unavailable — configure D1 API keys or pass campaignToken");
+  }
+
   const run: AutoRun = {
     id,
     datasetId,
@@ -147,7 +183,10 @@ export async function createAutoRun(opts: {
       createdFromPlatform: repoBind.createdFromPlatform,
     },
     protocol: opts.body.protocol,
-    box: { templateId: opts.body.templateId || opts.env.BOX_TEMPLATE_ID },
+    box: {
+      templateId: opts.body.templateId || opts.env.BOX_TEMPLATE_ID,
+      campaignApiKeyId,
+    },
     compute,
     progress: { trial: 0, updatedAt: now },
     createdAt: now,
@@ -161,6 +200,7 @@ export async function createAutoRun(opts: {
     datasetIds,
     repo: run.repo.url,
     installationId: run.repo.installationId,
+    campaignApiKeyId,
   });
 
   try {
@@ -171,7 +211,7 @@ export async function createAutoRun(opts: {
         env: {
           AUTORUN_ID: id,
           TF_API_URL: opts.tfApiUrl,
-          TF_TOKEN: opts.campaignToken,
+          TF_TOKEN: tfToken,
           TF_DATASET_ID: datasetId ?? "",
           AUTORUN_GOAL: goal ?? "",
           PROTOCOL_JSON: JSON.stringify(run.protocol),
@@ -199,6 +239,7 @@ export async function createAutoRun(opts: {
         boxId: provisioned.boxId,
         desktopUrl: provisioned.desktopUrl,
         daemonHostUrl: provisioned.daemonHostUrl,
+        campaignApiKeyId,
       };
       await logActivity(opts.store, id, "box", "Box sandbox provisioned", {
         boxId: provisioned.boxId,
@@ -225,6 +266,7 @@ export async function createAutoRun(opts: {
     run.error = e instanceof Error ? e.message : String(e);
     run.updatedAt = Date.now();
     await opts.store.upsertAutoRun(run);
+    await revokeCampaignApiKey(opts.apiKeys, run);
     await logActivity(opts.store, id, "status", `Provisioning failed: ${run.error}`);
   }
 
@@ -346,6 +388,7 @@ export async function cancelAutoRun(
   store: AutoStore,
   box: BoxClient | null,
   run: AutoRun,
+  apiKeys?: ApiKeyStore | null,
 ): Promise<AutoRun> {
   if (run.status === "done" || run.status === "cancelled") return run;
   if (box && run.box.boxId && !run.box.boxId.startsWith("stub_")) {
@@ -354,6 +397,7 @@ export async function cancelAutoRun(
   }
   const next = { ...run, status: "cancelled" as const, updatedAt: Date.now() };
   await store.upsertAutoRun(next);
+  await revokeCampaignApiKey(apiKeys, run);
   await logActivity(store, run.id, "status", "Cancelled");
   return next;
 }
@@ -438,6 +482,7 @@ export async function completeTrial(opts: {
   run: AutoRun;
   trial: AutoTrial;
   body: CompleteAutoTrialRequest;
+  apiKeys?: ApiKeyStore | null;
 }): Promise<{ trial: AutoTrial; run: AutoRun }> {
   const score = opts.body.score;
   const direction = opts.run.protocol.metric.direction;
@@ -484,6 +529,7 @@ export async function completeTrial(opts: {
     { trialId: trial.id, score, kept, commitSha: trial.commitSha },
   );
   if (status === "done") {
+    await revokeCampaignApiKey(opts.apiKeys, run);
     await logActivity(opts.store, run.id, "status", "Campaign complete — trial budget reached");
   }
   return { trial, run };
