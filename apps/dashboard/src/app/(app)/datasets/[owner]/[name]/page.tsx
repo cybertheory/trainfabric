@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import type { AutoRun, DatasetMeta, QueryEstimate, SavedQuery, SchemaContract } from "@trainfabric/shared";
-import { Bot, Star, GitBranch } from "lucide-react";
+import { Bot, GitBranch, Link2 } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -165,9 +165,9 @@ export default function DatasetDetailPage() {
         <div className="flex gap-2">
           <ForkDialog source={dataset} queries={queries} />
           <DatasetConnectButton datasetId={dataset.id} />
-          <Button variant="outline" size="sm" disabled title="Popularity">
-            <Star className="h-4 w-4" />
-            {dataset.stars}
+          <Button variant="outline" size="sm" disabled title="Connections">
+            <Link2 className="h-4 w-4" />
+            {dataset.connections}
           </Button>
         </div>
       </header>

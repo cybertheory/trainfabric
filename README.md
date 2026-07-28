@@ -11,11 +11,11 @@ Two front doors share one resolver: **REST** + **MCP**.
 ## Monorepo
 
 ```
-apps/dashboard          Next.js + Clerk + Convex + shadcn/ui
-services/router         Cloudflare Worker (REST + MCP + CatalogDO + WarmRouterDO)
+apps/dashboard          Next.js + Clerk + shadcn/ui
+services/router         Cloudflare Worker (REST + MCP + CatalogDO + WarmRouterDO + D1)
 services/compute        Python Container (PyIceberg + DuckDB)
+services/autorunner     Box daemon + Modal trial worker helpers
 packages/shared         Shared TS contracts + queryHash
-convex/                 Control-plane registry / cache / jobs
 fixtures/               Canonical test datasets
 ```
 
@@ -48,7 +48,7 @@ pnpm --filter @trainfabric/dashboard dev
 ## Architecture
 
 **Data plane:** R2 (bytes) · Worker router · Compute Container  
-**Control plane:** Convex (registry/cache/jobs) · Clerk (auth) · Postgres (Iceberg SQL catalog)
+**Control plane:** Cloudflare D1 (registry / AutoRuns / social / jobs) · Clerk (auth)
 
 All Iceberg access goes through `services/compute/app/catalog.py`.  
 All table writes go through `CatalogDO` (per-dataset Durable Object).
@@ -61,8 +61,9 @@ See the task brief for Phase-2: semantic discovery (Vectorize), warm cache, REST
 |--------|--------|
 | R2 account/keys/bucket | compute + router |
 | Postgres / `ICEBERG_CATALOG_URI` | compute |
-| `CONVEX_URL` + `CONVEX_SERVICE_KEY` | router |
-| Clerk publishable/secret + JWT issuer | dashboard + router + Convex |
+| D1 binding `DB` | router (`wrangler.toml`) |
+| Clerk publishable/secret + JWT issuer | dashboard + router |
+| `CF_AI_GATEWAY_TOKEN` (+ account/gateway vars) | router (Hermes + Box autorunner) |
 | `STREAM_SIZE_THRESHOLD_BYTES` | compute + router (default 50MB) |
 
 ## Tests
@@ -83,10 +84,7 @@ Golden path (§13.9): publish → discover → estimate (A) → slice → estima
 ## Deploy
 
 ```bash
-# Convex
-npx convex deploy
-
-# Worker + bindings (R2, DO, Vectorize, AI)
+# Worker + bindings (R2, D1, DO, Vectorize, AI)
 pnpm --filter @trainfabric/router deploy
 
 # Dashboard (Vercel / Cloudflare Pages)

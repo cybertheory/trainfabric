@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import type { DatasetMeta } from "@trainfabric/shared";
-import { Database, Loader2, Plus, Search, Star, X } from "lucide-react";
+import { Database, Loader2, Plus, Search, Link2, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { DatasetCard } from "@/components/dataset-card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -22,7 +22,7 @@ const DEMO: DatasetMeta[] = [
     name: "nyc-taxi-sample",
     description: "NYC yellow taxi trips sample — partitioned by pickup_date",
     tags: ["transport", "nyc", "taxi"],
-    stars: 3,
+    connections: 0,
     latestSnapshotId: "snap1",
     rowCount: 1000,
     sizeBytes: 120000,
@@ -37,7 +37,7 @@ const DEMO: DatasetMeta[] = [
     name: "iot-sensors",
     description: "Synthetic IoT time-series",
     tags: ["iot", "timeseries"],
-    stars: 3,
+    connections: 0,
     latestSnapshotId: "snap1",
     rowCount: 5000,
     sizeBytes: 800000,
@@ -47,13 +47,13 @@ const DEMO: DatasetMeta[] = [
   },
 ];
 
-type SortKey = "stars" | "updated" | "rows" | "name";
+type SortKey = "connections" | "updated" | "rows" | "name";
 
 export default function DiscoverPage() {
   const [datasets, setDatasets] = useState<DatasetMeta[]>(DEMO);
   const [q, setQ] = useState("");
   const [tag, setTag] = useState("");
-  const [sort, setSort] = useState<SortKey>("stars");
+  const [sort, setSort] = useState<SortKey>("connections");
   const [loading, setLoading] = useState(false);
   const { activeJobs, setDrawerOpen } = useJobTracker();
 
@@ -110,15 +110,18 @@ export default function DiscoverPage() {
           return b.rowCount - a.rowCount;
         case "name":
           return `${a.owner}/${a.name}`.localeCompare(`${b.owner}/${b.name}`);
-        case "stars":
+        case "connections":
         default:
-          return b.stars - a.stars || b.rowCount - a.rowCount;
+          return b.connections - a.connections || b.rowCount - a.rowCount;
       }
     });
   }, [datasets, q, tag, sort]);
 
   const trending = useMemo(
-    () => [...datasets].sort((a, b) => b.stars - a.stars || b.rowCount - a.rowCount).slice(0, 6),
+    () =>
+      [...datasets]
+        .sort((a, b) => b.connections - a.connections || b.rowCount - a.rowCount)
+        .slice(0, 6),
     [datasets],
   );
 
@@ -183,7 +186,7 @@ export default function DiscoverPage() {
             <div className="flex flex-col gap-0.5">
               {(
                 [
-                  ["stars", "Most starred"],
+                  ["connections", "Most connected"],
                   ["updated", "Recently updated"],
                   ["rows", "Largest"],
                   ["name", "Name"],
@@ -333,7 +336,7 @@ export default function DiscoverPage() {
             <h2 className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
               Trending
             </h2>
-            <p className="mt-1 text-[11px] text-muted-foreground">Most starred on Trainfabric</p>
+            <p className="mt-1 text-[11px] text-muted-foreground">Most connected on Trainfabric</p>
           </div>
           <ul className="space-y-1">
             {trending.map((d) => (
@@ -350,8 +353,8 @@ export default function DiscoverPage() {
                     </p>
                     <p className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
                       <span className="inline-flex items-center gap-0.5">
-                        <Star className="h-3 w-3" />
-                        {d.stars}
+                        <Link2 className="h-3 w-3" />
+                        {d.connections}
                       </span>
                       <span>{formatRows(d.rowCount)} rows</span>
                     </p>

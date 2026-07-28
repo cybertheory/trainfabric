@@ -235,10 +235,17 @@ ThreadingHTTPServer(("0.0.0.0",PORT),H).serve_forever()
       const start =
         opts.daemonStartCmd ??
         [
-          "mkdir -p ~/trainfabric/inbox",
+          "mkdir -p ~/trainfabric/inbox ~/trainfabric/skills",
           `cat > ~/trainfabric/chat_shim.py <<'PY'\n${chatShim}\nPY`,
-          // Pull latest daemon from main so heartbeats/talk-back stay current without re-baking the Box template.
-          "curl -fsSL https://raw.githubusercontent.com/cybertheory/trainfabric/main/services/autorunner/autorunner_daemon.py -o ~/trainfabric/autorunner_daemon.py || true",
+          // Pull latest autorunner stack from main (daemon + Hermes-parity AI Gateway agent + skills).
+          "BASE=https://raw.githubusercontent.com/cybertheory/trainfabric/main/services/autorunner",
+          "curl -fsSL $BASE/autorunner_daemon.py -o ~/trainfabric/autorunner_daemon.py || true",
+          "curl -fsSL $BASE/gateway.py -o ~/trainfabric/gateway.py || true",
+          "curl -fsSL $BASE/agent_mutate.py -o ~/trainfabric/agent_mutate.py || true",
+          "curl -fsSL $BASE/skills/autoresearch-mutate/SKILL.md -o ~/trainfabric/skills/autoresearch-mutate.md || true",
+          "curl -fsSL $BASE/skills/publish-viz-github/SKILL.md -o ~/trainfabric/skills/publish-viz-github.md || true",
+          "curl -fsSL $BASE/skills/trainfabric-cli/SKILL.md -o ~/trainfabric/skills/trainfabric-cli.md || true",
+          "python3 -m pip install --user -q matplotlib httpx 2>/dev/null || true",
           "pkill -f 'chat_shim.py' 2>/dev/null || true",
           "pkill -f 'autorunner_daemon.py' 2>/dev/null || true",
           "nohup python3 ~/trainfabric/chat_shim.py >/tmp/tf-chat.log 2>&1 &",

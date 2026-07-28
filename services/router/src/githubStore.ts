@@ -219,52 +219,14 @@ function createD1GithubStore(db: D1Database): GithubStore {
   };
 }
 
-function createConvexGithubStore(baseUrl: string, serviceKey: string): GithubStore {
-  const headers = {
-    "content-type": "application/json",
-    "x-service-key": serviceKey,
-  };
-  async function post<T>(path: string, body: unknown): Promise<T> {
-    const res = await fetch(`${baseUrl}${path}`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Convex ${path} failed: ${res.status} ${text}`);
-    }
-    return (await res.json()) as T;
-  }
 
-  return {
-    upsertAccount: (row) => post("/api/github/accounts/upsert", row),
-    getAccount: (userId) => post("/api/github/accounts/get", { userId }),
-    deleteAccount: (userId) => post("/api/github/accounts/delete", { userId }),
-    upsertInstallation: (row) => post("/api/github/installations/upsert", row),
-    listInstallations: (userId) => post("/api/github/installations/list", { userId }),
-    getInstallation: (installationId) =>
-      post("/api/github/installations/get", { installationId }),
-    deleteInstallation: (installationId) =>
-      post("/api/github/installations/delete", { installationId }),
-    deleteInstallationsForUser: (userId) =>
-      post("/api/github/installations/delete-for-user", { userId }),
-    setInstallationSuspended: (installationId, suspended) =>
-      post("/api/github/installations/set-suspended", { installationId, suspended }),
-  };
+export function createGithubStore(env: { DB?: D1Database }): GithubStore {
+  if (!env.DB) {
+    throw new Error('Configure DB (D1) on the Worker');
+  }
+  return createD1GithubStore(env.DB);
 }
 
-export function createGithubStore(env: {
-  DB?: D1Database;
-  CONVEX_URL?: string;
-  CONVEX_SERVICE_KEY?: string;
-}): GithubStore {
-  if (env.DB) return createD1GithubStore(env.DB);
-  if (!env.CONVEX_URL || !env.CONVEX_SERVICE_KEY) {
-    throw new Error("Configure DB (D1) or CONVEX_URL + CONVEX_SERVICE_KEY");
-  }
-  return createConvexGithubStore(env.CONVEX_URL, env.CONVEX_SERVICE_KEY);
-}
 
 export async function encryptUserToken(token: string, cryptoKey: string): Promise<string> {
   return encryptSecret(token, cryptoKey);

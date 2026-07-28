@@ -99,41 +99,14 @@ function createD1HfStore(db: D1Database): HfStore {
   };
 }
 
-function createConvexHfStore(convexUrl: string, serviceKey: string): HfStore {
-  const base = convexUrl.replace(/\/$/, "");
-  async function post<T>(path: string, body: unknown): Promise<T> {
-    const res = await fetch(`${base}${path}`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${serviceKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Convex HF store ${path}: ${res.status} ${text.slice(0, 200)}`);
-    }
-    return res.json() as Promise<T>;
+
+export function createHfStore(env: { DB?: D1Database }): HfStore {
+  if (!env.DB) {
+    throw new Error('Configure DB (D1) on the Worker');
   }
-  return {
-    upsertAccount: (row) => post("/api/hf/accounts/upsert", row),
-    getAccount: (userId) => post("/api/hf/accounts/get", { userId }),
-    deleteAccount: (userId) => post("/api/hf/accounts/delete", { userId }),
-  };
+  return createD1HfStore(env.DB);
 }
 
-export function createHfStore(env: {
-  DB?: D1Database;
-  CONVEX_URL?: string;
-  CONVEX_SERVICE_KEY?: string;
-}): HfStore {
-  if (env.DB) return createD1HfStore(env.DB);
-  if (!env.CONVEX_URL || !env.CONVEX_SERVICE_KEY) {
-    throw new Error("Configure DB (D1) or CONVEX_URL + CONVEX_SERVICE_KEY");
-  }
-  return createConvexHfStore(env.CONVEX_URL, env.CONVEX_SERVICE_KEY);
-}
 
 export async function encryptHfToken(token: string, cryptoKey: string): Promise<string> {
   return encryptSecret(token, cryptoKey);

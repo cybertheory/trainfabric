@@ -546,76 +546,12 @@ export function createD1SocialStore(db: D1Database): SocialStore {
   };
 }
 
-/** Convex HTTP-backed social store (service key). */
-export function createConvexSocialStore(
-  baseUrl: string,
-  serviceKey: string,
-): SocialStore {
-  const headers = {
-    "content-type": "application/json",
-    "x-service-key": serviceKey,
-  };
 
-  async function post<T>(path: string, body: unknown): Promise<T> {
-    const res = await fetch(`${baseUrl}${path}`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Convex ${path} failed: ${res.status} ${text}`);
-    }
-    return res.json() as Promise<T>;
-  }
-
-  return {
-    ensureConnection: (userId, datasetId, source) =>
-      post("/api/social/ensure-connection", { userId, datasetId, source }),
-    toggleConnection: (userId, datasetId, source) =>
-      post("/api/social/toggle-connection", { userId, datasetId, source }),
-    getConnection: (userId, datasetId) =>
-      post("/api/social/get-connection", { userId, datasetId }),
-    listConnections: (userId) => post("/api/social/list-connections", { userId }),
-    createPost: async (input) => {
-      const postId = newId("post");
-      return post("/api/social/create-post", { postId, ...input });
-    },
-    getPost: (postId) => post("/api/social/get-post", { postId }),
-    listFeed: (opts) => post("/api/social/list-feed", opts),
-    listNotifications: (userId, limit) =>
-      post("/api/social/list-notifications", { userId, limit }),
-    markNotificationRead: (userId, notificationId) =>
-      post("/api/social/mark-read", { userId, notificationId }),
-    markAllNotificationsRead: (userId) =>
-      post("/api/social/mark-all-read", { userId }),
-    upsertProfile: (userId, patch) =>
-      post("/api/social/upsert-profile", { userId, ...patch }),
-    getProfile: (userId) => post("/api/social/get-profile", { userId }),
-    getProfiles: async (userIds) => {
-      const res = await post<{ profiles: UserProfile[] }>("/api/social/get-profiles", {
-        userIds,
-      });
-      const out: Record<string, UserProfile> = {};
-      for (const p of res.profiles ?? []) out[p.userId] = p;
-      return out;
-    },
-  };
+export function createSocialStore(env: { DB?: D1Database }): SocialStore | null {
+  if (!env.DB) return null;
+  return createD1SocialStore(env.DB);
 }
 
-export function createSocialStore(env: {
-  DB?: D1Database;
-  CONVEX_URL?: string;
-  CONVEX_SERVICE_KEY?: string;
-}): SocialStore | null {
-  if (env.DB) return createD1SocialStore(env.DB);
-  if (env.CONVEX_URL && env.CONVEX_SERVICE_KEY) {
-    return createConvexSocialStore(env.CONVEX_URL, env.CONVEX_SERVICE_KEY);
-  }
-  return null;
-}
-
-/** Fire-and-forget auto-connect after query/sample/agent use. */
 export async function autoConnect(
   store: SocialStore | null,
   userId: string | undefined | null,

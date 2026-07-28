@@ -4,15 +4,17 @@ Trainfabric autorunner daemon — runs inside a Box sandbox.
 
 Repo-first loop: clone the bound GitHub repo → load goal/instructions from
 TRAINFABRIC.md / AGENTS.md / README.md → discover + bind a dataset (if none
-was given) → propose (optional /prompt) → enqueue GPU trial → await score →
-keep/revert → report progress / social findings. Steer messages arrive via
-/auto/:id/messages.
+was given) → mutate via Cloudflare AI Gateway (Hermes-parity agent_mutate) →
+enqueue GPU trial → await score → keep/revert → report progress / social
+findings. Steer messages arrive via /auto/:id/messages.
 
 Env:
   AUTORUN_ID, TF_API_URL, TF_TOKEN, TF_DATASET_ID (optional),
   AUTORUN_GOAL (optional override; otherwise loaded from the repo),
   PROTOCOL_JSON, REPO_URL, REPO_BRANCH, COMPUTE_PROVIDER,
-  GITHUB_TOKEN (optional App installation token), REPO_FULL_NAME
+  GITHUB_TOKEN (optional App installation token), REPO_FULL_NAME,
+  CF_ACCOUNT_ID, CF_AI_GATEWAY_TOKEN, CF_AI_GATEWAY_ID, CF_AI_GATEWAY_BASE,
+  CF_AI_MODEL (Cloudflare AI Gateway — same as Hermes compute)
 """
 
 from __future__ import annotations
@@ -403,18 +405,56 @@ def wait_trial(auto_run_id: str, trial_id: str, timeout_sec: int) -> dict[str, A
     return {"id": trial_id, "status": "error", "error": "timeout waiting for GPU trial"}
 
 
+def _push_origin() -> None:
+    push = sh("git push origin HEAD", cwd=REPO_DIR, check=False)
+    if push.returncode != 0 and env("GITHUB_INSTALLATION_ID"):
+        tok = refresh_github_token()
+        full = _repo_full_name()
+        if tok and full:
+            remote = f"https://x-access-token:{tok}@github.com/{full}.git"
+            sh(f"git remote set-url origin {remote}", cwd=REPO_DIR, check=False)
+            sh("git push origin HEAD", cwd=REPO_DIR, check=False)
+
+
 def ratchet(kept: bool, sha_before: str) -> None:
     if kept:
-        push = sh("git push origin HEAD", cwd=REPO_DIR, check=False)
-        if push.returncode != 0 and env("GITHUB_INSTALLATION_ID"):
-            tok = refresh_github_token()
-            full = _repo_full_name()
-            if tok and full:
-                remote = f"https://x-access-token:{tok}@github.com/{full}.git"
-                sh(f"git remote set-url origin {remote}", cwd=REPO_DIR, check=False)
-                sh("git push origin HEAD", cwd=REPO_DIR, check=False)
+        _push_origin()
         return
     sh(f"git reset --hard {sha_before}", cwd=REPO_DIR, check=False)
+
+
+def _snapshot_viz() -> dict[str, bytes]:
+    root = REPO_DIR / "artifacts" / "viz"
+    if not root.is_dir():
+        return {}
+    out: dict[str, bytes] = {}
+    for path in root.rglob("*"):
+        if path.is_file():
+            rel = str(path.relative_to(REPO_DIR))
+            try:
+                out[rel] = path.read_bytes()
+            except OSError:
+                continue
+    return out
+
+
+def republish_viz_after_revert(blobs: dict[str, bytes]) -> None:
+    """Keep artifacts/viz on GitHub even when the trial code is discarded."""
+    if not blobs:
+        return
+    for rel, data in blobs.items():
+        path = REPO_DIR / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    quoted = " ".join(f"'{r}'" for r in blobs)
+    sh(f"git add {quoted}", cwd=REPO_DIR, check=False)
+    commit = sh(
+        'git commit -m "auto: publish viz (trial reverted)"',
+        cwd=REPO_DIR,
+        check=False,
+    )
+    if commit.returncode == 0:
+        _push_origin()
 
 
 def post_finding(dataset_id: str, body: str, findings: dict[str, Any]) -> None:
@@ -523,16 +563,52 @@ def run_loop() -> None:
         if insight:
             hypothesis = f"{hypothesis} | data: {insight[:200]}"
 
-        # Lightweight local mutate signal — real agents edit mutablePaths via Box prompt/CLI
-        mutable = (protocol.get("mutablePaths") or ["train.py"])[0]
-        note = REPO_DIR / mutable
-        if note.exists():
-            with note.open("a", encoding="utf-8") as f:
-                f.write(f"\n# autorunner touch trial={trial_n + 1} t={int(time.time())}\n")
-            sh(f'git add {mutable} && git commit -m "auto: trial {trial_n + 1}" --allow-empty', cwd=REPO_DIR, check=False)
+        # Hermes-parity mutate via Cloudflare AI Gateway (+ viz under artifacts/viz/)
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            sys.path.insert(0, str(Path.home() / "trainfabric"))
+            from agent_mutate import propose_mutate  # type: ignore
+        except ImportError:
+            propose_mutate = None  # type: ignore
+
+        mutate_result: dict[str, Any] = {}
+        if propose_mutate is not None:
+            mutate_result = propose_mutate(
+                repo_dir=REPO_DIR,
+                protocol=protocol,
+                hypothesis=hypothesis,
+                trial_n=trial_n,
+                goal=goal,
+                steer=steer,
+                instructions=goal,
+            )
+            if mutate_result.get("hypothesis"):
+                hypothesis = str(mutate_result["hypothesis"])
+            summary = str(mutate_result.get("summary") or "")[:400]
+            via = mutate_result.get("via") or "unknown"
+            send_message(
+                auto_run_id,
+                f"Mutate ({via}): {summary or mutate_result.get('files_touched')}",
+            )
+        else:
+            mutable = (protocol.get("mutablePaths") or ["train.py"])[0]
+            note = REPO_DIR / mutable
+            if note.exists():
+                with note.open("a", encoding="utf-8") as f:
+                    f.write(
+                        f"\n# autorunner touch trial={trial_n + 1} t={int(time.time())}\n"
+                    )
+                sh(f"git add {mutable}", cwd=REPO_DIR, check=False)
+
+        sh(
+            f'git commit -m "auto: trial {trial_n + 1}" --allow-empty',
+            cwd=REPO_DIR,
+            check=False,
+        )
 
         assert_immutable(protocol)
         sha = git_sha()
+        viz_blobs = _snapshot_viz()
         heartbeat(auto_run_id, "enqueueing", trial_n, f"Enqueuing trial {trial_n + 1}")
         trial = enqueue_trial(auto_run_id, hypothesis, sha)
         trial_id = trial.get("id")
@@ -551,6 +627,8 @@ def run_loop() -> None:
         result = wait_trial(auto_run_id, trial_id, min(wall, int(budget.get("maxGpuSec") or wall)))
         kept = bool(result.get("kept"))
         ratchet(kept, sha_before)
+        if not kept:
+            republish_viz_after_revert(viz_blobs)
         trial_n += 1
         idle = 0
 

@@ -9,6 +9,8 @@ The **GPU trial worker** lives in a separate public repo (clone and run on any G
 | Artifact | Where | Role |
 |----------|-------|------|
 | `autorunner_daemon.py` (this folder) | Box sandbox | Clone research repo, load brief, discover datasets, enqueue trials, ratchet git |
+| `gateway.py` + `agent_mutate.py` | Box sandbox | Hermes-parity Cloudflare AI Gateway mutate loop + `artifacts/viz/` publish |
+| `skills/*` | Box sandbox | `autoresearch-mutate`, `publish-viz-github`, `trainfabric-cli` |
 | [trainfabric-gpu-runner](https://github.com/cybertheory/trainfabric-gpu-runner) | Your GPU / Spark / rented box | Heartbeat, claim, run entrypoint, report score |
 
 Docs: `/docs/agents`. MCP: `register_gpu_runner` / `list_gpu_runners` / `start_auto` with `compute.provider: "runner"`.
@@ -19,7 +21,11 @@ Started with env from the router on `POST /auto`:
 
 `AUTORUN_ID`, `TF_API_URL`, `TF_TOKEN`, `TF_DATASET_ID` (optional), `AUTORUN_GOAL` (optional override), `PROTOCOL_JSON`, `REPO_URL`, `REPO_FULL_NAME`, `REPO_BRANCH`, `GITHUB_TOKEN` (short-lived App installation token), `GITHUB_INSTALLATION_ID`.
 
+Cloudflare AI Gateway (Hermes parity): `CF_ACCOUNT_ID`, `CF_AI_GATEWAY_ID`, `CF_AI_GATEWAY_TOKEN`, optional `CF_AI_GATEWAY_BASE` / `CF_AI_MODEL`. Injected by the router from Worker secrets/vars when provisioning Box.
+
 On push failure the daemon calls `POST /auto/:id/github-credentials` to refresh the token.
+
+Visualizations: mutate agent writes `artifacts/viz/*`; kept trials push with the trial commit; reverted trials still republish viz when possible.
 
 ## GitHub App setup
 

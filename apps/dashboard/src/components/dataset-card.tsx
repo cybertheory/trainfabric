@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { DatasetMeta } from "@trainfabric/shared";
-import { Database, Star } from "lucide-react";
+import { Database, Link2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn, formatBytes, formatRows } from "@/lib/utils";
 
@@ -34,8 +34,8 @@ export function DatasetCard({
           </p>
           <p className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
             <span className="inline-flex items-center gap-0.5">
-              <Star className="h-3 w-3" />
-              {dataset.stars}
+              <Link2 className="h-3 w-3" />
+              {dataset.connections}
             </span>
             <span>{formatRows(dataset.rowCount)}</span>
           </p>
@@ -62,9 +62,9 @@ export function DatasetCard({
               </p>
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
-            <Star className="h-3.5 w-3.5" />
-            {dataset.stars}
+          <div className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground" title="Connections">
+            <Link2 className="h-3.5 w-3.5" />
+            {dataset.connections}
           </div>
         </div>
 

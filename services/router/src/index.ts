@@ -126,8 +126,6 @@ export interface Env {
   TRAINFABRIC_AGENT_DO?: DurableObjectNamespace;
   VECTORIZE?: VectorizeIndex;
   AI?: Ai;
-  CONVEX_URL?: string;
-  CONVEX_SERVICE_KEY?: string;
   COMPUTE_URL?: string;
   CLERK_JWT_ISSUER?: string;
   CLERK_JWT_AUDIENCE?: string;
@@ -346,7 +344,7 @@ function streamAiMessage(messageId: string, text: string): Response {
 app.get("/health", (c) =>
   c.json({
     status: "ok",
-    registry: c.env.DB ? "d1" : "convex",
+    registry: "d1",
     compute: c.env.COMPUTE_URL ? "http" : c.env.COMPUTE ? "container" : "none",
   }),
 );
@@ -685,10 +683,10 @@ app.post("/admin/seed", async (c) => {
 
 app.get("/datasets", async (c) => {
   try {
-    const convex = createRegistry(c.env);
+    const registry = createRegistry(c.env);
     const identity = c.get("identity");
     const requestedOwner = c.req.query("owner");
-    const rows = await convex.listDatasets({
+    const rows = await registry.listDatasets({
       tag: c.req.query("tag"),
       search: c.req.query("search") ?? c.req.query("q"),
       owner: requestedOwner === "me" ? identity?.subject : requestedOwner,
@@ -1570,13 +1568,13 @@ async function startRemoteIngest(
   remoteAuth: RemoteAuth = {},
 ) {
   const datasetId = `ds_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
-  const convex = createRegistry(c.env);
+  const registry = createRegistry(c.env);
   const jobId = `job_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
   const bucket = c.env.R2_BUCKET ?? "trainfabric-data";
 
   const kindLabel = listed.kind === "hf" ? "Hugging Face" : "GitHub";
 
-  await convex.createDataset({
+  await registry.createDataset({
     datasetId,
     owner: identity.subject,
     visibility: meta.visibility ?? "private",
@@ -1585,7 +1583,7 @@ async function startRemoteIngest(
     tags: [...(meta.tags ?? []), "remote-import", kindLabel === "Hugging Face" ? "huggingface" : "github"],
     kind: "base",
   });
-  await convex.setJob({
+  await registry.setJob({
     jobId,
     datasetId,
     kind: "ingest",
@@ -1598,7 +1596,7 @@ async function startRemoteIngest(
   c.executionCtx.waitUntil(
     (async () => {
       try {
-        await convex.setJob({ jobId, status: "running", progress: 20 });
+        await registry.setJob({ jobId, status: "running", progress: 20 });
         const { stagingPath, fileCount } = await downloadRemoteToR2(
           c.env.R2,
           datasetId,
@@ -1607,7 +1605,7 @@ async function startRemoteIngest(
           remoteAuth,
           listed.kind,
         );
-        await convex.setJob({ jobId, status: "running", progress: 50 });
+        await registry.setJob({ jobId, status: "running", progress: 50 });
 
         const ingestAbort = new AbortController();
         const ingestTimer = setTimeout(() => ingestAbort.abort(), 180_000);
@@ -1639,7 +1637,7 @@ async function startRemoteIngest(
         } finally {
           clearTimeout(ingestTimer);
         }
-        await convex.setJob({ jobId, status: "running", progress: 75 });
+        await registry.setJob({ jobId, status: "running", progress: 75 });
         const json = (await res.json()) as {
           error?: string;
           schemaContract?: Record<string, unknown>;
@@ -1648,28 +1646,28 @@ async function startRemoteIngest(
           namespace?: string;
         };
         if (!res.ok || json.error) throw new Error(json.error ?? "ingest failed");
-        await convex.updateAfterIngest({
+        await registry.updateAfterIngest({
           datasetId,
-          snapshotId: json.snapshotId,
-          rowCount: json.schemaContract?.rowCount,
-          sizeBytes: json.schemaContract?.sizeBytes,
+          snapshotId: json.snapshotId ?? "",
+          rowCount: Number(json.schemaContract?.rowCount ?? 0),
+          sizeBytes: Number(json.schemaContract?.sizeBytes ?? 0),
           schema: json.schemaContract,
           icebergNamespace: json.namespace,
           icebergTable: json.icebergTable,
         });
-        await convex.setJob({
+        await registry.setJob({
           jobId,
           status: "done",
           progress: 100,
           resultRef: `${json.snapshotId ?? ""}:${fileCount}files`,
         });
 
-        const ds = (await convex.getDataset(datasetId)) as DatasetRecord;
+        const ds = (await registry.getDataset(datasetId)) as DatasetRecord;
         if (ds) {
           await upsertDatasetEmbedding(c.env.AI as never, c.env.VECTORIZE as never, ds);
         }
       } catch (e) {
-        await convex.setJob({
+        await registry.setJob({
           jobId,
           status: "error",
           error: e instanceof Error ? e.message : String(e),
@@ -1702,10 +1700,10 @@ async function startIngest(
   stagingPath: string,
   datasetId = `ds_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`,
 ) {
-  const convex = createRegistry(c.env);
+  const registry = createRegistry(c.env);
   const jobId = `job_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
 
-  await convex.createDataset({
+  await registry.createDataset({
     datasetId,
     owner: identity.subject,
     visibility: meta.visibility ?? "private",
@@ -1714,7 +1712,7 @@ async function startIngest(
     tags: meta.tags ?? [],
     kind: "base",
   });
-  await convex.setJob({
+  await registry.setJob({
     jobId,
     datasetId,
     kind: "ingest",
@@ -1727,7 +1725,7 @@ async function startIngest(
 
   c.executionCtx.waitUntil(
     (async () => {
-      await convex.setJob({ jobId, status: "running", progress: 10 });
+      await registry.setJob({ jobId, status: "running", progress: 10 });
       try {
         const res = await stub.fetch("https://catalog/commit", {
           method: "POST",
@@ -1751,24 +1749,24 @@ async function startIngest(
           namespace?: string;
         };
         if (!res.ok || json.error) throw new Error(json.error ?? "ingest failed");
-        await convex.updateAfterIngest({
+        await registry.updateAfterIngest({
           datasetId,
-          snapshotId: json.snapshotId,
-          rowCount: json.schemaContract?.rowCount,
-          sizeBytes: json.schemaContract?.sizeBytes,
+          snapshotId: json.snapshotId ?? "",
+          rowCount: Number(json.schemaContract?.rowCount ?? 0),
+          sizeBytes: Number(json.schemaContract?.sizeBytes ?? 0),
           schema: json.schemaContract,
           icebergNamespace: json.namespace,
           icebergTable: json.icebergTable,
         });
-        await convex.setJob({ jobId, status: "done", progress: 100, resultRef: json.snapshotId });
+        await registry.setJob({ jobId, status: "done", progress: 100, resultRef: json.snapshotId });
 
         // Embed for semantic discovery
-        const ds = (await convex.getDataset(datasetId)) as DatasetRecord;
+        const ds = (await registry.getDataset(datasetId)) as DatasetRecord;
         if (ds) {
           await upsertDatasetEmbedding(c.env.AI as never, c.env.VECTORIZE as never, ds);
         }
       } catch (e) {
-        await convex.setJob({
+        await registry.setJob({
           jobId,
           status: "error",
           error: e instanceof Error ? e.message : String(e),
@@ -1789,7 +1787,7 @@ app.post("/datasets/derived", async (c) => {
     if (!identity) return c.json({ error: "Unauthorized" }, 401);
     const body = await c.req.json();
     const deps = depsFrom(c);
-    const convex = createRegistry(c.env);
+    const registry = createRegistry(c.env);
 
     const sources: DatasetRecord[] = [];
     for (const s of body.spec.sources) {
@@ -1813,7 +1811,7 @@ app.post("/datasets/derived", async (c) => {
     }
 
     const decision = await decideMaterialization(body.spec, identity, deps);
-    await convex.createDataset({
+    await registry.createDataset({
       datasetId,
       owner: identity.subject,
       visibility: body.visibility,
@@ -1828,14 +1826,14 @@ app.post("/datasets/derived", async (c) => {
     let jobId: string | undefined;
     if (decision.mode === "materialized") {
       jobId = `job_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
-      await convex.setJob({ jobId, datasetId, kind: "materialize", status: "pending" });
+      await registry.setJob({ jobId, datasetId, kind: "materialize", status: "pending" });
       // Kick materialize via CatalogDO (runs first source query for MVP single-source)
       const doId = c.env.CATALOG_DO.idFromName(datasetId);
       const stub = c.env.CATALOG_DO.get(doId);
       const src = body.spec.sources[0];
       c.executionCtx.waitUntil(
         (async () => {
-          await convex.setJob({ jobId: jobId!, status: "running" });
+          await registry.setJob({ jobId: jobId!, status: "running" });
           try {
             if (!(c.env.COMPUTE || c.env.COMPUTE_URL)) {
               throw new Error("Compute not configured");
@@ -1881,19 +1879,19 @@ app.post("/datasets/derived", async (c) => {
                 error?: string;
               };
               if (json.error) throw new Error(json.error);
-              await convex.updateAfterIngest({
+              await registry.updateAfterIngest({
                 datasetId,
-                snapshotId: json.snapshotId,
-                rowCount: json.schemaContract?.rowCount,
-                sizeBytes: json.schemaContract?.sizeBytes,
+                snapshotId: json.snapshotId ?? "",
+                rowCount: Number(json.schemaContract?.rowCount ?? 0),
+                sizeBytes: Number(json.schemaContract?.sizeBytes ?? 0),
                 schema: json.schemaContract,
                 icebergNamespace: json.namespace,
                 icebergTable: json.icebergTable,
               });
             }
-            await convex.setJob({ jobId: jobId!, status: "done", progress: 100 });
+            await registry.setJob({ jobId: jobId!, status: "done", progress: 100 });
           } catch (e) {
-            await convex.setJob({
+            await registry.setJob({
               jobId: jobId!,
               status: "error",
               error: e instanceof Error ? e.message : String(e),
@@ -1925,9 +1923,9 @@ app.post("/datasets/:id/rebuild", async (c) => {
       return c.json({ error: "Only materialized derived datasets can be rebuilt" }, 400);
     }
     // Re-use derived create materialize path — set job and kick CatalogDO
-    const convex = createRegistry(c.env);
+    const registry = createRegistry(c.env);
     const jobId = `job_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
-    await convex.setJob({ jobId, datasetId: ds.id, kind: "rebuild", status: "pending" });
+    await registry.setJob({ jobId, datasetId: ds.id, kind: "rebuild", status: "pending" });
     return c.json({ jobId, status: "pending" });
   } catch (e) {
     return errResponse(e);
@@ -1936,8 +1934,8 @@ app.post("/datasets/:id/rebuild", async (c) => {
 
 app.get("/results/:hash", async (c) => {
   try {
-    const convex = createRegistry(c.env);
-    const entry = (await convex.lookupCache(c.req.param("hash"))) as {
+    const registry = createRegistry(c.env);
+    const entry = (await registry.lookupCache(c.req.param("hash"))) as {
       r2Url: string;
       rowCount: number;
       sizeBytes: number;
@@ -1952,8 +1950,8 @@ app.get("/results/:hash", async (c) => {
 
 app.get("/jobs/:id", async (c) => {
   try {
-    const convex = createRegistry(c.env);
-    const job = await convex.getJob(c.req.param("id"));
+    const registry = createRegistry(c.env);
+    const job = await registry.getJob(c.req.param("id"));
     if (!job) return c.json({ error: "Not found" }, 404);
     return c.json(job);
   } catch (e) {
@@ -3082,7 +3080,7 @@ app.post("/datasets/:id/query/proxy", async (c) => {
     const body = (await c.req.json()) as QueryRequest;
     const req = { ...body, datasetId: c.req.param("id") };
     const result = await resolveQuery(req, c.get("identity"), depsFrom(c));
-    if (result.costTier !== "A" || !result.manifest) {
+    if (result.costTier !== "A" || !("manifest" in result) || !result.manifest) {
       return c.json({ error: "Proxy mode only for Case A with manifest" }, 400);
     }
     // Stream first matching range for MVP (full multi-range assembly can be extended)
@@ -3114,7 +3112,7 @@ function buildMcpContext(c: {
   executionCtx?: { waitUntil: (p: Promise<unknown>) => void };
 }): McpContext {
   const deps = depsFrom(c);
-  const convex = createRegistry(c.env);
+  const registry = createRegistry(c.env);
   const hasCompute = Boolean(c.env.COMPUTE || c.env.COMPUTE_URL);
   const compute = hasCompute ? createComputeClientFromEnv(c.env) : null;
   const identity = c.get("identity");
@@ -3129,7 +3127,7 @@ function buildMcpContext(c: {
     identity,
     deps,
     listDatasets: async (opts) =>
-      (await convex.listDatasets({
+      (await registry.listDatasets({
         search: opts.search,
         tag: opts.tag,
         includePrivateFor: opts.includePrivateFor,
@@ -3189,7 +3187,7 @@ function buildMcpContext(c: {
       // Simplified: expect data_ref already staged
       const datasetId = `ds_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
       const jobId = `job_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
-      await convex.createDataset({
+      await registry.createDataset({
         datasetId,
         owner: String(args.owner),
         visibility: meta.visibility,
@@ -3198,7 +3196,7 @@ function buildMcpContext(c: {
         tags: meta.tags,
         kind: "base",
       });
-      await convex.setJob({ jobId, datasetId, kind: "ingest", status: "pending" });
+      await registry.setJob({ jobId, datasetId, kind: "ingest", status: "pending" });
       const doId = c.env.CATALOG_DO.idFromName(datasetId);
       const stub = c.env.CATALOG_DO.get(doId);
       // Fire and forget
@@ -3224,23 +3222,23 @@ function buildMcpContext(c: {
           error?: string;
         };
         if (json.error) {
-          await convex.setJob({ jobId, status: "error", error: json.error });
+          await registry.setJob({ jobId, status: "error", error: json.error });
           return;
         }
-        await convex.updateAfterIngest({
+        await registry.updateAfterIngest({
           datasetId,
-          snapshotId: json.snapshotId,
-          rowCount: json.schemaContract?.rowCount,
-          sizeBytes: json.schemaContract?.sizeBytes,
+          snapshotId: json.snapshotId ?? "",
+          rowCount: Number(json.schemaContract?.rowCount ?? 0),
+          sizeBytes: Number(json.schemaContract?.sizeBytes ?? 0),
           schema: json.schemaContract,
           icebergNamespace: json.namespace,
           icebergTable: json.icebergTable,
         });
-        await convex.setJob({ jobId, status: "done", progress: 100 });
+        await registry.setJob({ jobId, status: "done", progress: 100 });
       });
       return { datasetId, jobId };
     },
-    getJob: (id) => convex.getJob(id),
+    getJob: (id) => registry.getJob(id),
     createDerived: async (args) => {
       // Delegate to same logic as REST — simplified inline
       const sources: DatasetRecord[] = [];
@@ -3264,7 +3262,7 @@ function buildMcpContext(c: {
         affordances.push("Spec is Case-A-cheap — pointer would be free (no data duplicated).");
       }
       const datasetId = `ds_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
-      await convex.createDataset({
+      await registry.createDataset({
         datasetId,
         owner: identity!.subject,
         visibility: args.visibility,

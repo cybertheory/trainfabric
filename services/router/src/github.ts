@@ -504,7 +504,9 @@ Mention lakehouse datasets or schemas the agent should discover and bind.
 
 - Mutable paths are listed in \`protocol.yaml\` — only edit those.
 - Never change immutable eval files.
-- Keep commits small and push only when a trial improves the metric.
+- Keep commits small; the Box autorunner pushes kept trials (and viz) to GitHub.
+- Publish plots/summaries under \`artifacts/viz/\` (see publish-viz-github skill).
+- Mutate agent uses Cloudflare AI Gateway (same as Hermes compute).
 `,
   "protocol.yaml": `metric:
   name: val_bpb
@@ -514,9 +516,14 @@ budget:
   maxWallClockSec: 3600
 mutablePaths:
   - train.py
+  - artifacts/**
 immutablePaths:
   - prepare.py
   - protocol.yaml
+`,
+  "artifacts/viz/README.md": `# Autoresearch visualizations
+
+Plots and summaries published by the Box mutate agent land here and are pushed to this repo.
 `,
   ".gitignore": `__pycache__/
 *.pyc

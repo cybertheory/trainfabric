@@ -1,10 +1,7 @@
 # Router Worker
-CONVEX_URL=https://YOUR.convex.site
-CONVEX_SERVICE_KEY=dev-service-key
 COMPUTE_URL=http://127.0.0.1:8080
 CLERK_JWT_ISSUER=https://desired-seal-5.clerk.accounts.dev
 # Leave CLERK_JWT_AUDIENCE unset for default Clerk session tokens (dashboard getToken()).
-# Set to "convex" only when verifying Convex JWT template tokens.
 # Clerk Backend secret — verify/create user API keys (ak_*). Same as dashboard CLERK_SECRET_KEY.
 # CLERK_SECRET_KEY=sk_test_...
 PUBLIC_API_BASE=https://trainfabric-router.rishabhspro.workers.dev

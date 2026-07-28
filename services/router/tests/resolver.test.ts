@@ -18,7 +18,7 @@ function publicDataset(over: Partial<DatasetRecord> = {}): DatasetRecord {
     visibility: "public",
     name: "taxi",
     tags: ["nyc"],
-    stars: 0,
+    connections: 0,
     latestSnapshotId: "snap1",
     rowCount: 100,
     sizeBytes: 1000,

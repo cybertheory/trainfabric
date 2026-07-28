@@ -1,6 +1,6 @@
 import type { CostTier, SavedQuery, Visibility } from "@trainfabric/shared";
 
-/** D1-backed control plane (replaces Convex HTTP for Cloudflare deploy). */
+/** D1-backed control plane (datasets, cache, jobs). */
 
 export interface D1Dataset {
   id: string;
@@ -9,7 +9,7 @@ export interface D1Dataset {
   name: string;
   description?: string;
   tags: string[];
-  stars: number;
+  connections: number;
   latestSnapshotId: string;
   rowCount: number;
   sizeBytes: number;
@@ -36,7 +36,7 @@ export async function ensureSchema(db: D1Database): Promise<void> {
         name TEXT NOT NULL,
         description TEXT,
         tags TEXT NOT NULL DEFAULT '[]',
-        stars INTEGER NOT NULL DEFAULT 0,
+        connections INTEGER NOT NULL DEFAULT 0,
         latest_snapshot_id TEXT NOT NULL DEFAULT '',
         row_count INTEGER NOT NULL DEFAULT 0,
         size_bytes INTEGER NOT NULL DEFAULT 0,
@@ -54,6 +54,35 @@ export async function ensureSchema(db: D1Database): Promise<void> {
     `,
     )
     .run();
+  // Migrate pre-existing DBs that still have only `stars`.
+  let addedConnectionsCol = false;
+  try {
+    await db.prepare(`ALTER TABLE datasets ADD COLUMN connections INTEGER NOT NULL DEFAULT 0`).run();
+    addedConnectionsCol = true;
+  } catch {
+    /* column exists */
+  }
+  if (addedConnectionsCol) {
+    try {
+      await db
+        .prepare(
+          `UPDATE datasets SET connections = (
+            SELECT COUNT(*) FROM connections c WHERE c.dataset_id = datasets.id
+          )`,
+        )
+        .run();
+    } catch {
+      try {
+        await db
+          .prepare(
+            `UPDATE datasets SET connections = stars WHERE IFNULL(connections, 0) = 0 AND IFNULL(stars, 0) > 0`,
+          )
+          .run();
+      } catch {
+        /* stars column may be absent on fresh installs */
+      }
+    }
+  }
   await db
     .prepare(
       `
@@ -148,7 +177,7 @@ function rowToDataset(r: Record<string, unknown>): D1Dataset {
     name: String(r.name),
     description: r.description ? String(r.description) : undefined,
     tags: JSON.parse(String(r.tags || "[]")),
-    stars: Number(r.stars || 0),
+    connections: Number(r.connections ?? r.stars ?? 0),
     latestSnapshotId: String(r.latest_snapshot_id || ""),
     rowCount: Number(r.row_count || 0),
     sizeBytes: Number(r.size_bytes || 0),
@@ -226,7 +255,7 @@ export function createD1Registry(db: D1Database) {
       await db
         .prepare(
           `INSERT OR REPLACE INTO datasets
-          (id, owner, visibility, name, description, tags, stars, latest_snapshot_id, row_count, size_bytes, kind, derived_spec, materialization_decision, created_at, updated_at)
+          (id, owner, visibility, name, description, tags, connections, latest_snapshot_id, row_count, size_bytes, kind, derived_spec, materialization_decision, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, 0, '', 0, 0, ?, ?, ?, ?, ?)`,
         )
         .bind(
@@ -547,8 +576,8 @@ export function createD1Registry(db: D1Database) {
         await db
           .prepare(
             `INSERT INTO datasets
-            (id, owner, visibility, name, description, tags, stars, latest_snapshot_id, row_count, size_bytes, kind, schema_json, created_at, updated_at)
-            VALUES (?, 'demo', 'public', ?, ?, ?, 3, ?, ?, ?, 'base', ?, ?, ?)`,
+            (id, owner, visibility, name, description, tags, connections, latest_snapshot_id, row_count, size_bytes, kind, schema_json, created_at, updated_at)
+            VALUES (?, 'demo', 'public', ?, ?, ?, 0, ?, ?, ?, 'base', ?, ?, ?)`,
           )
           .bind(
             d.id,

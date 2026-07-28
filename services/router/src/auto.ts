@@ -105,6 +105,11 @@ export async function createAutoRun(opts: {
     MODAL_APP_REF?: string;
     MODAL_API_BASE?: string;
     BOX_TEMPLATE_ID?: string;
+    CF_ACCOUNT_ID?: string;
+    CF_AI_GATEWAY_ID?: string;
+    CF_AI_GATEWAY_TOKEN?: string;
+    CF_AI_GATEWAY_BASE?: string;
+    CF_AI_MODEL?: string;
   };
 }): Promise<AutoRun> {
   validateProtocol(opts.body.protocol);
@@ -180,6 +185,13 @@ export async function createAutoRun(opts: {
           COMPUTE_PROVIDER: compute.provider,
           MODAL_REF: compute.modalRef ?? "",
           RUNNER_ID: compute.runnerId ?? "",
+          // Hermes-parity: Cloudflare AI Gateway for in-Box mutate + viz agent
+          CF_ACCOUNT_ID: opts.env.CF_ACCOUNT_ID ?? "",
+          CF_AI_GATEWAY_ID: opts.env.CF_AI_GATEWAY_ID ?? "default",
+          CF_AI_GATEWAY_TOKEN: opts.env.CF_AI_GATEWAY_TOKEN ?? "",
+          CF_AI_GATEWAY_BASE: opts.env.CF_AI_GATEWAY_BASE ?? "",
+          CF_AI_MODEL:
+            opts.env.CF_AI_MODEL ?? "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
         },
       });
       run.box = {

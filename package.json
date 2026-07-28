@@ -10,7 +10,6 @@
     "test:shared": "pnpm --filter @trainfabric/shared test",
     "test:router": "pnpm --filter @trainfabric/router test",
     "test:compute": "cd services/compute && python -m pytest -q",
-    "test:convex": "pnpm --filter @trainfabric/convex-tests test",
     "lint": "pnpm -r run lint --if-present",
     "dev:dashboard": "pnpm --filter @trainfabric/dashboard dev",
     "dev:router": "pnpm --filter @trainfabric/router dev",

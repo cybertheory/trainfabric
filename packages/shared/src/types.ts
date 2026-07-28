@@ -33,7 +33,7 @@ export interface DatasetMeta {
   name: string;
   description?: string;
   tags: string[];
-  stars: number;
+  connections: number;
   latestSnapshotId: string;
   rowCount: number;
   sizeBytes: number;
