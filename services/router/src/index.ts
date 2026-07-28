@@ -89,6 +89,8 @@ import {
   getGithubUser,
   githubConfigured,
   installationExistsOnGithub,
+  inspectInstallationResearchBrief,
+  inspectPublicResearchBrief,
   listInstallationRepoTree,
   listInstallationRepos,
   listUserInstallations,
@@ -96,8 +98,10 @@ import {
   verifyInstallState,
   verifyWebhookSignature,
 } from "./github";
+import { enrichResearchGoal } from "./goalEnrich";
 import {
   createGithubStore,
+  decryptUserToken,
   encryptUserToken,
   tokenCryptoKey,
 } from "./githubStore";
@@ -2461,6 +2465,20 @@ app.post("/github/repos", async (c) => {
     if (!inst || inst.userId !== gate.identity.subject || inst.suspended) {
       return c.json({ error: "Installation not found" }, 404);
     }
+    let userAccessToken: string | undefined;
+    if (inst.accountType === "User") {
+      const account = await store.getAccount(gate.identity.subject);
+      if (!account?.userAccessTokenEnc) {
+        return c.json(
+          {
+            error:
+              "Reconnect GitHub to create a personal repo. App install admin rights alone cannot create repos under your user — we need your user OAuth token from Connect.",
+          },
+          400,
+        );
+      }
+      userAccessToken = await decryptUserToken(account.userAccessTokenEnc, tokenCryptoKey(c.env));
+    }
     const created = await createRepoUnderInstallation(c.env, {
       installationId: body.installationId,
       accountLogin: inst.accountLogin,
@@ -2469,6 +2487,7 @@ app.post("/github/repos", async (c) => {
       private: body.private,
       description: body.description,
       defaultBranch: body.defaultBranch,
+      userAccessToken,
     });
     return c.json(
       {
@@ -2525,6 +2544,61 @@ app.get("/github/installations/:id/tree", async (c) => {
       recursive: c.req.query("recursive") === "1",
     });
     return c.json(out);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+/** Whether the repo has a real TRAINFABRIC.md / AGENTS.md research brief (not starter stub). */
+app.get("/github/research-brief", async (c) => {
+  try {
+    const gate = requireClerkIdentity(c);
+    if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+    const owner = c.req.query("owner")?.trim();
+    const repo = c.req.query("repo")?.trim();
+    if (!owner || !repo) return c.json({ error: "owner and repo required" }, 400);
+    const ref = c.req.query("ref")?.trim() || undefined;
+    const installationIdRaw = c.req.query("installationId");
+    const installationId = installationIdRaw ? Number(installationIdRaw) : NaN;
+
+    if (Number.isFinite(installationId) && githubConfigured(c.env)) {
+      const store = createGithubStore(c.env);
+      const inst = await store.getInstallation(installationId);
+      if (!inst || inst.userId !== gate.identity.subject) {
+        return c.json({ error: "Installation not found" }, 404);
+      }
+      const out = await inspectInstallationResearchBrief(c.env, installationId, {
+        owner,
+        repo,
+        ref,
+      });
+      return c.json(out);
+    }
+
+    const out = await inspectPublicResearchBrief({ owner, repo, ref });
+    return c.json(out);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+/** Expand a short draft into a TRAINFABRIC.md-style research brief. */
+app.post("/auto/goal/enrich", async (c) => {
+  try {
+    const gate = requireClerkIdentity(c);
+    if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+    const body = (await c.req.json()) as {
+      draft?: string;
+      repoFullName?: string;
+      metric?: string;
+    };
+    const draft = body.draft?.trim() || "";
+    if (draft.length < 8) return c.json({ error: "draft required (min 8 chars)" }, 400);
+    const goal = await enrichResearchGoal(c.env, draft, {
+      repoFullName: body.repoFullName?.trim(),
+      metric: body.metric?.trim(),
+    });
+    return c.json({ goal });
   } catch (e) {
     return errResponse(e);
   }

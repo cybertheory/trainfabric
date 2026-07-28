@@ -27,13 +27,20 @@ import { useJobTracker } from "@/lib/job-tracker";
 import { cn } from "@/lib/utils";
 import { DatasetMultiSelect } from "@/components/dataset-multi-select";
 
-const MOMENTS = ["Connect", "Repo", "Data", "Launch"] as const;
-
 const DEFAULT_PROTOCOL = {
   metric: { name: "val_bpb", direction: "min" as const },
   budget: { maxTrials: 20, maxWallClockSec: 3600 },
   mutablePaths: ["train.py"],
   immutablePaths: ["prepare.py", "protocol.yaml"],
+};
+
+type StepId = "connect" | "repo" | "goal" | "data" | "launch";
+
+type BriefProbe = {
+  present: boolean;
+  sourceFile?: string;
+  preview?: string;
+  isPlaceholder?: boolean;
 };
 
 type GhInstall = {
@@ -72,6 +79,13 @@ function repoShortName(url: string): string {
   );
 }
 
+function parseOwnerRepo(fullOrUrl: string): { owner: string; repo: string } | null {
+  const short = repoShortName(fullOrUrl);
+  const m = short.match(/^([^/]+)\/([^/]+)$/);
+  if (!m) return null;
+  return { owner: m[1], repo: m[2] };
+}
+
 export default function NewAgentPage() {
   return (
     <Suspense fallback={null}>
@@ -84,7 +98,7 @@ function AgentStartCoach() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { trackAutoRun, authToken } = useJobTracker();
-  const [moment, setMoment] = useState(0);
+  const [stepIdx, setStepIdx] = useState(0);
   const [datasets, setDatasets] = useState<DatasetMeta[]>([]);
   const [starting, setStarting] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -113,6 +127,11 @@ function AgentStartCoach() {
     initialDataset ? [initialDataset] : [],
   );
 
+  const [goal, setGoal] = useState("");
+  const [briefProbe, setBriefProbe] = useState<BriefProbe | null>(null);
+  const [briefChecking, setBriefChecking] = useState(false);
+  const [enriching, setEnriching] = useState(false);
+
   const [metric, setMetric] = useState(DEFAULT_PROTOCOL.metric.name);
   const [direction, setDirection] = useState<"min" | "max">(DEFAULT_PROTOCOL.metric.direction);
   const [maxTrials, setMaxTrials] = useState(DEFAULT_PROTOCOL.budget.maxTrials);
@@ -123,6 +142,27 @@ function AgentStartCoach() {
   );
   const [provider, setProvider] = useState<"trainfabric_gpu" | "runner">("trainfabric_gpu");
   const [runnerId, setRunnerId] = useState("");
+
+  const needsGoalStep = Boolean(
+    briefProbe && (!briefProbe.present || briefProbe.isPlaceholder),
+  );
+
+  const steps = useMemo(() => {
+    const list: { id: StepId; label: string }[] = [
+      { id: "connect", label: "Connect" },
+      { id: "repo", label: "Repo" },
+    ];
+    if (needsGoalStep) list.push({ id: "goal", label: "Goal" });
+    list.push({ id: "data", label: "Data" }, { id: "launch", label: "Launch" });
+    return list;
+  }, [needsGoalStep]);
+
+  const stepId = steps[Math.min(stepIdx, steps.length - 1)]?.id ?? "connect";
+
+  useEffect(() => {
+    // Keep index in range when Goal step appears/disappears.
+    setStepIdx((i) => Math.min(i, Math.max(0, steps.length - 1)));
+  }, [steps.length]);
 
   useEffect(() => {
     apiFetch<{ datasets: DatasetMeta[] }>("/datasets", { token: authToken })
@@ -143,7 +183,7 @@ function AgentStartCoach() {
         const list = inst.installations ?? [];
         setGhInstalls(list);
         setInstallationId((prev) => prev ?? list[0]?.installationId ?? null);
-        if (moment === 0) setMoment(1);
+        if (stepId === "connect") setStepIdx(1);
       } else {
         setGhInstalls([]);
         setInstallationId(null);
@@ -175,7 +215,7 @@ function AgentStartCoach() {
         const status = await refreshGithub();
         if (status?.connected) {
           toast.success("GitHub connected");
-          setMoment(1);
+          setStepIdx(1);
         } else {
           toast.error("GitHub install finished but nothing was linked. Try Connect again.");
         }
@@ -213,6 +253,39 @@ function AgentStartCoach() {
         setRepoTotalCount(null);
       });
   }, [authToken, installationId]);
+
+  useEffect(() => {
+    const parsed = parseOwnerRepo(selectedFullName || repoUrl);
+    if (!parsed || !authToken) {
+      setBriefProbe(null);
+      return;
+    }
+    let cancelled = false;
+    setBriefChecking(true);
+    const q = new URLSearchParams({
+      owner: parsed.owner,
+      repo: parsed.repo,
+      ref: branch.trim() || "main",
+    });
+    if (installationId) q.set("installationId", String(installationId));
+    apiFetch<BriefProbe>(`/github/research-brief?${q}`, { token: authToken })
+      .then((out) => {
+        if (cancelled) return;
+        setBriefProbe(out);
+        if (out.present && !out.isPlaceholder) setGoal("");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // Fail open toward requiring a goal when we can't inspect.
+        setBriefProbe({ present: false });
+      })
+      .finally(() => {
+        if (!cancelled) setBriefChecking(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, selectedFullName, repoUrl, branch, installationId]);
 
   const filteredRepos = useMemo(() => {
     const q = repoSearch.trim().toLowerCase();
@@ -312,23 +385,56 @@ function AgentStartCoach() {
   }
 
   function canAdvance(): boolean {
-    if (moment === 0) return Boolean(ghStatus?.connected);
-    if (moment === 1) {
+    if (stepId === "connect") return Boolean(ghStatus?.connected);
+    if (stepId === "repo") {
+      if (briefChecking) return false;
       if (selectedFullName && installationId) return true;
       return isLikelyGitUrl(repoUrl);
     }
-    if (moment === 2) return true;
+    if (stepId === "goal") return goal.trim().length >= 12;
+    if (stepId === "data") return true;
     return true;
+  }
+
+  async function enrichGoal() {
+    if (!authToken || goal.trim().length < 8) {
+      toast.error("Write a short goal first, then enrich");
+      return;
+    }
+    setEnriching(true);
+    try {
+      const out = await apiFetch<{ goal: string }>("/auto/goal/enrich", {
+        method: "POST",
+        token: authToken,
+        body: JSON.stringify({
+          draft: goal.trim(),
+          repoFullName: selectedFullName || repoShortName(repoUrl) || undefined,
+          metric: metric.trim() || undefined,
+        }),
+      });
+      setGoal(out.goal);
+      toast.success("Goal enriched");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Enrich failed");
+    } finally {
+      setEnriching(false);
+    }
   }
 
   async function start() {
     setStarting(true);
     try {
+      if (needsGoalStep && goal.trim().length < 12) {
+        toast.error("Add a research goal — this repo has no TRAINFABRIC.md / AGENTS.md brief");
+        setStarting(false);
+        return;
+      }
       const display = selectedFullName || repoShortName(repoUrl);
       const run = await apiFetch<AutoRun>(`/auto`, {
         method: "POST",
         token: authToken,
         body: JSON.stringify({
+          goal: needsGoalStep ? goal.trim() : goal.trim() || undefined,
           repoUrl:
             repoUrl.trim() ||
             (selectedFullName ? `https://github.com/${selectedFullName}` : undefined),
@@ -383,36 +489,36 @@ function AgentStartCoach() {
         </p>
         <h1 className="font-display text-2xl font-semibold tracking-tight">Start an agent</h1>
         <p className="text-sm text-muted-foreground">
-          Authorize GitHub, point at a repo, optionally constrain data, then launch.
+          Authorize GitHub, point at a repo, add a research goal if the repo has no brief, then launch.
         </p>
       </header>
 
       <ol className="flex flex-wrap gap-2">
-        {MOMENTS.map((label, i) => (
-          <li key={label}>
+        {steps.map((s, i) => (
+          <li key={s.id}>
             <button
               type="button"
-              disabled={i > moment && !canAdvance()}
+              disabled={i > stepIdx && !canAdvance()}
               onClick={() => {
-                if (i <= moment || (i === moment + 1 && canAdvance())) setMoment(i);
+                if (i <= stepIdx || (i === stepIdx + 1 && canAdvance())) setStepIdx(i);
               }}
               className={cn(
                 "rounded-full border px-3 py-1.5 text-xs transition",
-                i === moment
+                i === stepIdx
                   ? "border-primary bg-primary/15 text-foreground"
-                  : i < moment
+                  : i < stepIdx
                     ? "border-[hsl(var(--border-strong))] bg-[hsl(var(--elevated))] text-foreground"
                     : "border-[hsl(var(--border-subtle))] text-muted-foreground",
               )}
             >
-              {i + 1}. {label}
+              {i + 1}. {s.label}
             </button>
           </li>
         ))}
       </ol>
 
       <div className="tf-card min-h-[280px] space-y-5 p-5 sm:p-6">
-        {moment === 0 ? (
+        {stepId === "connect" ? (
           <section className="space-y-4">
             <h2 className="text-base font-semibold">Can we clone and push?</h2>
             <p className="text-sm text-muted-foreground">
@@ -482,7 +588,7 @@ function AgentStartCoach() {
           </section>
         ) : null}
 
-        {moment === 1 ? (
+        {stepId === "repo" ? (
           <section className="space-y-4">
             <h2 className="text-base font-semibold">Which codebase?</h2>
             <p className="text-sm text-muted-foreground">
@@ -663,10 +769,73 @@ function AgentStartCoach() {
                 </div>
               </div>
             ) : null}
+
+            {briefChecking ? (
+              <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Checking for TRAINFABRIC.md / AGENTS.md…
+              </p>
+            ) : briefProbe?.present && !briefProbe.isPlaceholder ? (
+              <p className="text-xs text-muted-foreground">
+                Found research brief
+                {briefProbe.sourceFile ? (
+                  <>
+                    {" "}
+                    in <code className="text-[10px]">{briefProbe.sourceFile}</code>
+                  </>
+                ) : null}
+                .
+              </p>
+            ) : (selectedFullName || isLikelyGitUrl(repoUrl)) && briefProbe ? (
+              <p className="text-xs text-amber-700 dark:text-amber-300">
+                No research brief in this repo
+                {briefProbe.isPlaceholder ? " (starter stub only)" : ""}. Next step: write a goal.
+              </p>
+            ) : null}
           </section>
         ) : null}
 
-        {moment === 2 ? (
+        {stepId === "goal" ? (
+          <section className="space-y-4">
+            <h2 className="text-base font-semibold">Research goal</h2>
+            <p className="text-sm text-muted-foreground">
+              This repo has no TRAINFABRIC.md / AGENTS.md brief
+              {briefProbe?.isPlaceholder ? " (only the starter stub)" : ""}. Write the campaign goal
+              — required to start. Optionally enrich it with AI into a full brief.
+            </p>
+            <div className="space-y-2">
+              <Label className="text-xs">Goal</Label>
+              <Textarea
+                value={goal}
+                onChange={(e) => setGoal(e.target.value)}
+                rows={8}
+                placeholder="e.g. Lower validation MAE on NYC taxi fares; keep prepare.py and protocol.yaml immutable…"
+                className="min-h-[160px] text-sm"
+              />
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[11px] text-muted-foreground">
+                  Passed to the agent as AUTORUN_GOAL (overrides missing repo brief).
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={enriching || goal.trim().length < 8 || !authToken}
+                  onClick={() => void enrichGoal()}
+                >
+                  {enriching ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5" />
+                  )}
+                  Enrich with AI
+                </Button>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        {stepId === "data" ? (
           <section className="space-y-4">
             <h2 className="text-base font-semibold">Constrain data? (optional)</h2>
             <p className="text-sm text-muted-foreground">
@@ -681,7 +850,7 @@ function AgentStartCoach() {
           </section>
         ) : null}
 
-        {moment === 3 ? (
+        {stepId === "launch" ? (
           <section className="space-y-4">
             <h2 className="text-base font-semibold">Ready to launch</h2>
             <dl className="tf-inset space-y-3 px-4 py-4 text-sm">
@@ -689,6 +858,20 @@ function AgentStartCoach() {
                 <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">Repo</dt>
                 <dd className="mt-0.5 font-medium">
                   {selectedFullName || repoShortName(repoUrl) || "—"} @ {branch || "main"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">Goal</dt>
+                <dd className="mt-0.5 text-muted-foreground">
+                  {needsGoalStep
+                    ? goal.trim()
+                      ? goal.trim().length > 140
+                        ? `${goal.trim().slice(0, 140)}…`
+                        : goal.trim()
+                      : "Required — write on the Goal step"
+                    : briefProbe?.sourceFile
+                      ? `From ${briefProbe.sourceFile}`
+                      : "From repo brief"}
                 </dd>
               </div>
               <div>
@@ -795,17 +978,17 @@ function AgentStartCoach() {
         <Button
           type="button"
           variant="ghost"
-          disabled={moment === 0}
-          onClick={() => setMoment((s) => Math.max(0, s - 1))}
+          disabled={stepIdx === 0}
+          onClick={() => setStepIdx((s) => Math.max(0, s - 1))}
         >
           <ChevronLeft className="h-4 w-4" />
           Back
         </Button>
-        {moment < MOMENTS.length - 1 ? (
+        {stepIdx < steps.length - 1 ? (
           <Button
             type="button"
             disabled={!canAdvance()}
-            onClick={() => setMoment((s) => Math.min(MOMENTS.length - 1, s + 1))}
+            onClick={() => setStepIdx((s) => Math.min(steps.length - 1, s + 1))}
           >
             Continue
             <ChevronRight className="h-4 w-4" />
@@ -813,7 +996,12 @@ function AgentStartCoach() {
         ) : (
           <Button
             type="button"
-            disabled={starting || !canAdvance() || (!selectedFullName && !isLikelyGitUrl(repoUrl))}
+            disabled={
+              starting ||
+              !canAdvance() ||
+              (!selectedFullName && !isLikelyGitUrl(repoUrl)) ||
+              (needsGoalStep && goal.trim().length < 12)
+            }
             onClick={() => void start()}
             className="bg-[hsl(var(--success))] text-[hsl(var(--success-foreground))] hover:bg-[hsl(var(--success))]/90"
           >
