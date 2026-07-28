@@ -8,7 +8,10 @@ metadata:
 
 # Autoresearch mutate (Box)
 
-You run inside a Trainfabric Box autorunner with **Cloudflare AI Gateway** (same stack as Hermes compute).
+You run inside a Trainfabric Box autorunner with the **same Hermes agent package**
+as the compute/query container (`app.hermes`) and Cloudflare AI Gateway.
+
+Prefer lakehouse insights via `tf prompt` / Hermes duckdb-analytics (CLI), not ad-hoc HTTP.
 
 ## Rules
 

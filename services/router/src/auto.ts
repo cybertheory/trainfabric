@@ -214,6 +214,10 @@ export async function createAutoRun(opts: {
           TF_API_URL: opts.tfApiUrl,
           TF_TOKEN: tfToken,
           TF_DATASET_ID: datasetId ?? "",
+          // Same names Hermes / tf CLI use on compute
+          TRAINFABRIC_API_URL: opts.tfApiUrl,
+          TRAINFABRIC_TOKEN: tfToken,
+          TRAINFABRIC_DATASET_ID: datasetId ?? "",
           AUTORUN_GOAL: goal ?? "",
           PROTOCOL_JSON: JSON.stringify(run.protocol),
           REPO_URL: run.repo.url,
@@ -226,7 +230,7 @@ export async function createAutoRun(opts: {
           COMPUTE_PROVIDER: compute.provider,
           MODAL_REF: compute.modalRef ?? "",
           RUNNER_ID: compute.runnerId ?? "",
-          // Hermes-parity: Cloudflare AI Gateway for in-Box mutate + viz agent
+          // Hermes (same Cloudflare AI Gateway as compute container)
           CF_ACCOUNT_ID: opts.env.CF_ACCOUNT_ID ?? "",
           CF_AI_GATEWAY_ID: opts.env.CF_AI_GATEWAY_ID ?? "default",
           CF_AI_GATEWAY_TOKEN: opts.env.CF_AI_GATEWAY_TOKEN ?? "",

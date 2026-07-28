@@ -229,12 +229,23 @@ def propose_mutate(
     results). Falls back to a deterministic touch if gateway is unavailable.
     """
     try:
-        from gateway import AIGatewayError, gateway_configured, mockable_chat
+        from app.hermes.gateway import AIGatewayError, gateway_configured, mockable_chat
     except ImportError:
-        import sys
+        try:
+            from gateway import AIGatewayError, gateway_configured, mockable_chat
+        except ImportError:
+            import sys
 
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from gateway import AIGatewayError, gateway_configured, mockable_chat  # type: ignore
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            sys.path.insert(0, str(Path.home() / "trainfabric"))
+            try:
+                from app.hermes.gateway import (  # type: ignore
+                    AIGatewayError,
+                    gateway_configured,
+                    mockable_chat,
+                )
+            except ImportError:
+                from gateway import AIGatewayError, gateway_configured, mockable_chat  # type: ignore
 
     if not gateway_configured():
         return _fallback_touch(

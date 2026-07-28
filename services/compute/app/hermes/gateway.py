@@ -39,6 +39,12 @@ def gateway_config() -> dict[str, str]:
     }
 
 
+def gateway_configured() -> bool:
+    """True when Cloudflare AI Gateway env is present (Box + compute)."""
+    cfg = gateway_config()
+    return bool(cfg["token"] and cfg["base_url"])
+
+
 def chat_completions(
     messages: list[dict[str, Any]],
     tools: Optional[list[dict[str, Any]]] = None,

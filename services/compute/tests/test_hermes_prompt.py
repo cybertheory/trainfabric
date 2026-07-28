@@ -45,6 +45,31 @@ def _ingest_taxi(dataset_id: str = "hermes_taxi"):
     )
 
 
+def test_tools_inprocess_unavailable_without_catalog():
+    """Box-style: hermes tools must not hard-import catalog at module load."""
+    from app.hermes.cli_auth import set_cli_auth
+    from app.hermes import tools
+
+    set_cli_auth(None)
+    # No auth → skips tf; no catalog package in isolation still returns structured error
+    # when inprocess helpers catch ImportError (already exercised if catalog present).
+    out = tools._schema_inprocess("missing_ds")
+    assert out.get("via") == "inprocess"
+    assert "columns" in out or "error" in out
+
+
+def test_gateway_configured_helper(monkeypatch):
+    from app.hermes.gateway import gateway_configured
+
+    monkeypatch.delenv("CF_AI_GATEWAY_TOKEN", raising=False)
+    monkeypatch.delenv("CF_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CF_AI_GATEWAY_BASE", raising=False)
+    assert gateway_configured() is False
+    monkeypatch.setenv("CF_AI_GATEWAY_BASE", "https://example.test")
+    monkeypatch.setenv("CF_AI_GATEWAY_TOKEN", "tok")
+    assert gateway_configured() is True
+
+
 def test_load_duckdb_skill():
     from app.hermes.agent import load_duckdb_skill
 

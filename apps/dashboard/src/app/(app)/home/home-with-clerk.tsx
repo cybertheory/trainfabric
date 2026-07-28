@@ -21,8 +21,24 @@ function HomeAuthed() {
       setToken(null);
       return;
     }
-    void getToken().then((t) => setToken(t ?? null));
+    let cancelled = false;
+    const refresh = () => {
+      void getToken().then((t) => {
+        if (!cancelled) setToken(t ?? null);
+      });
+    };
+    refresh();
+    const iv = window.setInterval(refresh, 50_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(iv);
+    };
   }, [getToken, isSignedIn]);
 
-  return <SocialFeedHome token={token} />;
+  return (
+    <SocialFeedHome
+      token={token}
+      getToken={async () => (await getToken()) ?? null}
+    />
+  );
 }

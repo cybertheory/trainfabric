@@ -8,8 +8,9 @@ The **GPU trial worker** lives in a separate public repo (clone and run on any G
 
 | Artifact | Where | Role |
 |----------|-------|------|
-| `autorunner_daemon.py` (this folder) | Box sandbox | Clone research repo, load brief, discover datasets, enqueue trials, ratchet git |
-| `gateway.py` + `agent_mutate.py` | Box sandbox | Hermes-parity Cloudflare AI Gateway mutate loop + `artifacts/viz/` publish |
+| `app/hermes/` + `app/tf_cli/` (from compute) | Box golden image | **Same Hermes agent + `tf` CLI** as the query container |
+| `autorunner_daemon.py` (this folder) | Box sandbox | Clone research repo, load brief, discover/bind via `tf`, Hermes prompt, enqueue trials via `tf auto trial`, ratchet git |
+| `gateway.py` + `agent_mutate.py` | Box sandbox | Mutate loop (uses `app.hermes.gateway`) + `artifacts/viz/` publish |
 | `skills/*` | Box sandbox | `autoresearch-mutate`, `publish-viz-github`, `trainfabric-cli` |
 | [trainfabric-gpu-runner](https://github.com/cybertheory/trainfabric-gpu-runner) | Your GPU / Spark / rented box | Heartbeat, claim, run entrypoint, report score |
 
@@ -28,15 +29,17 @@ cd services/router
 printf '%s' 'bx_…' | wrangler secret put BOX_TEMPLATE_ID
 ```
 
-Each `POST /auto` mints a durable `tfak_*` API key for the owner (`autorun:{id}`), injects it as `TF_TOKEN` into the fork, and revokes it when the campaign is cancelled or completes its trial budget. Soft-refresh still curls latest autorunner files from `main` after fork so you can iterate without rebuilding the image every time.
+Each `POST /auto` mints a durable `tfak_*` API key for the owner (`autorun:{id}`), injects it as `TF_TOKEN` / `TRAINFABRIC_TOKEN` into the fork, and revokes it when the campaign is cancelled or completes its trial budget. Soft-refresh curls latest autorunner + Hermes/`tf` files from `main` after fork.
 
 ## Box daemon env
 
 Started with env from the router on `POST /auto`:
 
-`AUTORUN_ID`, `TF_API_URL`, `TF_TOKEN` (campaign `tfak_*`), `TF_DATASET_ID` (optional), `AUTORUN_GOAL` (optional override), `PROTOCOL_JSON`, `REPO_URL`, `REPO_FULL_NAME`, `REPO_BRANCH`, `GITHUB_TOKEN` (short-lived App installation token), `GITHUB_INSTALLATION_ID`.
+`AUTORUN_ID`, `TF_API_URL` / `TRAINFABRIC_API_URL`, `TF_TOKEN` / `TRAINFABRIC_TOKEN` (campaign `tfak_*`), `TF_DATASET_ID` (optional), `AUTORUN_GOAL` (optional override), `PROTOCOL_JSON`, `REPO_URL`, `REPO_FULL_NAME`, `REPO_BRANCH`, `GITHUB_TOKEN` (short-lived App installation token), `GITHUB_INSTALLATION_ID`.
 
-Cloudflare AI Gateway (Hermes parity): `CF_ACCOUNT_ID`, `CF_AI_GATEWAY_ID`, `CF_AI_GATEWAY_TOKEN`, optional `CF_AI_GATEWAY_BASE` / `CF_AI_MODEL`. Injected by the router from Worker secrets/vars when provisioning Box.
+Cloudflare AI Gateway (same Hermes compute secrets): `CF_ACCOUNT_ID`, `CF_AI_GATEWAY_ID`, `CF_AI_GATEWAY_TOKEN`, optional `CF_AI_GATEWAY_BASE` / `CF_AI_MODEL`. Injected by the router when provisioning Box.
+
+The daemon uses **`tf` only** for control-plane calls (discover, bind, heartbeat, trial enqueue, social, local Hermes `tf prompt`). Do not add hand-rolled urllib REST.
 
 On push failure the daemon calls `POST /auto/:id/github-credentials` to refresh the token.
 

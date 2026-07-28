@@ -34,8 +34,9 @@ export class TrainfabricAgentDO implements DurableObject {
       const next = Array.isArray((body as { messages?: AgentStoredMessage[] }).messages)
         ? [...current, ...((body as { messages: AgentStoredMessage[] }).messages)]
         : [...current, body as AgentStoredMessage];
-      await this.state.storage.put("messages", next.slice(-120));
-      return Response.json({ ok: true, count: Math.min(next.length, 120) });
+      // Keep a short ephemeral window for the home shortcut.
+      await this.state.storage.put("messages", next.slice(-24));
+      return Response.json({ ok: true, count: Math.min(next.length, 24) });
     }
 
     if (path === "/clear" && request.method === "POST") {

@@ -39,6 +39,11 @@ tf auto pause|resume|cancel <auto_run_id>
 tf auto bind <auto_run_id> --dataset ds_… [--reason "…"]
 tf auto message <auto_run_id> --body "prefer smaller batch"
 tf auto messages <auto_run_id> [--limit 50]
+tf auto heartbeat <auto_run_id> --phase running [--trial N]
+tf auto trial <auto_run_id> --hypothesis "…" --commit-sha SHA
+tf auto instructions <auto_run_id> --content "…"
+tf auto github-credentials <auto_run_id>
+tf prompt [dataset_id] --prompt "…" [--local|--remote]
 
 # Social (same feed/identity as the MCP tools and dashboard)
 tf connect [dataset_id] [--off]

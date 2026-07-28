@@ -319,11 +319,11 @@ def test_tools_tf_subprocess_edge_cases():
 
     set_cli_auth(None)
 
-    with patch("app.hermes.tools.execute_query", side_effect=RuntimeError("exec fail")):
+    with patch("app.query.execute_query", side_effect=RuntimeError("exec fail")):
         q2 = tools.run_query("x", columns=["a"])
         assert "exec fail" in q2.get("error", "")
 
-    with patch("app.hermes.tools.sample_rows_fn", side_effect=RuntimeError("no sample")):
+    with patch("app.query.sample", side_effect=RuntimeError("no sample")):
         bad = tools.sample_rows("missing_ds", 1)
         assert "error" in bad
 
@@ -497,6 +497,244 @@ def test_tf_auto_commands(monkeypatch):
 
         assert runner.invoke(app, ["auto", "messages", "auto_1", "--limit", "10"]).exit_code == 0
         assert "messages?limit=10" in FakeClient.last["url"]
+
+        assert (
+            runner.invoke(
+                app,
+                ["auto", "heartbeat", "auto_1", "--phase", "running", "--trial", "2", "-m", "ok"],
+            ).exit_code
+            == 0
+        )
+        assert FakeClient.last["url"].endswith("/auto/auto_1/heartbeat")
+        assert FakeClient.last["json"]["phase"] == "running"
+        assert FakeClient.last["json"]["trial"] == 2
+
+        assert (
+            runner.invoke(
+                app,
+                [
+                    "auto",
+                    "trial",
+                    "auto_1",
+                    "--hypothesis",
+                    "shrink lr",
+                    "--commit-sha",
+                    "abc123",
+                ],
+            ).exit_code
+            == 0
+        )
+        assert FakeClient.last["url"].endswith("/auto/auto_1/trials")
+        assert FakeClient.last["json"]["commitSha"] == "abc123"
+
+        assert (
+            runner.invoke(
+                app,
+                [
+                    "auto",
+                    "instructions",
+                    "auto_1",
+                    "--content",
+                    "Improve val_bpb",
+                    "--source-file",
+                    "TRAINFABRIC.md",
+                ],
+            ).exit_code
+            == 0
+        )
+        assert FakeClient.last["url"].endswith("/auto/auto_1/instructions")
+
+        assert runner.invoke(app, ["auto", "github-credentials", "auto_1"]).exit_code == 0
+        assert FakeClient.last["url"].endswith("/auto/auto_1/github-credentials")
+
+
+def test_tf_prompt_remote(monkeypatch):
+    from app.tf_cli import app
+
+    monkeypatch.setenv("TRAINFABRIC_API_URL", "https://api.example")
+    monkeypatch.setenv("TRAINFABRIC_TOKEN", "tok")
+    monkeypatch.setenv("TRAINFABRIC_DATASET_ID", "ds_1")
+
+    runner = CliRunner()
+    FakeClient = _fake_client(200, {"explanation": "use pickup_date", "columns": ["fare"]})
+
+    with patch("app.tf_cli.httpx.Client", FakeClient):
+        result = runner.invoke(
+            app, ["prompt", "ds_1", "--prompt", "fares on 2024-01-01", "--remote"]
+        )
+    assert result.exit_code == 0
+    assert FakeClient.last["url"].endswith("/datasets/ds_1/prompt")
+    assert FakeClient.last["json"]["prompt"] == "fares on 2024-01-01"
+
+
+def test_tf_prompt_local_hermes(monkeypatch):
+    from app.tf_cli import app
+
+    monkeypatch.setenv("TRAINFABRIC_API_URL", "https://api.example")
+    monkeypatch.setenv("TRAINFABRIC_TOKEN", "tok")
+
+    class FakeOut:
+        columns = ["fare_amount"]
+        filter = "pickup_date = '2024-01-01'"
+        limit = 100
+        sql = "select …"
+        estimate = {"case": "A"}
+        explanation = "partition filter"
+        executed = True
+        result = {"rowCount": 1}
+        model = "mock"
+
+    runner = CliRunner()
+    with patch("app.hermes.run_hermes_prompt", return_value=FakeOut()):
+        result = runner.invoke(
+            app, ["prompt", "ds_1", "--prompt", "fares", "--local", "--no-execute"]
+        )
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert data["via"] == "hermes_local"
+    assert data["explanation"] == "partition filter"
+
+
+def test_credentials_accept_tf_aliases(monkeypatch):
+    from app.tf_cli.credentials import resolve_api_url, resolve_token
+
+    monkeypatch.delenv("TRAINFABRIC_API_URL", raising=False)
+    monkeypatch.delenv("TRAINFABRIC_TOKEN", raising=False)
+    monkeypatch.setenv("TF_API_URL", "https://box.example")
+    monkeypatch.setenv("TF_TOKEN", "tfak_box")
+    assert resolve_api_url() == "https://box.example"
+    assert resolve_token() == "tfak_box"
+
+
+def test_credentials_save_load(monkeypatch, tmp_path):
+    from app.tf_cli import credentials as cred
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert cred.load_credentials() == {}
+    cred.save_credentials({"api_url": "https://x", "access_token": "tok"})
+    assert cred.credentials_path().is_file()
+    loaded = cred.load_credentials()
+    assert loaded["access_token"] == "tok"
+    monkeypatch.delenv("TRAINFABRIC_API_URL", raising=False)
+    monkeypatch.delenv("TF_API_URL", raising=False)
+    monkeypatch.delenv("TRAINFABRIC_TOKEN", raising=False)
+    monkeypatch.delenv("TF_TOKEN", raising=False)
+    assert cred.resolve_api_url() == "https://x"
+    assert cred.resolve_token() == "tok"
+
+
+def test_tf_social_and_profile(monkeypatch):
+    from app.tf_cli import app
+
+    monkeypatch.setenv("TRAINFABRIC_API_URL", "https://api.example")
+    monkeypatch.setenv("TRAINFABRIC_TOKEN", "tok")
+    monkeypatch.setenv("TRAINFABRIC_DATASET_ID", "ds_1")
+    runner = CliRunner()
+    FakeClient = _fake_client(200, {"ok": True})
+    with patch("app.tf_cli.httpx.Client", FakeClient):
+        assert runner.invoke(app, ["social", "feed", "--limit", "5"]).exit_code == 0
+        assert runner.invoke(app, ["profile", "show"]).exit_code == 0
+        assert (
+            runner.invoke(
+                app, ["profile", "set", "--name", "bot", "--username", "bot"]
+            ).exit_code
+            == 0
+        )
+        assert (
+            runner.invoke(
+                app,
+                [
+                    "social",
+                    "post",
+                    "ds_1",
+                    "--body",
+                    "hi",
+                    "--author-name",
+                    "bot",
+                    "--findings",
+                    "{}",
+                ],
+            ).exit_code
+            == 0
+        )
+        assert runner.invoke(app, ["connect", "ds_1"]).exit_code == 0
+        assert runner.invoke(app, ["auth", "status"]).exit_code == 0
+
+
+def test_tf_prompt_local_import_error(monkeypatch):
+    from app.tf_cli import app
+
+    monkeypatch.setenv("TRAINFABRIC_API_URL", "https://api.example")
+    monkeypatch.setenv("TRAINFABRIC_TOKEN", "tok")
+    runner = CliRunner()
+    with patch.dict("sys.modules", {"app.hermes": None}):
+        # Force ImportError inside prompt_cmd's local hermes import
+        import builtins
+
+        real_import = builtins.__import__
+
+        def boom(name, *a, **k):
+            if name == "app.hermes" or name.startswith("app.hermes"):
+                raise ImportError("no hermes")
+            return real_import(name, *a, **k)
+
+        with patch("builtins.__import__", side_effect=boom):
+            result = runner.invoke(app, ["prompt", "ds_1", "--prompt", "x", "--local"])
+    assert result.exit_code == 1
+
+
+def test_tf_prompt_remote_with_snapshot(monkeypatch):
+    from app.tf_cli import app
+
+    monkeypatch.setenv("TRAINFABRIC_API_URL", "https://api.example")
+    monkeypatch.setenv("TRAINFABRIC_TOKEN", "tok")
+    runner = CliRunner()
+    FakeClient = _fake_client(200, {"ok": True})
+    with patch("app.tf_cli.httpx.Client", FakeClient):
+        result = runner.invoke(
+            app,
+            ["prompt", "ds_1", "--prompt", "fares", "--remote", "--snapshot", "snap_1"],
+        )
+    assert result.exit_code == 0
+    assert FakeClient.last["json"]["snapshot"] == "snap_1"
+
+
+def test_hermes_gateway_chat_completions(monkeypatch):
+    from app.hermes import gateway
+
+    monkeypatch.setenv("CF_AI_GATEWAY_BASE", "https://gw.example")
+    monkeypatch.setenv("CF_AI_GATEWAY_TOKEN", "tok")
+    monkeypatch.setenv("CF_AI_GATEWAY_ID", "g1")
+
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"choices": [{"message": {"content": "hi"}}]}
+
+        text = ""
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, url, headers=None, json=None):
+            FakeClient.last = {"url": url, "headers": headers, "json": json}
+            return FakeResp()
+
+    with patch("app.hermes.gateway.httpx.Client", FakeClient):
+        out = gateway.chat_completions([{"role": "user", "content": "hi"}], tools=[{"type": "function"}])
+    assert out["choices"]
+    assert "cf-aig-gateway-id" in FakeClient.last["headers"]
+
+    monkeypatch.setenv("CF_AI_GATEWAY_MOCK_JSON", '{"mocked": true}')
+    assert gateway.mockable_chat([{"role": "user", "content": "x"}]) == {"mocked": True}
 
 
 def test_tf_auto_start_requires_repo(monkeypatch):

@@ -2,8 +2,9 @@
 /**
  * Build the Trainfabric autorunner golden Box template.
  *
- * Creates a noEnv box, installs the Hermes-parity autorunner stack (no secrets),
- * warms boot paths, stops it (snapshot = template), prints BOX_TEMPLATE_ID.
+ * Creates a noEnv box, installs Hermes (same package as compute) + `tf` CLI +
+ * autorunner daemon stack (no secrets), warms boot paths, stops it
+ * (snapshot = template), prints BOX_TEMPLATE_ID.
  *
  * Usage:
  *   BOX_API_KEY=… node scripts/box-golden-bootstrap.mjs
@@ -13,9 +14,9 @@
  *   cd services/router && printf '%s' "$BOX_TEMPLATE_ID" | wrangler secret put BOX_TEMPLATE_ID
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 
 const BOX_API_BASE = (process.env.BOX_API_BASE || "https://ascii.dev/api/box/v1").replace(
   /\/$/,
@@ -23,6 +24,7 @@ const BOX_API_BASE = (process.env.BOX_API_BASE || "https://ascii.dev/api/box/v1"
 );
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const AUTORUNNER = join(ROOT, "services/autorunner");
+const COMPUTE_APP = join(ROOT, "services/compute/app");
 const NAME = "trainfabric-autorunner-golden";
 
 function loadDevVars() {
@@ -93,6 +95,32 @@ function readLocal(rel) {
   return readFileSync(join(AUTORUNNER, rel), "utf8");
 }
 
+function walkFiles(dir, base = dir) {
+  const out = [];
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name);
+    const st = statSync(full);
+    if (st.isDirectory()) out.push(...walkFiles(full, base));
+    else if (st.isFile()) out.push({ abs: full, rel: relative(base, full).replaceAll("\\", "/") });
+  }
+  return out;
+}
+
+async function writeBoxPath(boxId, path, content) {
+  const rel = path.replace(/^~\//, "");
+  try {
+    await writeFile(boxId, rel, content);
+    console.log("  wrote", path);
+  } catch (e) {
+    console.warn("  writeFile failed for", path, String(e.message), "— shell base64 fallback");
+    const b64 = Buffer.from(content, "utf8").toString("base64");
+    await command(
+      boxId,
+      `mkdir -p "$(dirname ${path})" && echo '${b64}' | base64 -d > ${path}`,
+    );
+  }
+}
+
 console.log("Creating golden Box (noEnv, no TTL)…");
 const created = await boxRequest("POST", "/boxes", {
   ttlSeconds: null,
@@ -108,8 +136,11 @@ try {
   console.warn("Could not rename box (PATCH name unsupported); continuing");
 }
 
-console.log("Installing stack…");
-await command(boxId, "mkdir -p ~/trainfabric/inbox ~/trainfabric/skills");
+console.log("Installing Hermes + tf CLI + autorunner stack…");
+await command(
+  boxId,
+  "mkdir -p ~/trainfabric/inbox ~/trainfabric/skills ~/trainfabric/app/hermes/skills ~/trainfabric/bin ~/.local/bin",
+);
 
 const files = [
   ["~/trainfabric/autorunner_daemon.py", readLocal("autorunner_daemon.py")],
@@ -126,44 +157,58 @@ const files = [
     readLocal("skills/publish-viz-github/SKILL.md"),
   ],
   ["~/trainfabric/skills/trainfabric-cli.md", readLocal("skills/trainfabric-cli/SKILL.md")],
+  // Lightweight app package so `import app.hermes` / `python -m app.tf_cli` work.
+  ["~/trainfabric/app/__init__.py", "# Box golden — Hermes + tf only\n"],
 ];
 
 for (const [path, content] of files) {
-  // Box files API wants paths relative to the work directory (not ~/ or absolute).
-  const rel = path.replace(/^~\//, "");
-  try {
-    await writeFile(boxId, rel, content);
-    console.log("  wrote", path);
-  } catch (e) {
-    console.warn("  writeFile failed for", path, String(e.message), "— shell base64 fallback");
-    const b64 = Buffer.from(content, "utf8").toString("base64");
-    await command(
-      boxId,
-      `mkdir -p "$(dirname ${path})" && echo '${b64}' | base64 -d > ${path}`,
-    );
+  await writeBoxPath(boxId, path, content);
+}
+
+// Same Hermes agent + tf CLI as the compute/query container.
+for (const pkg of ["hermes", "tf_cli"]) {
+  const root = join(COMPUTE_APP, pkg);
+  for (const f of walkFiles(root)) {
+    const content = readFileSync(f.abs, "utf8");
+    await writeBoxPath(boxId, `~/trainfabric/app/${pkg}/${f.rel}`, content);
   }
 }
 
+const tfWrapper = `#!/bin/sh
+export PYTHONPATH="$HOME/trainfabric\${PYTHONPATH:+:\$PYTHONPATH}"
+export HERMES_SKILLS_DIR="\${HERMES_SKILLS_DIR:-$HOME/trainfabric/app/hermes/skills}"
+# Box campaign env aliases
+if [ -n "\$TF_API_URL" ] && [ -z "\$TRAINFABRIC_API_URL" ]; then export TRAINFABRIC_API_URL="\$TF_API_URL"; fi
+if [ -n "\$TF_TOKEN" ] && [ -z "\$TRAINFABRIC_TOKEN" ]; then export TRAINFABRIC_TOKEN="\$TF_TOKEN"; fi
+if [ -n "\$TF_DATASET_ID" ] && [ -z "\$TRAINFABRIC_DATASET_ID" ]; then export TRAINFABRIC_DATASET_ID="\$TF_DATASET_ID"; fi
+exec python3 -m app.tf_cli "\$@"
+`;
+await writeBoxPath(boxId, "~/trainfabric/bin/tf", tfWrapper);
 await command(
   boxId,
-  "python3 -m pip install --user -q httpx matplotlib 2>/dev/null || pip3 install --user -q httpx matplotlib",
+  "chmod +x ~/trainfabric/bin/tf && ln -sfn ~/trainfabric/bin/tf ~/.local/bin/tf && ln -sfn ~/trainfabric/bin/tf /usr/local/bin/tf 2>/dev/null || true",
 );
 
-console.log("Warm boot (prefetch)…");
 await command(
   boxId,
-  'cd ~/trainfabric && python3 -c "import gateway; import agent_mutate; print(\'ok\')"',
+  "python3 -m pip install --user -q httpx matplotlib typer 2>/dev/null || pip3 install --user -q httpx matplotlib typer",
+);
+
+console.log("Warm boot (Hermes + tf)…");
+await command(
+  boxId,
+  'export PYTHONPATH="$HOME/trainfabric${PYTHONPATH:+:$PYTHONPATH}" PATH="$HOME/trainfabric/bin:$HOME/.local/bin:$PATH" && cd ~/trainfabric && python3 -c "from app.hermes import run_hermes_prompt; from app.hermes.gateway import gateway_configured; import agent_mutate; print(\'hermes_ok\', gateway_configured())"',
 );
 await command(
   boxId,
-  "python3 -m py_compile ~/trainfabric/autorunner_daemon.py ~/trainfabric/chat_shim.py ~/trainfabric/chat_reply.py ~/trainfabric/gateway.py",
+  'export PATH="$HOME/trainfabric/bin:$HOME/.local/bin:$PATH" PYTHONPATH="$HOME/trainfabric${PYTHONPATH:+:$PYTHONPATH}" && tf --help >/dev/null && python3 -m py_compile ~/trainfabric/autorunner_daemon.py ~/trainfabric/chat_shim.py ~/trainfabric/chat_reply.py ~/trainfabric/app/hermes/agent.py ~/trainfabric/app/tf_cli/__init__.py',
 );
 
 console.log("Stopping box to snapshot template…");
 await boxRequest("POST", `/boxes/${boxId}/stop`);
 
 console.log(`
-Golden template ready.
+Golden template ready (Hermes + tf CLI).
 
   BOX_TEMPLATE_ID=${boxId}
 
@@ -177,4 +222,5 @@ Or add to .dev.vars for local wrangler:
   BOX_TEMPLATE_ID=${boxId}
 
 Every AutoRun will fork this box (noEnv) and inject campaign env + tfak_*.
+Daemon uses \`tf\` (not raw urllib) so Box stays on the same platform surface as MCP.
 `);

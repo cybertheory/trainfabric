@@ -229,7 +229,7 @@ app.use(
       "Mcp-Session-Id",
       "Last-Event-ID",
     ],
-    exposeHeaders: ["Mcp-Session-Id"],
+    exposeHeaders: ["Mcp-Session-Id", "x-vercel-ai-ui-message-stream"],
   }),
 );
 
@@ -324,35 +324,95 @@ function errResponse(e: unknown): Response {
   return Response.json({ error: msg }, { status: 500 });
 }
 
+const UI_MESSAGE_STREAM_HEADERS = {
+  "content-type": "text/event-stream; charset=utf-8",
+  "cache-control": "no-cache",
+  connection: "keep-alive",
+  "x-vercel-ai-ui-message-stream": "v1",
+  "x-accel-buffering": "no",
+} as const;
+
 /**
  * Emit a Vercel AI SDK UI message stream (v5 SSE protocol) for `useChat`.
  * Chunks the assistant reply into text-deltas so the client renders progressively.
+ * When `text` is a Promise, starts the SSE immediately and sends keepalives until
+ * the reply is ready — avoids proxy/browser timeouts on long LLM tool loops.
  */
-function streamAiMessage(messageId: string, text: string): Response {
+function streamAiMessage(messageId: string, text: string | Promise<string>): Response {
   const encoder = new TextEncoder();
   const send = (obj: unknown) => encoder.encode(`data: ${JSON.stringify(obj)}\n\n`);
   const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(send({ type: "start" }));
-      controller.enqueue(send({ type: "text-start", id: messageId }));
-      const words = text.split(/(\s+)/);
-      for (const w of words) {
-        if (w) controller.enqueue(send({ type: "text-delta", id: messageId, delta: w }));
+    async start(controller) {
+      let keepalive: ReturnType<typeof setInterval> | undefined;
+      try {
+        controller.enqueue(send({ type: "start", messageId }));
+        keepalive = setInterval(() => {
+          try {
+            controller.enqueue(encoder.encode(": keepalive\n\n"));
+          } catch {
+            /* closed */
+          }
+        }, 8_000);
+        const resolved = await Promise.resolve(text);
+        clearInterval(keepalive);
+        keepalive = undefined;
+        controller.enqueue(send({ type: "text-start", id: messageId }));
+        const words = resolved.split(/(\s+)/);
+        for (const w of words) {
+          if (w) controller.enqueue(send({ type: "text-delta", id: messageId, delta: w }));
+        }
+        controller.enqueue(send({ type: "text-end", id: messageId }));
+        controller.enqueue(send({ type: "finish", finishReason: "stop" }));
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      } catch (e) {
+        if (keepalive) clearInterval(keepalive);
+        const errorText = e instanceof Error ? e.message : String(e);
+        try {
+          controller.enqueue(send({ type: "error", errorText }));
+          controller.enqueue(send({ type: "finish", finishReason: "error" }));
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        } catch {
+          /* closed */
+        }
       }
-      controller.enqueue(send({ type: "text-end", id: messageId }));
-      controller.enqueue(send({ type: "finish" }));
-      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-      controller.close();
     },
   });
-  return new Response(stream, {
-    headers: {
-      "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-cache",
-      connection: "keep-alive",
-      "x-vercel-ai-ui-message-stream": "v1",
-    },
-  });
+  return new Response(stream, { headers: { ...UI_MESSAGE_STREAM_HEADERS } });
+}
+
+/** Pull the latest user text from an AI SDK `useChat` request body. */
+function extractChatUserContent(body: {
+  messages?: Array<{
+    role: string;
+    content?: unknown;
+    parts?: Array<{ type: string; text?: string }>;
+  }>;
+  content?: unknown;
+}): string {
+  const fromUnknown = (v: unknown): string => {
+    if (typeof v === "string") return v;
+    if (Array.isArray(v)) {
+      return v
+        .map((p) => {
+          if (typeof p === "string") return p;
+          if (p && typeof p === "object" && "text" in p) return String((p as { text?: unknown }).text ?? "");
+          return "";
+        })
+        .join("");
+    }
+    return "";
+  };
+  let content = fromUnknown(body.content);
+  if (!content.trim() && Array.isArray(body.messages)) {
+    const last = [...body.messages].reverse().find((m) => m.role === "user");
+    content =
+      fromUnknown(last?.content) ||
+      last?.parts?.filter((p) => p.type === "text").map((p) => p.text ?? "").join("") ||
+      "";
+  }
+  return content.trim();
 }
 
 app.get("/health", (c) =>
@@ -1221,28 +1281,24 @@ app.post("/agent/messages/stream", async (c) => {
     const body = (await c.req.json()) as {
       messages?: Array<{
         role: string;
-        content?: string;
+        content?: unknown;
         parts?: Array<{ type: string; text?: string }>;
       }>;
-      content?: string;
+      content?: unknown;
     };
-    let content = body.content ?? "";
-    if (!content && Array.isArray(body.messages)) {
-      const last = [...body.messages].reverse().find((m) => m.role === "user");
-      content =
-        last?.content ??
-        last?.parts?.filter((p) => p.type === "text").map((p) => p.text ?? "").join("") ??
-        "";
-    }
-    content = content.trim();
+    const content = extractChatUserContent(body);
     if (!content) return c.json({ error: "message required" }, 400);
 
     const stub = agentDoStub(c.env, gate.identity.subject);
-    const histRes = await stub.fetch("https://agent/messages?limit=40");
+    // Short window — home agent is an ephemeral shortcut, not a long archive.
+    const histRes = await stub.fetch("https://agent/messages?limit=8");
     const histJson = (await histRes.json()) as { messages?: AgentStoredMessage[] };
-    const prior = (histJson.messages ?? []).filter(
-      (m) => m.role === "user" || m.role === "assistant" || m.role === "system",
-    );
+    const prior = (histJson.messages ?? [])
+      .filter((m) => m.role === "user" || m.role === "assistant" || m.role === "system")
+      .map((m) => ({
+        ...m,
+        content: m.content.length > 4000 ? `${m.content.slice(0, 4000)}…` : m.content,
+      }));
 
     const userMsg: AgentStoredMessage = {
       id: `msg_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`,
@@ -1263,29 +1319,34 @@ app.post("/agent/messages/stream", async (c) => {
       executionCtx: c.executionCtx,
     });
 
-    const replyText = await runTrainfabricAgentTurn(
-      c.env,
-      mcp,
-      prior.map((m) => ({
-        role: m.role as "user" | "assistant" | "system",
-        content: m.content,
-      })),
-      content,
-    );
+    const assistantId = `msg_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    // Start SSE immediately; run the LLM turn while keepalives hold the connection.
+    const replyPromise = (async () => {
+      const replyText = await runTrainfabricAgentTurn(
+        c.env,
+        mcp,
+        prior.map((m) => ({
+          role: m.role as "user" | "assistant" | "system",
+          content: m.content,
+        })),
+        content.slice(0, 800),
+        { maxSteps: 4 },
+      );
+      const assistantMsg: AgentStoredMessage = {
+        id: assistantId,
+        role: "assistant",
+        content: replyText,
+        createdAt: Date.now(),
+      };
+      await stub.fetch("https://agent/append", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(assistantMsg),
+      });
+      return replyText;
+    })();
 
-    const assistantMsg: AgentStoredMessage = {
-      id: `msg_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`,
-      role: "assistant",
-      content: replyText,
-      createdAt: Date.now(),
-    };
-    await stub.fetch("https://agent/append", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(assistantMsg),
-    });
-
-    return streamAiMessage(assistantMsg.id, assistantMsg.content);
+    return streamAiMessage(assistantId, replyPromise);
   } catch (e) {
     return errResponse(e);
   }
@@ -2868,18 +2929,11 @@ app.post("/auto/:id/messages/stream", async (c) => {
     const denied = requireAutoRunOwner(run, identity);
     if (denied) return denied;
     const body = (await c.req.json()) as {
-      messages?: Array<{ role: string; content?: string; parts?: Array<{ type: string; text?: string }> }>;
-      content?: string;
+      messages?: Array<{ role: string; content?: unknown; parts?: Array<{ type: string; text?: string }> }>;
+      content?: unknown;
     };
     // useChat sends the full message list; take the last user message.
-    let content = body.content ?? "";
-    if (!content && Array.isArray(body.messages)) {
-      const last = [...body.messages].reverse().find((m) => m.role === "user");
-      content =
-        last?.content ??
-        last?.parts?.filter((p) => p.type === "text").map((p) => p.text ?? "").join("") ??
-        "";
-    }
+    const content = extractChatUserContent(body);
     const out = await postAutoMessage({
       store,
       box: boxClientFromEnv(c.env),

@@ -1,4 +1,8 @@
-"""Hermes DuckDB tools — prefer `tf` CLI (user-scoped REST) when auth present."""
+"""Hermes DuckDB tools — prefer `tf` CLI (platform surface) when auth present.
+
+On Box / golden images, only the `tf` path is available (no local Iceberg catalog).
+In-process catalog/query is a compute-container fallback via lazy imports.
+"""
 
 from __future__ import annotations
 
@@ -8,9 +12,6 @@ import os
 import subprocess
 from typing import Any, Optional
 
-from .. import catalog as catalog_mod
-from ..query import QueryRequest, execute_query, sample as sample_rows_fn
-from ..scan_plan import ScanPlanRequest, scan_plan
 from .cli_auth import get_cli_auth
 
 logger = logging.getLogger("compute.hermes.tools")
@@ -72,10 +73,23 @@ def _run_tf(args: list[str]) -> Optional[dict[str, Any]]:
 
 
 def _schema_inprocess(dataset_id: str, namespace: str = "default") -> dict[str, Any]:
-    cat = catalog_mod.get_catalog()
-    ident = _identifier(dataset_id, namespace)
-    table = cat.load_table(ident)
-    schema = table.schema()
+    try:
+        from .. import catalog as catalog_mod
+        from ..query import sample as sample_rows_fn
+    except ImportError:  # pragma: no cover - Box golden without compute catalog
+        return {
+            "error": "in-process catalog unavailable — set TRAINFABRIC_TOKEN and use tf CLI",
+            "via": "inprocess",
+        }
+
+    try:
+        cat = catalog_mod.get_catalog()
+        ident = _identifier(dataset_id, namespace)
+        table = cat.load_table(ident)
+        schema = table.schema()
+    except Exception as e:
+        return {"error": str(e), "via": "inprocess"}
+
     partition_names: list[str] = []
     try:
         spec = table.spec()
@@ -173,6 +187,14 @@ def estimate_query(
             tf = {**tf, "case": "A" if tier == "A" else ("B" if tier == "B" else tier)}
         return tf
 
+    try:
+        from ..scan_plan import ScanPlanRequest, scan_plan
+    except ImportError:  # pragma: no cover - Box golden without compute catalog
+        return {
+            "error": "in-process scan_plan unavailable — set TRAINFABRIC_TOKEN and use tf CLI",
+            "via": "inprocess",
+        }
+
     plan = scan_plan(
         ScanPlanRequest(
             dataset_id=dataset_id,
@@ -212,6 +234,17 @@ def run_query(
         return tf
 
     try:
+        from ..query import QueryRequest, execute_query
+    except ImportError:  # pragma: no cover - Box golden without compute catalog
+        return {
+            "error": "in-process query unavailable — set TRAINFABRIC_TOKEN and use tf CLI",
+            "columns": columns,
+            "filter": filter,
+            "limit": limit,
+            "via": "inprocess",
+        }
+
+    try:
         result = execute_query(
             QueryRequest(
                 dataset_id=dataset_id,
@@ -247,6 +280,13 @@ def sample_rows(dataset_id: str, n: int = 5, namespace: str = "default") -> dict
     tf = _run_tf(["sample", _rest_dataset_id(dataset_id), "-n", str(n)])
     if tf is not None and "error" not in tf:
         return tf
+    try:
+        from ..query import sample as sample_rows_fn
+    except ImportError:  # pragma: no cover - Box golden without compute catalog
+        return {
+            "error": "in-process sample unavailable — set TRAINFABRIC_TOKEN and use tf CLI",
+            "via": "inprocess",
+        }
     try:
         return {"rows": sample_rows_fn(dataset_id, n, namespace), "via": "inprocess"}
     except Exception as e:

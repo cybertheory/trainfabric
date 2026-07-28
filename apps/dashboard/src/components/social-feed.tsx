@@ -16,7 +16,13 @@ type FeedItem =
   | { type: "post"; key: string; at: number; post: SocialPost }
   | { type: "notification"; key: string; at: number; notification: AppNotification };
 
-export function SocialFeedHome({ token }: { token?: string | null }) {
+export function SocialFeedHome({
+  token,
+  getToken,
+}: {
+  token?: string | null;
+  getToken?: () => Promise<string | null>;
+}) {
   const [posts, setPosts] = useState<SocialPost[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [topDatasets, setTopDatasets] = useState<DatasetMeta[]>([]);
@@ -160,11 +166,11 @@ export function SocialFeedHome({ token }: { token?: string | null }) {
         <header className="space-y-1">
           <h1 className="font-display text-2xl font-semibold tracking-tight sm:text-3xl">Home</h1>
           <p className="text-sm text-muted-foreground">
-            Ask Trainfabric agent, then catch up on activity from datasets you follow.
+            Quick agent for discover / AutoRuns, then activity from datasets you follow.
           </p>
         </header>
 
-        <TrainfabricAgentBox token={token} />
+        <TrainfabricAgentBox token={token} getToken={getToken} />
 
         <section className="space-y-3">
           <div className="flex items-center justify-between px-0.5">

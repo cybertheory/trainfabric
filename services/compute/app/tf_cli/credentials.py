@@ -50,16 +50,20 @@ def save_credentials(data: dict[str, Any]) -> None:
 def resolve_api_url() -> str:
     return (
         os.environ.get("TRAINFABRIC_API_URL")
+        or os.environ.get("TF_API_URL")  # Box autorunner alias
         or load_credentials().get("api_url")
         or DEFAULT_API_URL
     ).rstrip("/")
 
 
 def resolve_token() -> str:
-    return os.environ.get("TRAINFABRIC_TOKEN") or str(load_credentials().get("access_token") or "")
+    return (
+        os.environ.get("TRAINFABRIC_TOKEN")
+        or os.environ.get("TF_TOKEN")  # Box autorunner alias
+        or str(load_credentials().get("access_token") or "")
+    )
 
-
-def device_login(*, open_browser: bool = True) -> dict[str, Any]:
+def device_login(*, open_browser: bool = True) -> dict[str, Any]:  # pragma: no cover
     api = resolve_api_url()
     with httpx.Client(timeout=120.0) as client:
         start = client.post(

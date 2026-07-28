@@ -4,13 +4,17 @@ Trainfabric autorunner daemon — runs inside a Box sandbox.
 
 Repo-first loop: clone the bound GitHub repo → load goal/instructions from
 TRAINFABRIC.md / AGENTS.md / README.md → discover + bind a dataset (if none
-was given) → mutate via Cloudflare AI Gateway (Hermes-parity agent_mutate) →
-enqueue GPU trial → await score → keep/revert → report progress / social
+was given) → local Hermes lakehouse insight (`tf prompt`) → mutate via
+Cloudflare AI Gateway (same Hermes gateway stack as compute) → enqueue GPU
+trial via `tf auto trial` → await score → keep/revert → report progress / social
 findings. Steer messages arrive via /auto/:id/messages.
 
+Control-plane I/O goes through the `tf` CLI (platform surface), not hand-rolled
+urllib REST — so Box stays aligned with MCP / dashboard / compute Hermes.
+
 Env:
-  AUTORUN_ID, TF_API_URL, TF_TOKEN, TF_DATASET_ID (optional),
-  AUTORUN_GOAL (optional override; otherwise loaded from the repo),
+  AUTORUN_ID, TF_API_URL / TRAINFABRIC_API_URL, TF_TOKEN / TRAINFABRIC_TOKEN,
+  TF_DATASET_ID (optional), AUTORUN_GOAL (optional override),
   PROTOCOL_JSON, REPO_URL, REPO_BRANCH, COMPUTE_PROVIDER,
   GITHUB_TOKEN (optional App installation token), REPO_FULL_NAME,
   CF_ACCOUNT_ID, CF_AI_GATEWAY_TOKEN, CF_AI_GATEWAY_ID, CF_AI_GATEWAY_BASE,
@@ -25,9 +29,6 @@ import re
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
@@ -35,6 +36,7 @@ REPO_DIR = Path(os.environ.get("REPO_DIR", os.path.expanduser("~/repo")))
 POLL_SEC = float(os.environ.get("AUTORUN_POLL_SEC", "15"))
 MAX_IDLE_LOOPS = int(os.environ.get("AUTORUN_MAX_IDLE", "4"))
 CHAT_PORT = int(os.environ.get("AUTORUN_CHAT_PORT", "8787"))
+HOME_TF = Path(os.environ.get("TRAINFABRIC_HOME", os.path.expanduser("~/trainfabric")))
 
 # In-process steer queue + status for the hosted /chat endpoint.
 _STEER: list[str] = []
@@ -45,32 +47,50 @@ def env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
-def api(method: str, path: str, body: Optional[dict] = None) -> Any:
-    base = env("TF_API_URL").rstrip("/")
-    url = f"{base}{path}"
-    data = None if body is None else json.dumps(body).encode("utf-8")
-    # Cloudflare Bot Fight (1010) bans Python-urllib's default UA from Box sandboxes.
-    req = urllib.request.Request(
-        url,
-        data=data,
-        method=method,
-        headers={
-            "Authorization": f"Bearer {env('TF_TOKEN')}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 TrainfabricAutorunner/1.0"
-            ),
-        },
-    )
+def ensure_cli_env() -> None:
+    """Map Box TF_* aliases → TRAINFABRIC_* and put Hermes/`tf` on PYTHONPATH."""
+    if env("TF_API_URL") and not os.environ.get("TRAINFABRIC_API_URL"):
+        os.environ["TRAINFABRIC_API_URL"] = env("TF_API_URL")
+    if env("TF_TOKEN") and not os.environ.get("TRAINFABRIC_TOKEN"):
+        os.environ["TRAINFABRIC_TOKEN"] = env("TF_TOKEN")
+    if env("TF_DATASET_ID") and not os.environ.get("TRAINFABRIC_DATASET_ID"):
+        os.environ["TRAINFABRIC_DATASET_ID"] = env("TF_DATASET_ID")
+    home = str(HOME_TF)
+    pp = os.environ.get("PYTHONPATH", "")
+    parts = [p for p in pp.split(":") if p]
+    if home not in parts:
+        os.environ["PYTHONPATH"] = ":".join([home, *parts]) if parts else home
+    skills = HOME_TF / "app" / "hermes" / "skills"
+    if skills.is_dir() and not os.environ.get("HERMES_SKILLS_DIR"):
+        os.environ["HERMES_SKILLS_DIR"] = str(skills)
+
+
+def tf(*args: str) -> Any:
+    """Call the Trainfabric `tf` CLI (JSON on stdout). Platform surface for Box."""
+    ensure_cli_env()
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            raw = resp.read().decode("utf-8")
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as e:
-        err = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"{method} {path} -> {e.code}: {err}") from e
+        proc = subprocess.run(
+            ["tf", *args],
+            capture_output=True,
+            text=True,
+            env=os.environ.copy(),
+            timeout=180,
+            check=False,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            "tf CLI not found — rebuild the Box golden image "
+            "(scripts/box-golden-bootstrap.mjs) so Hermes + tf are installed"
+        ) from e
+    raw = (proc.stdout or "").strip() or (proc.stderr or "").strip()
+    try:
+        data = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        data = {"error": raw[:2000] or f"tf exit {proc.returncode}"}
+    if proc.returncode != 0:
+        err = data.get("error") if isinstance(data, dict) else data
+        raise RuntimeError(f"tf {' '.join(args)} -> {proc.returncode}: {err}")
+    return data if isinstance(data, dict) else {"result": data}
 
 
 def sh(cmd: str, cwd: Optional[Path] = None, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -114,7 +134,7 @@ def refresh_github_token() -> str:
     if not auto_run_id:
         return env("GITHUB_TOKEN")
     try:
-        out = api("POST", f"/auto/{auto_run_id}/github-credentials", {})
+        out = tf("auto", "github-credentials", auto_run_id)
         tok = str(out.get("token") or "")
         if tok:
             os.environ["GITHUB_TOKEN"] = tok
@@ -159,19 +179,16 @@ def assert_immutable(protocol: dict[str, Any]) -> None:
 
 
 def propose_via_prompt(dataset_id: str, hypothesis_hint: str) -> Optional[str]:
-    """Optional lakehouse propose step — Hermes /prompt for data insight."""
+    """Optional lakehouse propose step — local Hermes agent via `tf prompt`."""
     if env("AUTORUN_SKIP_PROMPT", "0") in ("1", "true", "yes"):
         return None
     try:
-        out = api(
-            "POST",
-            f"/datasets/{dataset_id}/prompt",
-            {
-                "prompt": hypothesis_hint,
-                "execute": True,
-                "snapshot": load_protocol().get("snapshotId"),
-            },
-        )
+        ensure_cli_env()
+        args = ["prompt", dataset_id, "--prompt", hypothesis_hint, "--execute", "--local"]
+        snap = load_protocol().get("snapshotId")
+        if snap:
+            args += ["--snapshot", str(snap)]
+        out = tf(*args)
         return str(out.get("explanation") or out.get("filter") or "")[:500]
     except Exception as e:  # noqa: BLE001
         print(f"prompt skipped: {e}", file=sys.stderr)
@@ -216,10 +233,14 @@ def load_repo_instructions(override: str = "") -> tuple[str, str]:
 def report_instructions(auto_run_id: str, goal: str, source: str) -> None:
     """Persist the repo-derived brief on the AutoRun so the monitor can show it."""
     try:
-        api(
-            "POST",
-            f"/auto/{auto_run_id}/instructions",
-            {"content": goal[:4000], "sourceFile": source},
+        tf(
+            "auto",
+            "instructions",
+            auto_run_id,
+            "--content",
+            goal[:4000],
+            "--source-file",
+            source,
         )
     except Exception as e:  # noqa: BLE001
         print(f"instructions report skipped: {e}", file=sys.stderr)
@@ -307,7 +328,7 @@ def search_datasets(goal: str) -> list[dict[str, Any]]:
     scores: dict[str, float] = {}
     for query in _search_queries(goal) or ["dataset"]:
         try:
-            listing = api("GET", f"/datasets?search={urllib.parse.quote(query)}&limit=20")
+            listing = tf("discover", "--search", query)
             for ds in listing.get("datasets") or []:
                 did = ds.get("id")
                 if not did:
@@ -324,11 +345,10 @@ def search_datasets(goal: str) -> list[dict[str, Any]]:
 
 def bind_dataset_id(auto_run_id: str, dataset_id: str, reason: str) -> Optional[str]:
     try:
-        api(
-            "POST",
-            f"/auto/{auto_run_id}/bind-dataset",
-            {"datasetId": dataset_id, "reason": reason[:500]},
-        )
+        args = ["auto", "bind", auto_run_id, "--dataset", dataset_id]
+        if reason:
+            args += ["--reason", reason[:500]]
+        tf(*args)
         send_message(auto_run_id, f"Bound dataset `{dataset_id}` — {reason[:240]}")
         return dataset_id
     except Exception as e:  # noqa: BLE001
@@ -472,7 +492,7 @@ def await_dataset_via_chat(auto_run_id: str, goal: str, source: str) -> Optional
     # Long wait: chat-driven; also honor remote bind.
     max_loops = max(MAX_IDLE_LOOPS * 40, 80)  # ~20+ min at default poll
     for _ in range(max_loops):
-        detail = api("GET", f"/auto/{auto_run_id}")
+        detail = tf("auto", "status", auto_run_id)
         run = detail.get("run") or {}
         if run.get("status") in ("cancelled", "done", "error"):
             return None
@@ -508,10 +528,16 @@ def await_dataset_via_chat(auto_run_id: str, goal: str, source: str) -> Optional
 def send_message(auto_run_id: str, content: str) -> None:
     """Post an assistant-side message so the shared thread reflects agent talk-back."""
     try:
-        api(
-            "POST",
-            f"/auto/{auto_run_id}/messages",
-            {"content": content, "role": "assistant", "source": "daemon"},
+        tf(
+            "auto",
+            "message",
+            auto_run_id,
+            "--body",
+            content,
+            "--role",
+            "assistant",
+            "--source",
+            "daemon",
         )
     except Exception as e:  # noqa: BLE001
         print(f"message skipped: {e}", file=sys.stderr)
@@ -523,7 +549,7 @@ def heartbeat(auto_run_id: str, phase: str, trial: int = 0, message: str | None 
     _STATE["trial"] = trial
     # Local status file for chat_shim /health and /chat replies.
     try:
-        status_path = Path.home() / "trainfabric" / "status.json"
+        status_path = HOME_TF / "status.json"
         status_path.parent.mkdir(parents=True, exist_ok=True)
         status_path.write_text(
             json.dumps({"phase": phase, "trial": trial, "autoRunId": auto_run_id}),
@@ -532,10 +558,10 @@ def heartbeat(auto_run_id: str, phase: str, trial: int = 0, message: str | None 
     except Exception:  # noqa: BLE001
         pass
     try:
-        body: dict[str, Any] = {"phase": phase, "trial": trial}
+        args = ["auto", "heartbeat", auto_run_id, "--phase", phase, "--trial", str(trial)]
         if message:
-            body["message"] = message
-        api("POST", f"/auto/{auto_run_id}/heartbeat", body)
+            args += ["--message", message]
+        tf(*args)
     except Exception as e:  # noqa: BLE001
         print(f"heartbeat skipped: {e}", file=sys.stderr)
 
@@ -561,12 +587,13 @@ def read_steer() -> list[str]:
 def start_chat_server() -> None:
     """HTTP :8787 — skip if chat_shim (or another process) already owns the port."""
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib.parse import urlparse
     import threading
 
     try:
         import chat_reply  # type: ignore
     except ImportError:
-        sys.path.insert(0, str(Path.home() / "trainfabric"))
+        sys.path.insert(0, str(HOME_TF))
         try:
             import chat_reply  # type: ignore
         except ImportError:
@@ -585,7 +612,7 @@ def start_chat_server() -> None:
             self.wfile.write(raw)
 
         def do_GET(self) -> None:  # noqa: N802
-            path = urllib.parse.urlparse(self.path).path
+            path = urlparse(self.path).path
             if path in ("/health", "/", "/status"):
                 self._json(
                     200,
@@ -601,7 +628,7 @@ def start_chat_server() -> None:
             self._json(404, {"error": "not found"})
 
         def do_POST(self) -> None:  # noqa: N802
-            path = urllib.parse.urlparse(self.path).path
+            path = urlparse(self.path).path
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b"{}"
             try:
@@ -656,17 +683,21 @@ def git_sha() -> str:
 
 
 def enqueue_trial(auto_run_id: str, hypothesis: str, sha: str) -> dict[str, Any]:
-    return api(
-        "POST",
-        f"/auto/{auto_run_id}/trials",
-        {"hypothesis": hypothesis, "commitSha": sha},
+    return tf(
+        "auto",
+        "trial",
+        auto_run_id,
+        "--hypothesis",
+        hypothesis,
+        "--commit-sha",
+        sha,
     )
 
 
 def wait_trial(auto_run_id: str, trial_id: str, timeout_sec: int) -> dict[str, Any]:
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
-        detail = api("GET", f"/auto/{auto_run_id}")
+        detail = tf("auto", "status", auto_run_id)
         for t in detail.get("trials") or []:
             if t.get("id") == trial_id and t.get("status") in ("done", "error", "cancelled"):
                 return t
@@ -728,16 +759,16 @@ def republish_viz_after_revert(blobs: dict[str, bytes]) -> None:
 
 def post_finding(dataset_id: str, body: str, findings: dict[str, Any]) -> None:
     try:
-        api(
-            "POST",
-            "/social/posts",
-            {
-                "datasetId": dataset_id,
-                "body": body,
-                "source": "agent",
-                "authorName": "autoresearch",
-                "findings": findings,
-            },
+        tf(
+            "social",
+            "post",
+            dataset_id,
+            "--body",
+            body,
+            "--author-name",
+            "autoresearch",
+            "--findings",
+            json.dumps(findings),
         )
     except Exception as e:  # noqa: BLE001
         print(f"social post skipped: {e}", file=sys.stderr)
@@ -787,7 +818,7 @@ def run_loop() -> None:
     heartbeat(auto_run_id, "running", 0, "Starting trial loop")
 
     while trial_n < max_trials and (time.time() - started) < wall:
-        detail = api("GET", f"/auto/{auto_run_id}")
+        detail = tf("auto", "status", auto_run_id)
         run = detail.get("run") or {}
         status = run.get("status")
         if status in ("paused", "cancelled", "done", "error"):

@@ -576,9 +576,15 @@ def auto_bind(
 def auto_message(
     auto_run_id: str = typer.Argument(...),
     body: str = typer.Option(..., "--body", "-b", help="Message to the cloud agent"),
+    role: str = typer.Option("user", "--role", help="user|assistant|system"),
+    source: str = typer.Option("api", "--source", help="api|daemon|dashboard|mcp"),
 ) -> None:
     """Send a message to a running AutoRun agent (same thread as dashboard chat)."""
-    _request("POST", f"/auto/{auto_run_id}/messages", {"content": body, "source": "api"})
+    _request(
+        "POST",
+        f"/auto/{auto_run_id}/messages",
+        {"content": body, "role": role, "source": source},
+    )
 
 
 @auto_app.command("messages")
@@ -588,6 +594,121 @@ def auto_messages(
 ) -> None:
     """Read an AutoRun conversation thread."""
     _request("GET", f"/auto/{auto_run_id}/messages?limit={limit}")
+
+
+@auto_app.command("heartbeat")
+def auto_heartbeat(
+    auto_run_id: str = typer.Argument(...),
+    phase: str = typer.Option(..., "--phase", help="running|awaiting_user|…"),
+    trial: int = typer.Option(0, "--trial"),
+    message: Optional[str] = typer.Option(None, "--message", "-m"),
+) -> None:
+    """Volunteer AutoRun liveness (Box daemon / Hermes)."""
+    payload: dict[str, Any] = {"phase": phase, "trial": trial}
+    if message:
+        payload["message"] = message
+    _request("POST", f"/auto/{auto_run_id}/heartbeat", payload)
+
+
+@auto_app.command("trial")
+def auto_trial(
+    auto_run_id: str = typer.Argument(...),
+    hypothesis: str = typer.Option(..., "--hypothesis", "-H"),
+    commit_sha: str = typer.Option(..., "--commit-sha", help="Git SHA for this trial"),
+) -> None:
+    """Enqueue a GPU trial for an AutoRun (POST /auto/:id/trials)."""
+    _request(
+        "POST",
+        f"/auto/{auto_run_id}/trials",
+        {"hypothesis": hypothesis, "commitSha": commit_sha},
+    )
+
+
+@auto_app.command("instructions")
+def auto_instructions(
+    auto_run_id: str = typer.Argument(...),
+    content: str = typer.Option(..., "--content", "-c"),
+    source_file: Optional[str] = typer.Option(None, "--source-file"),
+) -> None:
+    """Report the repo-loaded research brief on an AutoRun."""
+    payload: dict[str, Any] = {"content": content}
+    if source_file:
+        payload["sourceFile"] = source_file
+    _request("POST", f"/auto/{auto_run_id}/instructions", payload)
+
+
+@auto_app.command("github-credentials")
+def auto_github_credentials(auto_run_id: str = typer.Argument(...)) -> None:
+    """Refresh GitHub App installation token for this AutoRun's repo."""
+    _request("POST", f"/auto/{auto_run_id}/github-credentials", {})
+
+
+@app.command("prompt")
+def prompt_cmd(
+    dataset_id: Optional[str] = typer.Argument(None),
+    prompt: str = typer.Option(..., "--prompt", "-p", help="Natural-language slice request"),
+    execute: bool = typer.Option(True, "--execute/--no-execute"),
+    snapshot: Optional[str] = typer.Option(None, "--snapshot"),
+    local: bool = typer.Option(
+        True,
+        "--local/--remote",
+        help="Run in-process Hermes (Box/compute) via tf; --remote posts to /datasets/:id/prompt",
+    ),
+) -> None:
+    """Natural-language slice via Hermes (same agent as compute /prompt).
+
+    Prefer --local on Box/compute so Hermes shells out through this CLI for
+    schema/estimate/query. Use --remote to hit the router → compute container.
+    """
+    ds = _dataset(dataset_id)
+    if local:
+        try:
+            from app.hermes import PromptRequest, run_hermes_prompt
+        except ImportError as e:
+            print(
+                json.dumps(
+                    {
+                        "error": f"Hermes package unavailable: {e}",
+                        "hint": "Install app.hermes on PYTHONPATH or use --remote",
+                    }
+                ),
+                file=sys.stderr,
+            )
+            raise typer.Exit(1) from e
+        out = run_hermes_prompt(
+            PromptRequest(
+                prompt=prompt,
+                dataset_id=ds,
+                execute=execute,
+                snapshot=snapshot,
+                auth_token=_token(),
+                api_base=_api_url(),
+                public_dataset_id=ds,
+            )
+        )
+        print(
+            json.dumps(
+                {
+                    "columns": out.columns,
+                    "filter": out.filter,
+                    "limit": out.limit,
+                    "sql": out.sql,
+                    "estimate": out.estimate,
+                    "explanation": out.explanation,
+                    "executed": out.executed,
+                    "result": out.result,
+                    "model": out.model,
+                    "via": "hermes_local",
+                },
+                default=str,
+            )
+        )
+        return
+
+    body: dict[str, Any] = {"prompt": prompt, "execute": execute}
+    if snapshot:
+        body["snapshot"] = snapshot
+    _request("POST", f"/datasets/{ds}/prompt", body)
 
 
 def main() -> None:
