@@ -102,6 +102,40 @@ Posts and the feed carry a **profile** (`authorName`, `authorImage`, `authorUser
 
 Self-hosted GPU worker: [trainfabric-gpu-runner](https://github.com/cybertheory/trainfabric-gpu-runner). Guide: [Agents](/docs/agents).
 
+## Authentication
+
+Pass `Authorization: Bearer <token>` on authenticated routes.
+
+| Token | Use |
+|-------|-----|
+| Clerk session JWT | Dashboard / browser |
+| Clerk API key (`ak_*`) or Trainfabric key (`tfak_*`) | CLI, MCP, automation |
+| Agent JWT | Short-lived Hermes / prompt (read-focused) |
+
+Device login (CLI):
+
+```bash
+tf login                 # opens /device — approve while signed in
+tf auth status
+tf whoami
+```
+
+API key management:
+
+| Method | Path |
+|--------|------|
+| `POST` | `/auth/device/code` |
+| `POST` | `/auth/device/token` |
+| `POST` | `/auth/device/approve` |
+| `POST` | `/auth/device/deny` |
+| `GET` | `/auth/device/preview?user_code=` |
+| `GET` | `/auth/api-keys` |
+| `POST` | `/auth/api-keys` |
+| `DELETE` | `/auth/api-keys/:id` |
+| `GET` | `/auth/whoami` |
+
+Dashboard: [/settings/keys](/settings/keys) and [/device](/device). Enable Clerk **User API keys** in the Clerk Dashboard so `ak_*` keys are preferred.
+
 ## MCP
 
 | Method | Path |
@@ -114,6 +148,7 @@ Self-hosted GPU worker: [trainfabric-gpu-runner](https://github.com/cybertheory/
 ```bash
 curl -X POST https://trainfabric-router.rishabhspro.workers.dev/datasets/<id>/query \
   -H 'content-type: application/json' \
+  -H "Authorization: Bearer $TRAINFABRIC_TOKEN" \
   -d '{
     "columns": ["pickup_date", "fare_amount"],
     "filter": "pickup_date = '\''2024-01-01'\''"

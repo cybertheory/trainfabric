@@ -1,8 +1,11 @@
 """Trainfabric CLI (`tf`) — REST client for Hermes / agents.
 
-Auth via env:
-  TRAINFABRIC_API_URL  — router base URL
-  TRAINFABRIC_TOKEN    — Bearer token (Clerk session or agent JWT)
+Auth (first match wins):
+  TRAINFABRIC_TOKEN env — Clerk JWT, Clerk ak_*, Trainfabric tfak_*, or agent JWT
+  ~/.config/trainfabric/credentials.json — from `tf login`
+
+Also:
+  TRAINFABRIC_API_URL — router base (default: production worker)
   TRAINFABRIC_DATASET_ID — optional default dataset id
 """
 
@@ -16,11 +19,21 @@ from typing import Any, Optional
 import httpx
 import typer
 
+from .credentials import (
+    credentials_path,
+    device_login,
+    load_credentials,
+    resolve_api_url,
+    resolve_token,
+)
+
 app = typer.Typer(add_completion=False, no_args_is_help=True, help="Trainfabric CLI")
+auth_app = typer.Typer(add_completion=False, help="Authentication")
+app.add_typer(auth_app, name="auth")
 
 
 def _api_url() -> str:
-    base = (os.environ.get("TRAINFABRIC_API_URL") or "").rstrip("/")
+    base = resolve_api_url()
     if not base:
         print(json.dumps({"error": "TRAINFABRIC_API_URL not set"}), file=sys.stderr)
         raise typer.Exit(2)
@@ -28,9 +41,17 @@ def _api_url() -> str:
 
 
 def _token() -> str:
-    tok = os.environ.get("TRAINFABRIC_TOKEN") or ""
+    tok = resolve_token()
     if not tok:
-        print(json.dumps({"error": "TRAINFABRIC_TOKEN not set"}), file=sys.stderr)
+        print(
+            json.dumps(
+                {
+                    "error": "Not authenticated",
+                    "hint": "Run `tf login` or set TRAINFABRIC_TOKEN",
+                }
+            ),
+            file=sys.stderr,
+        )
         raise typer.Exit(2)
     return tok
 
@@ -84,6 +105,56 @@ def _decode_jwt_claims(token: str) -> dict[str, Any]:
         return json.loads(raw.decode())
     except Exception:
         return {}
+
+
+@app.command("login")
+def login(
+    open_browser: bool = typer.Option(True, "--open/--no-open", help="Open verification URL"),
+) -> None:
+    """Device login — approve in the dashboard, store an API key locally."""
+    print(json.dumps(device_login(open_browser=open_browser), default=str))
+
+
+@app.command("logout")
+def logout() -> None:
+    """Remove stored CLI credentials."""
+    path = credentials_path()
+    if path.exists():
+        path.unlink()
+    print(json.dumps({"ok": True, "removed": str(path)}))
+
+
+@auth_app.command("status")
+def auth_status() -> None:
+    """Show whether a token is configured and call /auth/whoami when possible."""
+    env_tok = bool(os.environ.get("TRAINFABRIC_TOKEN"))
+    stored = load_credentials()
+    out: dict[str, Any] = {
+        "api_url": resolve_api_url(),
+        "env_token": env_tok,
+        "stored_credentials": bool(stored.get("access_token")),
+        "credentials_path": str(credentials_path()),
+        "subject": stored.get("subject"),
+        "auth_via": stored.get("auth_via"),
+    }
+    if env_tok or stored.get("access_token"):
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                res = client.get(
+                    f"{_api_url()}/auth/whoami",
+                    headers={
+                        "Authorization": f"Bearer {_token()}",
+                        "Accept": "application/json",
+                    },
+                )
+                try:
+                    body = res.json()
+                except Exception:
+                    body = {"error": res.text[:500]}
+                out["whoami"] = body if res.status_code < 400 else {"error": body, "status": res.status_code}
+        except Exception as e:
+            out["whoami"] = {"error": str(e)}
+    print(json.dumps(out, default=str))
 
 
 @app.command()

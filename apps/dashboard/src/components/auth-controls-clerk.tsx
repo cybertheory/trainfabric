@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { SignedIn, SignedOut, UserButton } from "@clerk/nextjs";
-import { UserRound } from "lucide-react";
+import { KeyRound, UserRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 /** Loaded only when Clerk publishable key is present. */
@@ -31,6 +31,11 @@ export function AuthControlsClerk() {
               label="Profile"
               labelIcon={<UserRound className="h-4 w-4" />}
               href="/me"
+            />
+            <UserButton.Link
+              label="API keys"
+              labelIcon={<KeyRound className="h-4 w-4" />}
+              href="/settings/keys"
             />
           </UserButton.MenuItems>
         </UserButton>

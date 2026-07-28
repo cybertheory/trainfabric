@@ -18,8 +18,10 @@ import {
   CONTAINER_COMPUTE,
 } from "./compute";
 import type { ComputeContainer } from "./ComputeContainer";
-import { verifyClerkJwt } from "./auth";
-import { mintAgentToken, verifyAgentToken, agentHasReadScope } from "./agentToken";
+import { resolveBearerIdentity, type AuthVia } from "./auth";
+import { mintAgentToken } from "./agentToken";
+import { createClerkApiKey } from "./clerkApiKeys";
+import { createApiKeyStore } from "./apiKeys";
 import { publicResultUrl, putStaging, objectKeyFromUri } from "./r2";
 import {
   parseSourceUrl,
@@ -168,6 +170,8 @@ export interface Env {
   PUBLIC_API_BASE?: string;
   /** HS256 secret for short-lived Hermes agent tokens. */
   AGENT_TOKEN_SECRET?: string;
+  /** Clerk Backend API secret — verify/create user API keys (ak_*). */
+  CLERK_SECRET_KEY?: string;
   /** GitHub App (install + user OAuth during install). */
   GITHUB_APP_ID?: string;
   GITHUB_APP_SLUG?: string;
@@ -198,7 +202,7 @@ function identityOrAnon(
   return null;
 }
 
-type Variables = { identity: Identity | null; authVia: "clerk" | "agent" | null };
+type Variables = { identity: Identity | null; authVia: AuthVia };
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -218,29 +222,23 @@ app.use(
 );
 
 app.use("*", async (c, next) => {
-  const auth = c.req.header("Authorization");
-  let identity = await verifyClerkJwt(auth, {
-    CLERK_JWT_ISSUER: c.env.CLERK_JWT_ISSUER,
-    CLERK_JWT_AUDIENCE: c.env.CLERK_JWT_AUDIENCE,
-  });
-  let authVia: "clerk" | "agent" | null = identity ? "clerk" : null;
-  if (!identity) {
-    const agent = await verifyAgentToken(auth, c.env.AGENT_TOKEN_SECRET);
-    if (agent && agentHasReadScope(agent.scope)) {
-      identity = { subject: agent.subject, email: agent.email };
-      authVia = "agent";
-    }
-  }
+  const { identity, authVia } = await resolveBearerIdentity(c.req.header("Authorization"), c.env);
   c.set("identity", identity);
   c.set("authVia", authVia);
   await next();
 });
 
-function requireClerkIdentity(c: { get: (k: "identity" | "authVia") => Identity | null | "clerk" | "agent" | null; env: Env }) {
+function requireClerkIdentity(c: {
+  get: (k: "identity" | "authVia") => Identity | null | AuthVia;
+  env: Env;
+}) {
   const identity = identityOrAnon(c.get("identity") as Identity | null, c.env);
   if (!identity) return { error: "Unauthorized" as const, status: 401 as const };
   if (c.get("authVia") === "agent") {
-    return { error: "Agent tokens are read-only; use a Clerk session for writes" as const, status: 403 as const };
+    return {
+      error: "Agent tokens are read-only; use a Clerk session or API key for writes" as const,
+      status: 403 as const,
+    };
   }
   return { identity };
 }
@@ -353,7 +351,7 @@ app.get("/health", (c) =>
   }),
 );
 
-/** Identity echo for tf whoami (Clerk session or agent token). */
+/** Identity echo for tf whoami (Clerk session, API key, or agent token). */
 app.get("/auth/whoami", async (c) => {
   const identity = identityOrAnon(c.get("identity"), c.env);
   if (!identity) return c.json({ error: "Unauthorized" }, 401);
@@ -374,6 +372,242 @@ app.get("/auth/whoami", async (c) => {
     authVia,
     profile,
   });
+});
+
+function dashboardBase(env: Env, reqUrl: string): string {
+  return (env.DASHBOARD_URL || "https://dashboard-opal-tau-54.vercel.app").replace(/\/$/, "") ||
+    new URL(reqUrl).origin;
+}
+
+/** Start device authorization (CLI / MCP). */
+app.post("/auth/device/code", async (c) => {
+  const store = createApiKeyStore(c.env.DB);
+  if (!store) return c.json({ error: "Auth store not configured" }, 503);
+  const body = (await c.req.json().catch(() => ({}))) as { client_name?: string };
+  const started = await store.startDevice({
+    clientName: body.client_name?.slice(0, 80) || "cli",
+  });
+  const dash = dashboardBase(c.env, c.req.url);
+  const verificationUri = `${dash}/device`;
+  const verificationUriComplete = `${verificationUri}?user_code=${encodeURIComponent(started.userCode)}`;
+  return c.json({
+    device_code: started.deviceCode,
+    user_code: started.userCode,
+    verification_uri: verificationUri,
+    verification_uri_complete: verificationUriComplete,
+    expires_in: started.expiresIn,
+    interval: started.interval,
+  });
+});
+
+/**
+ * Poll device authorization.
+ * RFC 8628-ish: authorization_pending | access_denied | expired_token | slow_down
+ */
+app.post("/auth/device/token", async (c) => {
+  const store = createApiKeyStore(c.env.DB);
+  if (!store) return c.json({ error: "Auth store not configured" }, 503);
+  const body = (await c.req.json().catch(() => ({}))) as {
+    device_code?: string;
+    grant_type?: string;
+  };
+  const deviceCode = body.device_code?.trim();
+  if (!deviceCode) return c.json({ error: "device_code required" }, 400);
+
+  const row = await store.getByDeviceCode(deviceCode);
+  if (!row) return c.json({ error: "invalid_grant", error_description: "Unknown device_code" }, 400);
+  if (Date.now() > row.expires_at || row.status === "expired") {
+    return c.json({ error: "expired_token" }, 400);
+  }
+  if (row.status === "pending") {
+    return c.json({ error: "authorization_pending" }, 400);
+  }
+  if (row.status === "denied") {
+    return c.json({ error: "access_denied" }, 400);
+  }
+  const accessToken = await store.consumeAccessToken(deviceCode);
+  if (!accessToken) {
+    return c.json({ error: "invalid_grant", error_description: "Token already redeemed" }, 400);
+  }
+  return c.json({
+    access_token: accessToken,
+    token_type: row.token_type || "Bearer",
+    auth_via: "api_key",
+    subject: row.user_id,
+  });
+});
+
+/** Approve a device code while signed in (dashboard). Creates Clerk or Trainfabric API key. */
+app.post("/auth/device/approve", async (c) => {
+  const gate = requireClerkIdentity(c);
+  if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+  if (gate.identity.subject === "anon") return c.json({ error: "Unauthorized" }, 401);
+
+  const store = createApiKeyStore(c.env.DB);
+  if (!store) return c.json({ error: "Auth store not configured" }, 503);
+
+  const body = (await c.req.json().catch(() => ({}))) as {
+    user_code?: string;
+    name?: string;
+  };
+  const userCode = body.user_code?.trim();
+  if (!userCode) return c.json({ error: "user_code required" }, 400);
+
+  const pending = await store.getByUserCode(userCode);
+  if (!pending) return c.json({ error: "Unknown or invalid code" }, 404);
+  if (pending.status !== "pending") {
+    return c.json({ error: `Code is ${pending.status}` }, 409);
+  }
+  if (Date.now() > pending.expires_at) {
+    return c.json({ error: "Code expired" }, 410);
+  }
+
+  const clientLabel = pending.client_name || "device";
+  const keyName = (body.name?.trim() || `${clientLabel} ${new Date().toISOString().slice(0, 10)}`).slice(
+    0,
+    80,
+  );
+
+  let accessToken: string | null = null;
+  let tokenType = "api_key";
+
+  const clerkKey = await createClerkApiKey(c.env, {
+    subject: gate.identity.subject,
+    name: keyName,
+    description: `Issued via device login for ${clientLabel}`,
+    scopes: ["trainfabric"],
+    createdBy: gate.identity.subject,
+  });
+  if (clerkKey?.secret) {
+    accessToken = clerkKey.secret;
+    tokenType = "clerk_api_key";
+  } else {
+    const tf = await store.createTfApiKey({
+      userId: gate.identity.subject,
+      name: keyName,
+      scopes: ["trainfabric"],
+    });
+    accessToken = tf.secret;
+    tokenType = "tf_api_key";
+  }
+
+  const approved = await store.approve(userCode, {
+    userId: gate.identity.subject,
+    accessToken,
+    tokenType,
+  });
+  if (!approved || approved.status !== "approved") {
+    return c.json({ error: "Failed to approve device" }, 500);
+  }
+
+  return c.json({
+    ok: true,
+    status: "approved",
+    token_type: tokenType,
+    client_name: pending.client_name,
+    // Never return the secret to the browser — CLI polls /auth/device/token.
+  });
+});
+
+app.post("/auth/device/deny", async (c) => {
+  const gate = requireClerkIdentity(c);
+  if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+  const store = createApiKeyStore(c.env.DB);
+  if (!store) return c.json({ error: "Auth store not configured" }, 503);
+  const body = (await c.req.json().catch(() => ({}))) as { user_code?: string };
+  const userCode = body.user_code?.trim();
+  if (!userCode) return c.json({ error: "user_code required" }, 400);
+  const ok = await store.deny(userCode);
+  if (!ok) return c.json({ error: "Unknown or already resolved code" }, 404);
+  return c.json({ ok: true, status: "denied" });
+});
+
+/** Lookup pending device code metadata (dashboard preview). */
+app.get("/auth/device/preview", async (c) => {
+  const gate = requireClerkIdentity(c);
+  if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+  const store = createApiKeyStore(c.env.DB);
+  if (!store) return c.json({ error: "Auth store not configured" }, 503);
+  const userCode = c.req.query("user_code")?.trim();
+  if (!userCode) return c.json({ error: "user_code required" }, 400);
+  const row = await store.getByUserCode(userCode);
+  if (!row) return c.json({ error: "Unknown code" }, 404);
+  return c.json({
+    user_code: row.user_code,
+    status: row.status,
+    client_name: row.client_name,
+    expires_at: row.expires_at,
+    expired: Date.now() > row.expires_at,
+  });
+});
+
+/** List Trainfabric-native API keys (tfak_*). Clerk ak_* are managed in Clerk UI. */
+app.get("/auth/api-keys", async (c) => {
+  const gate = requireClerkIdentity(c);
+  if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+  if (gate.identity.subject === "anon") return c.json({ error: "Unauthorized" }, 401);
+  const store = createApiKeyStore(c.env.DB);
+  if (!store) return c.json({ error: "Auth store not configured" }, 503);
+  const keys = await store.listTfApiKeys(gate.identity.subject);
+  return c.json({ keys, clerk_api_keys: "Use dashboard User profile → API keys for Clerk keys (ak_*)" });
+});
+
+app.post("/auth/api-keys", async (c) => {
+  const gate = requireClerkIdentity(c);
+  if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+  if (gate.identity.subject === "anon") return c.json({ error: "Unauthorized" }, 401);
+  const store = createApiKeyStore(c.env.DB);
+  if (!store) return c.json({ error: "Auth store not configured" }, 503);
+  const body = (await c.req.json().catch(() => ({}))) as { name?: string };
+  const name = (body.name?.trim() || `API key ${new Date().toISOString().slice(0, 10)}`).slice(0, 80);
+
+  const clerkKey = await createClerkApiKey(c.env, {
+    subject: gate.identity.subject,
+    name,
+    description: "Created from Trainfabric dashboard",
+    scopes: ["trainfabric"],
+    createdBy: gate.identity.subject,
+  });
+  if (clerkKey?.secret) {
+    return c.json({
+      id: clerkKey.id,
+      name: clerkKey.name ?? name,
+      secret: clerkKey.secret,
+      token_type: "clerk_api_key",
+      prefix: clerkKey.secret.slice(0, 12),
+    });
+  }
+
+  const tf = await store.createTfApiKey({
+    userId: gate.identity.subject,
+    name,
+    scopes: ["trainfabric"],
+  });
+  return c.json({
+    id: tf.id,
+    name,
+    secret: tf.secret,
+    token_type: "tf_api_key",
+    prefix: tf.prefix,
+  });
+});
+
+app.delete("/auth/api-keys/:id", async (c) => {
+  const gate = requireClerkIdentity(c);
+  if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+  if (gate.identity.subject === "anon") return c.json({ error: "Unauthorized" }, 401);
+  const store = createApiKeyStore(c.env.DB);
+  if (!store) return c.json({ error: "Auth store not configured" }, 503);
+  const id = c.req.param("id");
+  if (id.startsWith("ak_")) {
+    return c.json(
+      { error: "Revoke Clerk API keys from the Clerk API Keys UI in your profile" },
+      400,
+    );
+  }
+  const ok = await store.revokeTfApiKey(gate.identity.subject, id);
+  if (!ok) return c.json({ error: "Not found" }, 404);
+  return c.json({ ok: true });
 });
 
 // ---- Social identity profiles ----
@@ -3299,18 +3533,8 @@ export default {
     // Proper MCP (Streamable HTTP) — agents createMcpHandler + MCP SDK
     if (path === "/mcp" || path.startsWith("/mcp/")) {
       return handleTrainfabricMcp(request, env, ctx, async (req) => {
-        const auth = req.headers.get("Authorization");
-        let identity = await verifyClerkJwt(auth, {
-          CLERK_JWT_ISSUER: env.CLERK_JWT_ISSUER,
-          CLERK_JWT_AUDIENCE: env.CLERK_JWT_AUDIENCE,
-        });
-        if (!identity) {
-          const agent = await verifyAgentToken(auth, env.AGENT_TOKEN_SECRET);
-          if (agent && agentHasReadScope(agent.scope)) {
-            identity = { subject: agent.subject, email: agent.email };
-          }
-        }
-        identity = identityOrAnon(identity, env);
+        const { identity: resolved } = await resolveBearerIdentity(req.headers.get("Authorization"), env);
+        const identity = identityOrAnon(resolved, env);
         return buildMcpContext({
           env,
           get: () => identity,
@@ -3323,6 +3547,7 @@ export default {
     const isApi =
       path === "/health" ||
       path === "/auth/whoami" ||
+      path.startsWith("/auth/") ||
       path.startsWith("/admin/") ||
       path.startsWith("/jobs/") ||
       path === "/auto" ||

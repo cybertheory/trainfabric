@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 const AGENT_PREFIXES = ["/agents", "/auto"];
 
 /** Full-bleed platform pages (GitHub/HF-style columns manage their own width). */
-const PLATFORM_PREFIXES = ["/home", "/datasets", "/me", "/new", "/posts"];
+const PLATFORM_PREFIXES = ["/home", "/datasets", "/me", "/new", "/posts", "/device", "/settings"];
 
 export function AgentShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();

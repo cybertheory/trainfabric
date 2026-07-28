@@ -328,11 +328,12 @@ def test_tools_tf_subprocess_edge_cases():
         assert "error" in bad
 
 
-def test_tf_cli_token_and_dataset_required(monkeypatch):
+def test_tf_cli_token_and_dataset_required(monkeypatch, tmp_path):
     from app.tf_cli import app
 
     runner = CliRunner()
     monkeypatch.setenv("TRAINFABRIC_API_URL", "https://api.example")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.delenv("TRAINFABRIC_TOKEN", raising=False)
     assert runner.invoke(app, ["schema", "ds_1"]).exit_code == 2
 
@@ -393,13 +394,15 @@ def test_tf_cli_http_transport_error(monkeypatch):
         assert runner.invoke(app, ["schema", "ds_1"]).exit_code == 1
 
 
-def test_tf_cli_missing_url_only(monkeypatch):
+def test_tf_cli_defaults_api_url(monkeypatch, tmp_path):
     from app.tf_cli import app
+    from app.tf_cli.credentials import DEFAULT_API_URL, resolve_api_url
 
     monkeypatch.delenv("TRAINFABRIC_API_URL", raising=False)
-    monkeypatch.setenv("TRAINFABRIC_TOKEN", "tok")
-    runner = CliRunner()
-    assert runner.invoke(app, ["schema", "ds_1"]).exit_code == 2
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("TRAINFABRIC_TOKEN", raising=False)
+    assert resolve_api_url() == DEFAULT_API_URL
+    assert CliRunner().invoke(app, ["schema", "ds_1"]).exit_code == 2
 
 
 def test_tf_cli_main_entrypoint():

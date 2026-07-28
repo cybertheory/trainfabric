@@ -147,7 +147,19 @@ function ProfileContent({
           ) : null}
           <div className="mt-2 flex flex-wrap gap-2">
             <Badge variant="secondary">{ownedDatasets.length} owned</Badge>
-            <Badge variant="secondary">{connectedDatasets.length} connected</Badge>
+            <Badge variant="outline">{connectedDatasets.length} connected</Badge>
+            <a
+              href="/settings/keys"
+              className="text-xs font-medium text-muted-foreground underline-offset-2 hover:underline"
+            >
+              API keys
+            </a>
+            <a
+              href="/device"
+              className="text-xs font-medium text-muted-foreground underline-offset-2 hover:underline"
+            >
+              Device login
+            </a>
           </div>
         </div>
       </section>

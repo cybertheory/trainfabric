@@ -74,7 +74,43 @@ Querying (`query_slice`, `sample_dataset`, `prompt_query`) while authenticated a
 
 ## Auth
 
-When Clerk is configured, pass `Authorization: Bearer <token>`. Otherwise anonymous access works for public datasets.
+Trainfabric accepts these Bearer tokens on MCP, REST, and the CLI:
+
+| Token | How to get it |
+|-------|----------------|
+| Clerk / Trainfabric **API key** (`ak_*` or `tfak_*`) | Dashboard → [API keys](/settings/keys), or `tf login` |
+| Clerk **session JWT** | Dashboard browser session (`getToken()`) |
+| Short-lived **agent JWT** | Minted for Hermes/prompt (read-focused) |
+
+### Device login (CLI / MCP)
+
+```bash
+tf login
+# Opens /device — approve the code while signed in
+tf auth status
+tf whoami
+```
+
+### Cursor MCP config
+
+```json
+{
+  "mcpServers": {
+    "trainfabric": {
+      "url": "https://trainfabric-router.rishabhspro.workers.dev/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_API_KEY"
+      }
+    }
+  }
+}
+```
+
+Create `YOUR_API_KEY` under **Settings → API keys**, or paste the secret printed by `tf login` (stored in `~/.config/trainfabric/credentials.json`).
+
+Enable **User API keys** in the [Clerk Dashboard](https://dashboard.clerk.com/~/platform/api-keys) so keys prefer Clerk `ak_*`. If Clerk API keys are unavailable, Trainfabric issues `tfak_*` keys instead.
+
+When Clerk is not configured on the Worker, anonymous access still works for public datasets.
 
 ## Natural language (`prompt_query`)
 
