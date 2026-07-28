@@ -82,15 +82,17 @@ export async function verifyHfOAuthState(
 }
 
 export function buildHfConnectUrl(env: HfOAuthEnv, state: string): string {
-  const u = new URL(HF_AUTHORIZE);
-  u.searchParams.set("client_id", requireEnv(env, "HF_OAUTH_CLIENT_ID"));
-  u.searchParams.set("redirect_uri", `${hfPublicApiOrigin(env)}/huggingface/callback`);
-  u.searchParams.set("response_type", "code");
-  // Must match scopes enabled on the HF OAuth app settings page.
-  // read-repos = private; gated-repos = public gated the user can access.
-  u.searchParams.set("scope", "openid profile read-repos gated-repos");
-  u.searchParams.set("state", state);
-  return u.href;
+  const params = new URLSearchParams({
+    client_id: requireEnv(env, "HF_OAUTH_CLIENT_ID"),
+    redirect_uri: `${hfPublicApiOrigin(env)}/huggingface/callback`,
+    response_type: "code",
+    // read-repos includes gated-repos on HF's app settings.
+    scope: "openid profile read-repos",
+    state,
+  });
+  // HF wraps authorize in /login?next=…; form-encoding spaces as "+" becomes literal "+"
+  // after that hop and HF treats "openid+profile+…" as an invalid scope → 404.
+  return `${HF_AUTHORIZE}?${params.toString().replace(/\+/g, "%20")}`;
 }
 
 export async function exchangeHfOAuthCode(

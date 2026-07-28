@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseSourceUrl, REMOTE_EXTS } from "../src/remoteSource";
 import {
+  buildHfConnectUrl,
   hfConfigured,
   hfDatasetUrl,
   signHfOAuthState,
@@ -70,5 +71,11 @@ describe("hf OAuth helpers", () => {
     expect(hfDatasetUrl("org/name", "v1", "data/train.parquet")).toBe(
       "https://huggingface.co/datasets/org/name/tree/v1/data/train.parquet",
     );
+  });
+
+  it("encodes authorize scopes with %20 not +", () => {
+    const url = buildHfConnectUrl(env, "state-token");
+    expect(url).toContain("scope=openid%20profile%20read-repos");
+    expect(url).not.toMatch(/scope=openid\+/);
   });
 });
