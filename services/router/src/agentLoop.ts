@@ -42,37 +42,6 @@ Rules:
 - Do not invent dataset ids or auto_run ids.
 - If tools fail, say what failed and offer a fallback path (Discover, Agents, Docs).`;
 
-const SOFT_OPENER =
-  /^(hi|hello|hey|yo|sup|howdy|hiya|good\s*(morning|afternoon|evening)|help|what can you do|what do you do|how does this work|who are you)\b/i;
-
-function isSoftOpener(text: string): boolean {
-  const t = text.trim();
-  if (!t) return true;
-  if (SOFT_OPENER.test(t)) return true;
-  // Very short / vague with no domain nouns
-  if (
-    t.length <= 16 &&
-    !/\b(dataset|query|publish|auto|agent|gpu|runner|schema|sample|discover|start)\b/i.test(t)
-  ) {
-    return true;
-  }
-  return false;
-}
-
-function softOpenerReply(): string {
-  return [
-    "Hey — I'm the Trainfabric agent. I can help you explore data, run queries, publish datasets, or steer GPU autoresearch.",
-    "",
-    "Try one of these:",
-    '• "Find datasets about NYC taxi fares"',
-    '• "Sample anon/nyc-taxi-1k"',
-    '• "List my AutoRuns"',
-    '• "Start an agent on my taxi repo"',
-    "",
-    "Or use Discover / Start agent / GPU runs in the nav. What do you want to do?",
-  ].join("\n");
-}
-
 type GatewayEnv = {
   CF_ACCOUNT_ID?: string;
   CF_AI_GATEWAY_ID?: string;
@@ -238,10 +207,6 @@ export async function runTrainfabricAgentTurn(
   userText: string,
   opts?: { maxSteps?: number },
 ): Promise<string> {
-  if (isSoftOpener(userText)) {
-    return softOpenerReply();
-  }
-
   const maxSteps = opts?.maxSteps ?? 6;
   const tools = mcpToolsAsOpenAi();
   const messages: ChatMessage[] = [
@@ -252,6 +217,7 @@ export async function runTrainfabricAgentTurn(
 
   let lastToolCalls: NonNullable<ChatMessage["tool_calls"]> | undefined;
   let lastToolResults: string[] = [];
+  let nudgedInsufficient = false;
 
   try {
     for (let step = 0; step < maxSteps; step++) {
@@ -301,15 +267,37 @@ export async function runTrainfabricAgentTurn(
 
       const text = (reply.content || "").trim();
       if (text) {
-        if (/not sufficient|provide more details|specify the task/i.test(text) && text.length < 200) {
-          return softOpenerReply();
+        // One LLM retry if the model rejects a soft opener — still model-generated.
+        if (
+          !nudgedInsufficient &&
+          /not sufficient|provide more details|specify the task/i.test(text) &&
+          text.length < 200
+        ) {
+          nudgedInsufficient = true;
+          messages.push({ role: "assistant", content: text });
+          messages.push({
+            role: "user",
+            content:
+              "That reply was too dismissive. Give a warm, helpful welcome: say what you can do on Trainfabric and suggest 2–4 concrete example prompts (discover datasets, sample a dataset, list AutoRuns, start an agent). Do not say the input was insufficient.",
+          });
+          continue;
         }
         return text;
       }
       if (lastToolCalls?.length) {
         return summarizeToolBatch(lastToolCalls, lastToolResults);
       }
-      return softOpenerReply();
+      // Empty model reply — nudge once through the LLM.
+      if (!nudgedInsufficient) {
+        nudgedInsufficient = true;
+        messages.push({
+          role: "user",
+          content:
+            "Please reply helpfully: welcome the user and suggest concrete next steps on Trainfabric.",
+        });
+        continue;
+      }
+      return "I didn't get a usable reply — try asking about a dataset, AutoRun, or what I can help with.";
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
