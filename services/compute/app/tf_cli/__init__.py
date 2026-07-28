@@ -268,6 +268,248 @@ def profile_set(
     _request("POST", "/profile", payload)
 
 
+# ---- Autoresearch /auto ----
+
+auto_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    help="Start and control long-running autoresearch AutoRuns (same as MCP start_auto)",
+)
+app.add_typer(auto_app, name="auto")
+
+
+def _parse_json_opt(raw: Optional[str], label: str) -> Any:
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(json.dumps({"error": f"invalid {label} JSON: {e}"}), file=sys.stderr)
+        raise typer.Exit(2) from e
+
+
+def _load_json_file(path: Optional[str], label: str) -> Any:
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        print(json.dumps({"error": f"invalid {label} file: {e}"}), file=sys.stderr)
+        raise typer.Exit(2) from e
+
+
+def _csv_list(raw: Optional[str]) -> list[str]:
+    if not raw:
+        return []
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+@auto_app.command("start")
+def auto_start(
+    repo_url: Optional[str] = typer.Option(None, "--repo-url", help="Public GitHub repo URL"),
+    repo: Optional[str] = typer.Option(
+        None, "--repo", help="owner/repo (use with --installation-id for GitHub App)"
+    ),
+    installation_id: Optional[int] = typer.Option(
+        None, "--installation-id", help="GitHub App installation id"
+    ),
+    branch: Optional[str] = typer.Option(None, "--branch", help="Default branch"),
+    dataset_id: Optional[str] = typer.Option(
+        None, "--dataset", "-d", help="Optional primary dataset hint"
+    ),
+    datasets: Optional[str] = typer.Option(
+        None, "--datasets", help="Comma-separated dataset ids"
+    ),
+    goal: Optional[str] = typer.Option(
+        None, "--goal", help="Optional brief override (prefer TRAINFABRIC.md in repo)"
+    ),
+    protocol: Optional[str] = typer.Option(
+        None, "--protocol", help="Full protocol JSON object"
+    ),
+    protocol_file: Optional[str] = typer.Option(
+        None, "--protocol-file", help="Path to protocol JSON file"
+    ),
+    metric: str = typer.Option("val_bpb", "--metric", help="Metric name (when not using --protocol)"),
+    direction: str = typer.Option(
+        "min", "--direction", help="Metric direction: min|max"
+    ),
+    max_trials: int = typer.Option(20, "--max-trials"),
+    max_wall_sec: int = typer.Option(3600, "--max-wall-sec"),
+    mutable: str = typer.Option(
+        "train.py", "--mutable", help="Comma-separated mutable paths"
+    ),
+    immutable: str = typer.Option(
+        "prepare.py,protocol.yaml",
+        "--immutable",
+        help="Comma-separated immutable paths",
+    ),
+    compute: str = typer.Option(
+        "modal", "--compute", help="Compute provider: modal|runner"
+    ),
+    modal_ref: Optional[str] = typer.Option(None, "--modal-ref", help="Modal app ref"),
+    runner_id: Optional[str] = typer.Option(
+        None, "--runner-id", help="Self-hosted GPU runner id"
+    ),
+    template_id: Optional[str] = typer.Option(None, "--template-id"),
+    body: Optional[str] = typer.Option(
+        None, "--body", help="Full CreateAutoRunRequest JSON (overrides other flags)"
+    ),
+    body_file: Optional[str] = typer.Option(
+        None, "--body-file", help="Path to full CreateAutoRunRequest JSON"
+    ),
+) -> None:
+    """Start a long-running autoresearch AutoRun (POST /auto).
+
+    Repo-first: pass --repo-url or --repo + --installation-id. The agent loads
+    TRAINFABRIC.md / AGENTS.md / README.md after clone. Same as MCP start_auto.
+    """
+    full = _load_json_file(body_file, "--body-file") or _parse_json_opt(body, "--body")
+    if isinstance(full, dict):
+        _request("POST", "/auto", full)
+        return
+
+    if not repo_url and not repo:
+        print(
+            json.dumps(
+                {
+                    "error": "repo required — pass --repo-url or --repo (+ --installation-id)",
+                }
+            ),
+            file=sys.stderr,
+        )
+        raise typer.Exit(2)
+
+    proto = _load_json_file(protocol_file, "--protocol-file") or _parse_json_opt(
+        protocol, "--protocol"
+    )
+    if not isinstance(proto, dict):
+        if direction not in ("min", "max"):
+            print(json.dumps({"error": "--direction must be min or max"}), file=sys.stderr)
+            raise typer.Exit(2)
+        proto = {
+            "metric": {"name": metric, "direction": direction},
+            "budget": {"maxTrials": max_trials, "maxWallClockSec": max_wall_sec},
+            "mutablePaths": _csv_list(mutable),
+            "immutablePaths": _csv_list(immutable),
+        }
+
+    provider = compute.strip().lower()
+    if provider not in ("modal", "runner"):
+        print(json.dumps({"error": "--compute must be modal or runner"}), file=sys.stderr)
+        raise typer.Exit(2)
+    compute_cfg: dict[str, Any] = {"provider": provider}
+    if provider == "modal":
+        if modal_ref:
+            compute_cfg["modalRef"] = modal_ref
+    else:
+        if not runner_id:
+            print(
+                json.dumps({"error": "--runner-id required when --compute=runner"}),
+                file=sys.stderr,
+            )
+            raise typer.Exit(2)
+        compute_cfg["runnerId"] = runner_id
+
+    dataset_ids = _csv_list(datasets)
+    primary = dataset_id or (dataset_ids[0] if dataset_ids else None) or os.environ.get(
+        "TRAINFABRIC_DATASET_ID"
+    )
+    if primary and primary not in dataset_ids:
+        dataset_ids = [primary, *dataset_ids]
+
+    payload: dict[str, Any] = {
+        "protocol": proto,
+        "compute": compute_cfg,
+    }
+    if goal:
+        payload["goal"] = goal
+    if repo_url:
+        payload["repoUrl"] = repo_url
+    if repo:
+        payload["repoFullName"] = repo
+    if installation_id is not None:
+        payload["installationId"] = installation_id
+    if branch:
+        payload["defaultBranch"] = branch
+    if primary:
+        payload["datasetId"] = primary
+    if dataset_ids:
+        payload["datasetIds"] = dataset_ids
+    if template_id:
+        payload["templateId"] = template_id
+
+    _request("POST", "/auto", payload)
+
+
+@auto_app.command("status")
+def auto_status(auto_run_id: str = typer.Argument(..., help="AutoRun id")) -> None:
+    """Poll AutoRun status, trials, and activity (GET /auto/:id)."""
+    _request("GET", f"/auto/{auto_run_id}")
+
+
+@auto_app.command("list")
+def auto_list(
+    dataset_id: Optional[str] = typer.Option(
+        None, "--dataset", "-d", help="Scope to one dataset (GET /datasets/:id/auto)"
+    ),
+) -> None:
+    """List AutoRuns for the caller, or for a dataset."""
+    if dataset_id:
+        _request("GET", f"/datasets/{dataset_id}/auto")
+    else:
+        _request("GET", "/auto")
+
+
+@auto_app.command("pause")
+def auto_pause(auto_run_id: str = typer.Argument(...)) -> None:
+    """Pause an AutoRun."""
+    _request("POST", f"/auto/{auto_run_id}/pause", {})
+
+
+@auto_app.command("resume")
+def auto_resume(auto_run_id: str = typer.Argument(...)) -> None:
+    """Resume a paused AutoRun."""
+    _request("POST", f"/auto/{auto_run_id}/resume", {})
+
+
+@auto_app.command("cancel")
+def auto_cancel(auto_run_id: str = typer.Argument(...)) -> None:
+    """Cancel an AutoRun."""
+    _request("POST", f"/auto/{auto_run_id}/cancel", {})
+
+
+@auto_app.command("bind")
+def auto_bind(
+    auto_run_id: str = typer.Argument(...),
+    dataset_id: str = typer.Option(..., "--dataset", "-d"),
+    reason: Optional[str] = typer.Option(None, "--reason"),
+) -> None:
+    """Bind a dataset to an AutoRun (freezes snapshot on first bind)."""
+    payload: dict[str, Any] = {"datasetId": dataset_id}
+    if reason:
+        payload["reason"] = reason
+    _request("POST", f"/auto/{auto_run_id}/bind-dataset", payload)
+
+
+@auto_app.command("message")
+def auto_message(
+    auto_run_id: str = typer.Argument(...),
+    body: str = typer.Option(..., "--body", "-b", help="Message to the cloud agent"),
+) -> None:
+    """Send a message to a running AutoRun agent (same thread as dashboard chat)."""
+    _request("POST", f"/auto/{auto_run_id}/messages", {"content": body, "source": "api"})
+
+
+@auto_app.command("messages")
+def auto_messages(
+    auto_run_id: str = typer.Argument(...),
+    limit: int = typer.Option(50, "--limit"),
+) -> None:
+    """Read an AutoRun conversation thread."""
+    _request("GET", f"/auto/{auto_run_id}/messages?limit={limit}")
+
+
 def main() -> None:
     app()
 

@@ -59,7 +59,7 @@ Authenticated query/sample/prompt auto-connects the user to that dataset. Connec
 **One publish interface across surfaces** — all hit `POST /social/posts` and share the same feed/notifications:
 
 - **MCP**: `post_social_update`, `connect_dataset`, `list_social_feed`
-- **CLI**: `tf social post`, `tf connect`, `tf social feed`, `tf profile set`
+- **CLI**: `tf social post`, `tf connect`, `tf social feed`, `tf profile set`, `tf auto start|status|list|…`
 - **Dashboard**: the Home composer
 
 Manage identity with `GET /profile`, `POST /profile` (or `tf profile show|set`).
@@ -75,6 +75,16 @@ Runs Hermes + duckdb-analytics skill in compute (schema → estimate → DuckDB)
 Long-running campaign. Agent sandbox = [Box](https://box.ascii.dev/). GPU trials = Modal **or** a self-hosted [HTTP GPU runner](https://github.com/cybertheory/trainfabric-gpu-runner).
 
 **Repo-first (GitHub App)**: connect the Trainfabric GitHub App from the dashboard (`/agents/new` or `/me`), then pass `repo_full_name` + `installation_id` (or a public `repo_url`). The tree should contain the research brief (`TRAINFABRIC.md` → `AGENTS.md` → `README.md`) and prefer encoding the eval contract in `protocol.yaml`. Platform **Create repo** seeds those files. The cloud agent loads the brief after authenticated clone, then runs `discover_datasets` / `bind_auto_dataset`. Pass `dataset_id` only as a starting hint; `goal` is an optional override.
+
+**CLI** (same control plane as MCP `start_auto`):
+
+```
+tf auto start --repo-url https://github.com/org/autoresearch-repo \
+  --metric val_bpb --direction min --max-trials 20 \
+  --compute modal --modal-ref user/app
+tf auto status auto_…
+tf auto message auto_… --body "prefer smaller batch"
+```
 
 **Custom GPU**: register once, run the public image on your machine, pass `runnerId` into `start_auto`.
 

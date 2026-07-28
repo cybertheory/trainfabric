@@ -419,3 +419,129 @@ def test_tf_decode_jwt_edge_cases():
     bad = base64.urlsafe_b64encode(b"\xff\xfe").decode().rstrip("=")
     assert _decode_jwt_claims(f"h.{bad}.s") == {}
     assert _decode_jwt_claims("h.!!!garbage!!!.s") == {}
+
+
+def test_tf_auto_commands(monkeypatch):
+    from app.tf_cli import app
+
+    monkeypatch.setenv("TRAINFABRIC_API_URL", "https://api.example")
+    monkeypatch.setenv("TRAINFABRIC_TOKEN", "tok")
+    runner = CliRunner()
+    FakeClient = _fake_client(200, {"id": "auto_1", "status": "running"})
+
+    with patch("app.tf_cli.httpx.Client", FakeClient):
+        r = runner.invoke(
+            app,
+            [
+                "auto",
+                "start",
+                "--repo-url",
+                "https://github.com/org/repo",
+                "--metric",
+                "val_bpb",
+                "--direction",
+                "min",
+                "--max-trials",
+                "5",
+                "--compute",
+                "modal",
+                "--modal-ref",
+                "user/app",
+                "--dataset",
+                "ds_1",
+            ],
+        )
+        assert r.exit_code == 0, r.stdout + r.stderr
+        assert FakeClient.last["method"] == "POST"
+        assert FakeClient.last["url"].endswith("/auto")
+        body = FakeClient.last["json"]
+        assert body["repoUrl"] == "https://github.com/org/repo"
+        assert body["datasetId"] == "ds_1"
+        assert body["protocol"]["metric"]["name"] == "val_bpb"
+        assert body["compute"] == {"provider": "modal", "modalRef": "user/app"}
+
+        assert runner.invoke(app, ["auto", "status", "auto_1"]).exit_code == 0
+        assert FakeClient.last["url"].endswith("/auto/auto_1")
+
+        assert runner.invoke(app, ["auto", "list"]).exit_code == 0
+        assert FakeClient.last["url"].endswith("/auto")
+
+        assert runner.invoke(app, ["auto", "list", "--dataset", "ds_1"]).exit_code == 0
+        assert FakeClient.last["url"].endswith("/datasets/ds_1/auto")
+
+        assert runner.invoke(app, ["auto", "pause", "auto_1"]).exit_code == 0
+        assert FakeClient.last["url"].endswith("/auto/auto_1/pause")
+
+        assert runner.invoke(app, ["auto", "resume", "auto_1"]).exit_code == 0
+        assert FakeClient.last["url"].endswith("/auto/auto_1/resume")
+
+        assert runner.invoke(app, ["auto", "cancel", "auto_1"]).exit_code == 0
+        assert FakeClient.last["url"].endswith("/auto/auto_1/cancel")
+
+        assert (
+            runner.invoke(
+                app, ["auto", "bind", "auto_1", "--dataset", "ds_2", "--reason", "fits brief"]
+            ).exit_code
+            == 0
+        )
+        assert FakeClient.last["json"]["datasetId"] == "ds_2"
+
+        assert (
+            runner.invoke(app, ["auto", "message", "auto_1", "--body", "shrink batch"]).exit_code
+            == 0
+        )
+        assert FakeClient.last["json"]["content"] == "shrink batch"
+
+        assert runner.invoke(app, ["auto", "messages", "auto_1", "--limit", "10"]).exit_code == 0
+        assert "messages?limit=10" in FakeClient.last["url"]
+
+
+def test_tf_auto_start_requires_repo(monkeypatch):
+    from app.tf_cli import app
+
+    monkeypatch.setenv("TRAINFABRIC_API_URL", "https://api.example")
+    monkeypatch.setenv("TRAINFABRIC_TOKEN", "tok")
+    runner = CliRunner()
+    r = runner.invoke(app, ["auto", "start", "--compute", "modal"])
+    assert r.exit_code == 2
+
+
+def test_tf_auto_start_runner_requires_id(monkeypatch):
+    from app.tf_cli import app
+
+    monkeypatch.setenv("TRAINFABRIC_API_URL", "https://api.example")
+    monkeypatch.setenv("TRAINFABRIC_TOKEN", "tok")
+    runner = CliRunner()
+    r = runner.invoke(
+        app,
+        ["auto", "start", "--repo-url", "https://github.com/o/r", "--compute", "runner"],
+    )
+    assert r.exit_code == 2
+
+
+def test_tf_auto_start_body_file(monkeypatch, tmp_path):
+    from app.tf_cli import app
+
+    monkeypatch.setenv("TRAINFABRIC_API_URL", "https://api.example")
+    monkeypatch.setenv("TRAINFABRIC_TOKEN", "tok")
+    path = tmp_path / "create.json"
+    path.write_text(
+        json.dumps(
+            {
+                "repoUrl": "https://github.com/o/r",
+                "protocol": {
+                    "metric": {"name": "acc", "direction": "max"},
+                    "budget": {"maxTrials": 2, "maxWallClockSec": 60},
+                    "mutablePaths": ["a.py"],
+                    "immutablePaths": ["b.py"],
+                },
+                "compute": {"provider": "modal"},
+            }
+        )
+    )
+    runner = CliRunner()
+    FakeClient = _fake_client(201, {"id": "auto_x"})
+    with patch("app.tf_cli.httpx.Client", FakeClient):
+        r = runner.invoke(app, ["auto", "start", "--body-file", str(path)])
+    assert r.exit_code == 0, r.stdout + r.stderr
+    assert FakeClient.last["json"]["repoUrl"] == "https://github.com/o/r"
