@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Bot, BookOpen, FolderGit2, Plus, Radio } from "lucide-react";
+import { Bot, Cpu, FolderGit2, Plus, Radio } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const AGENT_PREFIXES = ["/agents", "/auto"];
@@ -32,6 +32,13 @@ export function AgentShell({ children }: { children: React.ReactNode }) {
                 All runs
               </RailLink>
               <RailLink
+                href="/agents/gpu"
+                icon={Cpu}
+                active={pathname === "/agents/gpu" || pathname.startsWith("/agents/gpu/")}
+              >
+                GPU runs
+              </RailLink>
+              <RailLink
                 href="/agents/new"
                 icon={Plus}
                 active={pathname === "/agents/new"}
@@ -45,13 +52,10 @@ export function AgentShell({ children }: { children: React.ReactNode }) {
               Resources
             </p>
             <nav className="space-y-0.5 text-sm">
-              <RailLink href="/docs/mcp" icon={BookOpen} active={pathname.startsWith("/docs/mcp")}>
-                MCP
-              </RailLink>
               <RailLink href="/datasets" icon={FolderGit2} active={pathname.startsWith("/datasets")}>
                 Datasets
               </RailLink>
-              <RailLink href="/docs/agents" icon={Bot} active={pathname.startsWith("/docs/agents")}>
+              <RailLink href="/docs" icon={Bot} active={pathname.startsWith("/docs")}>
                 Docs
               </RailLink>
             </nav>

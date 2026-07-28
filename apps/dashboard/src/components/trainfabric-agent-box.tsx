@@ -87,8 +87,8 @@ export function TrainfabricAgentBox({ token }: { token?: string | null }) {
 
   const busy = status === "submitted" || status === "streaming";
 
-  function submit() {
-    const text = input.trim();
+  function submit(textOverride?: string) {
+    const text = (textOverride ?? input).trim();
     if (!text || busy) return;
     if (!token) return;
     setExpanded(true);
@@ -96,20 +96,37 @@ export function TrainfabricAgentBox({ token }: { token?: string | null }) {
     void sendMessage({ text });
   }
 
+  const showThread = expanded || messages.length > 0;
+
   return (
     <section className="tf-elevated overflow-hidden">
       <div className="flex items-center gap-2 border-b border-[hsl(var(--border-subtle))] px-4 py-2.5">
         <Bot className="h-4 w-4 text-primary" />
         <span className="text-sm font-semibold tracking-tight">Trainfabric agent</span>
-        <span className="text-[11px] text-muted-foreground">MCP tools · dashboard automation</span>
+        <span className="text-[11px] text-muted-foreground">discover · query · publish · AutoRuns</span>
       </div>
 
-      {expanded || messages.length > 0 ? (
+      {showThread ? (
         <div ref={scrollRef} className="max-h-72 space-y-3 overflow-y-auto px-4 py-3">
           {messages.length === 0 ? (
-            <p className="text-center text-xs text-muted-foreground">
-              Ask to discover datasets, inspect schemas, run slices, publish, or start an AutoRun.
-            </p>
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground">
+                Ask me to find datasets, sample rows, check AutoRuns, or kick off GPU autoresearch.
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {EXAMPLE_PROMPTS.map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    disabled={!token || busy}
+                    onClick={() => submit(p)}
+                    className="rounded-md border border-[hsl(var(--border-subtle))] bg-[hsl(var(--surface))] px-2 py-1 text-left text-[11px] text-muted-foreground transition hover:border-primary/40 hover:text-foreground disabled:opacity-50"
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
+            </div>
           ) : (
             messages.map((m) => {
               const isUser = m.role === "user";
@@ -180,7 +197,7 @@ export function TrainfabricAgentBox({ token }: { token?: string | null }) {
           size="sm"
           className="h-8"
           disabled={!token || busy || !input.trim()}
-          onClick={submit}
+          onClick={() => submit()}
         >
           {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
           Ask
@@ -189,6 +206,12 @@ export function TrainfabricAgentBox({ token }: { token?: string | null }) {
     </section>
   );
 }
+
+const EXAMPLE_PROMPTS = [
+  "Find datasets about NYC taxi",
+  "List my AutoRuns",
+  "What can you help with?",
+];
 
 function QuickPill({
   href,

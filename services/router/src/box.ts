@@ -210,36 +210,46 @@ export function createBoxClient(cfg: BoxClientConfig) {
       await this.selectRepo(opts.repoUrl).catch(() => undefined);
 
       // Golden image already has the stack; start processes + optional soft refresh from main.
+      // Note: Box SIGTERMs commands that include `pkill`, and also SIGTERMs process-group
+      // children from bare `nohup … &`. Spawn via Python start_new_session instead.
       const softRefresh = opts.skipSoftRefresh
-        ? []
+        ? "true"
         : [
             "BASE=https://raw.githubusercontent.com/cybertheory/trainfabric/main/services/autorunner",
             "curl -fsSL $BASE/autorunner_daemon.py -o ~/trainfabric/autorunner_daemon.py || true",
             "curl -fsSL $BASE/gateway.py -o ~/trainfabric/gateway.py || true",
+            "curl -fsSL $BASE/chat_reply.py -o ~/trainfabric/chat_reply.py || true",
+            "curl -fsSL $BASE/chat_shim.py -o ~/trainfabric/chat_shim.py || true",
             "curl -fsSL $BASE/agent_mutate.py -o ~/trainfabric/agent_mutate.py || true",
             "curl -fsSL $BASE/skills/autoresearch-mutate/SKILL.md -o ~/trainfabric/skills/autoresearch-mutate.md || true",
             "curl -fsSL $BASE/skills/publish-viz-github/SKILL.md -o ~/trainfabric/skills/publish-viz-github.md || true",
             "curl -fsSL $BASE/skills/trainfabric-cli/SKILL.md -o ~/trainfabric/skills/trainfabric-cli.md || true",
-          ];
+            "python3 -m pip install --break-system-packages -q httpx 2>/dev/null || python3 -m pip install --user -q httpx 2>/dev/null || true",
+          ].join(" && ");
 
+      await this.command(box.id, `mkdir -p ~/trainfabric/inbox ~/trainfabric/skills && ${softRefresh}`).catch(
+        () => undefined,
+      );
+
+      // Prefer chat_shim on :8787 (Hermes talk-back); daemon skips if port taken.
       const start =
         opts.daemonStartCmd ??
-        [
-          "mkdir -p ~/trainfabric/inbox ~/trainfabric/skills",
-          ...softRefresh,
-          "pkill -f 'chat_shim.py' 2>/dev/null || true",
-          "pkill -f 'autorunner_daemon.py' 2>/dev/null || true",
-          "test -f ~/trainfabric/chat_shim.py || echo 'missing chat_shim.py in template' >&2",
-          "nohup python3 ~/trainfabric/chat_shim.py >/tmp/tf-chat.log 2>&1 &",
-          "systemctl --user start trainfabric-autorunner 2>/dev/null || nohup python3 ~/trainfabric/autorunner_daemon.py >/tmp/autorunner.log 2>&1 &",
-        ].join(" && ");
+        `test -f ~/trainfabric/autorunner_daemon.py || echo 'missing autorunner_daemon.py in template' >&2; python3 -c "import os,signal,subprocess; home=os.path.expanduser('~');
+[os.kill(int(p), signal.SIGTERM) for p in subprocess.getoutput('pgrep -f trainfabric/autorunner_daemon.py|trainfabric/chat_shim.py').split() if p.isdigit()];
+subprocess.Popen(['python3', f'{home}/trainfabric/chat_shim.py'], stdout=open('/tmp/tf-chat.log','a'), stderr=subprocess.STDOUT, start_new_session=True);
+subprocess.Popen(['python3', f'{home}/trainfabric/autorunner_daemon.py'], stdout=open('/tmp/autorunner.log','a'), stderr=subprocess.STDOUT, start_new_session=True);
+print('daemons_spawned')"`;
       await this.command(box.id, start).catch(() => undefined);
 
       let daemonHostUrl: string | undefined;
       try {
-        const hosted = await this.command(box.id, "host 8787 --private");
+        // --public clears sticky gated tokens so the Worker can POST /chat without 403.
+        const hosted = await this.command(
+          box.id,
+          "host 8787 --public 2>&1 || host 8787 --private 2>&1",
+        );
         const m = hosted.stdout?.match(/https:\/\/\S+/);
-        if (m) daemonHostUrl = m[0];
+        if (m) daemonHostUrl = m[0].replace(/[.,;]+$/, "");
       } catch {
         /* optional */
       }

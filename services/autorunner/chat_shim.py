@@ -1,33 +1,37 @@
 #!/usr/bin/env python3
 """
-Minimal Box chat shim on :8787.
+Box chat shim on :8787.
 
 Always installed at provision so the Worker can reach THIS sandbox's /chat
 even if the autorunner template is stale. Queues steers into the daemon inbox
-and replies using ~/trainfabric/status.json when the daemon volunteers it.
+and returns a Hermes (CF AI Gateway) reply when configured.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 PORT = int(os.environ.get("AUTORUN_CHAT_PORT", "8787"))
 HOME = Path.home() / "trainfabric"
-INBOX = HOME / "inbox" / "steer.log"
-STATUS = HOME / "status.json"
+
+# Prefer ~/trainfabric copy (soft-refreshed), then this file's directory.
+for p in (str(HOME), str(Path(__file__).resolve().parent)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 
-def read_status() -> dict:
+def _load_chat_reply():
     try:
-        if STATUS.exists():
-            return json.loads(STATUS.read_text())
-    except Exception:  # noqa: BLE001
-        pass
-    return {"phase": "running", "trial": 0}
+        import chat_reply  # type: ignore
+
+        return chat_reply
+    except ImportError:
+        return None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -44,8 +48,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path = urllib.parse.urlparse(self.path).path
+        cr = _load_chat_reply()
+        st = cr.read_status() if cr else {"phase": "running", "trial": 0}
         if path in ("/health", "/", "/status"):
-            st = read_status()
             self._json(
                 200,
                 {
@@ -53,6 +58,7 @@ class Handler(BaseHTTPRequestHandler):
                     "autoRunId": os.environ.get("AUTORUN_ID", ""),
                     "phase": st.get("phase"),
                     "trial": st.get("trial"),
+                    "hermes": bool(cr),
                 },
             )
             return
@@ -73,18 +79,30 @@ class Handler(BaseHTTPRequestHandler):
         if not content:
             self._json(400, {"error": "content required"})
             return
+
+        cr = _load_chat_reply()
+        if cr is not None:
+            out = cr.handle_chat(content)
+            code = 200 if out.get("ok") else 400
+            self._json(code, out)
+            return
+
+        # Absolute fallback if chat_reply.py missing from the image.
         HOME.mkdir(parents=True, exist_ok=True)
-        INBOX.parent.mkdir(parents=True, exist_ok=True)
-        with INBOX.open("a", encoding="utf-8") as f:
+        inbox = HOME / "inbox" / "steer.log"
+        inbox.parent.mkdir(parents=True, exist_ok=True)
+        with inbox.open("a", encoding="utf-8") as f:
             f.write(content.replace("\n", " ") + "\n")
-        st = read_status()
-        phase = st.get("phase") or "running"
-        trial = st.get("trial") or 0
-        reply = (
-            f"Received on this Box sandbox. Currently {phase} (trial {trial}). "
-            f"Queued for the agent loop. Instruction: {content[:240]}"
+        self._json(
+            200,
+            {
+                "ok": True,
+                "reply": (
+                    f"Queued on Box (Hermes chat_reply unavailable). Instruction: {content[:240]}"
+                ),
+                "queued": True,
+            },
         )
-        self._json(200, {"ok": True, "reply": reply, "queued": True})
 
 
 def main() -> None:

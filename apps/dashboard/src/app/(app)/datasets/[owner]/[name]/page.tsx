@@ -16,6 +16,7 @@ import { DatasetAgentSidebar } from "@/components/dataset-agent-sidebar";
 import { DatasetQueryPanel } from "@/components/dataset-query-panel";
 import { AutoConfigurePanel } from "@/components/auto-configure-panel";
 import { apiFetch } from "@/lib/api";
+import { useJobTracker } from "@/lib/job-tracker";
 import { formatBytes, formatRows } from "@/lib/utils";
 
 type QueryRow = SavedQuery & { resultUrl?: string };
@@ -30,6 +31,7 @@ export default function DatasetDetailPage() {
   const params = useParams<{ owner: string; name: string }>();
   const owner = params.owner ? decodeURIComponent(params.owner) : "";
   const name = params.name ? decodeURIComponent(params.name) : "";
+  const { authToken } = useJobTracker();
   const [dataset, setDataset] = useState<DatasetDetail | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [preview, setPreview] = useState<Record<string, unknown>[]>([]);
@@ -84,12 +86,12 @@ export default function DatasetDetailPage() {
         apiFetch<{ queries: QueryRow[] }>(`/datasets/${found.id}/queries`)
           .then((q) => setQueries(q.queries))
           .catch(() => setQueries([]));
-        apiFetch<{ runs: AutoRun[] }>(`/datasets/${found.id}/auto`)
+        apiFetch<{ runs: AutoRun[] }>(`/datasets/${found.id}/auto`, { token: authToken })
           .then((a) => setAutoRuns(a.runs ?? []))
           .catch(() => setAutoRuns([]));
       })
       .catch(() => setNotFound(true));
-  }, [owner, name]);
+  }, [owner, name, authToken]);
 
   const columns = dataset?.schema?.columns ?? [];
 
@@ -249,10 +251,9 @@ export default function DatasetDetailPage() {
                     Autoresearch agents
                   </h2>
                   <p className="max-w-lg text-xs text-muted-foreground">
-                    Configure before you start. Box API keys are Worker secrets — not pasted here.
-                    Full wizard:{" "}
+                    Start an autoresearch agent on this dataset, or use the full wizard at{" "}
                     <Link href="/agents/new" className="text-primary hover:underline">
-                      /agents/new
+                      Start an agent
                     </Link>
                     .
                   </p>
@@ -283,7 +284,7 @@ export default function DatasetDetailPage() {
                   ))}
                 </ul>
               ) : (
-                <p className="text-xs text-muted-foreground">No AutoRuns on this dataset yet.</p>
+                <p className="text-xs text-muted-foreground">No AutoRuns of yours on this dataset yet.</p>
               )}
             </TabsContent>
 

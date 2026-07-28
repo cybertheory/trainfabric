@@ -100,5 +100,5 @@ Worker secrets:
 - `MODAL_TOKEN` — `token_id:token_secret` (or proxy token `wk-…:ws-…`)
 - `MODAL_APP_REF` — the printed `https://…--run-trial.modal.run` URL
 
-`compute.provider: "modal"` POSTs trial kwargs to that URL; the function clones the
+`compute.provider: "trainfabric_gpu"` (legacy `"modal"`) POSTs trial kwargs to that URL; the function clones the
 research repo, runs the entrypoint, and POSTs `/auto/:id/trials/:trialId/complete`.

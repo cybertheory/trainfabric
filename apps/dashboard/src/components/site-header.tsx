@@ -3,7 +3,7 @@
 import { FormEvent, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Bot, Database, Plus, Search } from "lucide-react";
+import { Bot, BookOpen, Database, Plus, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { AuthControls } from "@/components/auth-controls";
@@ -47,12 +47,6 @@ export function SiteHeader() {
           <Link href="/datasets" className={navClass("/datasets")}>
             Discover
           </Link>
-          <Link href="/docs" className={navClass("/docs")}>
-            Docs
-          </Link>
-          <Link href="/docs/mcp" className={cn(navClass("/docs/mcp"), "hidden lg:inline-flex")}>
-            MCP
-          </Link>
         </nav>
 
         <form
@@ -73,6 +67,12 @@ export function SiteHeader() {
           <JobProgressChip />
           <AlertBellButton />
           <ThemeToggle />
+          <Button asChild size="sm" variant="ghost">
+            <Link href="/docs" aria-label="Documentation">
+              <BookOpen className="h-4 w-4" />
+              <span className="hidden sm:inline">Docs</span>
+            </Link>
+          </Button>
           <Button asChild size="sm" className="hidden sm:inline-flex">
             <Link href="/agents/new">
               <Bot className="h-4 w-4" />

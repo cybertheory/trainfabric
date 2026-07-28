@@ -9,7 +9,7 @@ Trainfabric exposes the same resolver over MCP so agents can discover, inspect, 
 
 ## Endpoint
 
-Streamable HTTP MCP (Cloudflare Agents + `@modelcontextprotocol/sdk`):
+Streamable HTTP MCP:
 
 ```
 https://trainfabric-router.rishabhspro.workers.dev/mcp
@@ -54,12 +54,12 @@ Works with Cursor, Claude, MCP Inspector, and any Streamable HTTP MCP client. No
 | `create_derived_dataset` | Materialize derived tables |
 | `preview_derived` | Preview a derived spec |
 | `get_lineage` | Upstream / downstream lineage |
-| `prompt_query` | Natural-language slice via Hermes + DuckDB skill |
-| `start_auto` | Start long-running autoresearch — repo-first, agent loads brief from GitHub and binds datasets (Box + Modal/HTTP GPU) |
+| `prompt_query` | Natural-language slice planning and execute |
+| `start_auto` | Start long-running autoresearch — repo-first, agent loads brief from GitHub and binds datasets (Trainfabric GPU or self-hosted runner) |
 | `register_gpu_runner` | Register a self-hosted HTTP GPU runner ([public repo](https://github.com/cybertheory/trainfabric-gpu-runner)) |
 | `list_gpu_runners` | List your registered GPU runners |
 | `check_auto` | Poll AutoRun status + trials + activity + bound datasets |
-| `list_auto_runs` | List AutoRuns for a dataset |
+| `list_auto_runs` | List **your** AutoRuns for a dataset (private — never other users') |
 | `pause_auto` | Pause / resume / cancel an AutoRun |
 | `bind_auto_dataset` | Bind a discovered/confirmed dataset (freezes the snapshot) |
 | `message_auto_agent` | Chat with a running cloud AutoRun (same thread as the dashboard) |
@@ -80,7 +80,7 @@ Trainfabric accepts these Bearer tokens on MCP, REST, and the CLI:
 |-------|----------------|
 | Clerk / Trainfabric **API key** (`ak_*` or `tfak_*`) | Dashboard → [API keys](/settings/keys), or `tf login` |
 | Clerk **session JWT** | Dashboard browser session (`getToken()`) |
-| Short-lived **agent JWT** | Minted for Hermes/prompt (read-focused) |
+| Short-lived **agent JWT** | Minted automatically for prompt/query (read-focused) |
 
 ### Device login (CLI / MCP)
 
@@ -108,20 +108,16 @@ tf whoami
 
 Create `YOUR_API_KEY` under **Settings → API keys**, or paste the secret printed by `tf login` (stored in `~/.config/trainfabric/credentials.json`).
 
-Enable **User API keys** in the [Clerk Dashboard](https://dashboard.clerk.com/~/platform/api-keys) so keys prefer Clerk `ak_*`. If Clerk API keys are unavailable, Trainfabric issues `tfak_*` keys instead.
-
-When Clerk is not configured on the Worker, anonymous access still works for public datasets.
+When auth is not required for the deployment, anonymous access still works for public datasets.
 
 ## Natural language (`prompt_query`)
 
-Hermes runs inside the compute container with the `duckdb-analytics` skill. It:
+Ask for a slice in plain English. Trainfabric plans columns + filters from the schema, estimates cost, and optionally executes:
 
-1. Loads schema / partitions  
-2. Estimates Case A/B  
-3. Generates columns + filter (DuckDB-compatible)  
-4. Optionally executes the slice  
-
-LLM calls go through **Cloudflare AI Gateway** (`CF_ACCOUNT_ID` + `CF_AI_GATEWAY_TOKEN`). Without gateway credentials, a schema-grounded heuristic planner is used.
+1. Load schema / partitions  
+2. Estimate cost  
+3. Generate columns + filter  
+4. Optionally execute the slice  
 
 REST equivalent: `POST /datasets/:id/prompt` with `{ "prompt": "...", "execute": true }`.
 
@@ -129,21 +125,21 @@ REST equivalent: `POST /datasets/:id/prompt` with `{ "prompt": "...", "execute":
 
 Long campaigns are a separate primitive from `prompt_query`:
 
-1. Control plane creates an **AutoRun** from a connected **GitHub repo** + protocol + compute. Goals and instructions live in the repo (`TRAINFABRIC.md` / `AGENTS.md` / `README.md`); the experiment protocol (metric, budget, mutable/immutable paths) is fixed up front; the dataset snapshot is frozen when the agent binds a dataset.
-2. A [Box](https://box.ascii.dev/) sandbox is **forked from the golden template** (`BOX_TEMPLATE_ID`) with a durable campaign `tfak_*` as `TF_TOKEN`. The autorunner loads the brief → `discover_datasets` → `bind_auto_dataset` → **Cloudflare AI Gateway mutate** (Hermes-parity `agent_mutate` + `artifacts/viz/` publish skills) → trial enqueue → keep/revert (push kept commits / republish viz).
-3. GPU trials go to **Modal** or a self-hosted **[HTTP GPU runner](https://github.com/cybertheory/trainfabric-gpu-runner)** (`register_gpu_runner` / `POST /runners/register`, poll `/runners/claim`). No SSH. See [Agents](/docs/agents).
+1. Create an **AutoRun** from a connected **GitHub repo** + protocol + compute. Goals and instructions live in the repo (`TRAINFABRIC.md` / `AGENTS.md` / `README.md`); the experiment protocol (metric, budget, mutable/immutable paths) is fixed up front; the dataset snapshot is frozen when the agent binds a dataset.
+2. A cloud agent sandbox clones the repo, loads the brief, discovers and binds a dataset, proposes changes, runs trials, and keeps or reverts commits.
+3. GPU trials go to **Trainfabric GPU** (`trainfabric_gpu`) or a self-hosted **[HTTP GPU runner](https://github.com/cybertheory/trainfabric-gpu-runner)** (`register_gpu_runner`). No SSH. See [Agents](/docs/agents).
 
 ### Chat with a cloud agent
 
-Humans (dashboard) and external/dev agents (MCP/REST) share **one** conversation thread per AutoRun:
+Humans (dashboard) and external agents (MCP/REST) share **one** conversation thread per AutoRun:
 
-- Dashboard: the monitor at `/auto/:id` embeds a Vercel AI SDK `useChat` panel streaming from `POST /auto/:id/messages/stream`.
+- Dashboard: open the run monitor and use Steer chat.
 - External agents: `message_auto_agent({ auto_run_id, message })` + `list_auto_messages({ auto_run_id })`.
 - REST: `GET /auto/:id/messages`, `POST /auto/:id/messages`.
 
-Messages are injected into the running Box agent (daemon chat endpoint or steer inbox) and every reply is persisted, so all clients see the same history.
+Every reply is persisted, so all clients see the same history.
 
-REST: `POST /auto` (repo-first create), `POST /auto/:id/instructions`, `POST /auto/:id/bind-dataset`, `GET /auto/:id`, `POST /runners/register`, dashboard monitor at `/auto/:id`.
+REST: `POST /auto` (repo-first create), `POST /auto/:id/bind-dataset`, `GET /auto/:id`, `POST /runners/register`.
 
 CLI: `tf auto start|status|list|pause|resume|cancel|bind|message|messages` (same control plane as MCP).
 

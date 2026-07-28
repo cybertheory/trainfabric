@@ -46,6 +46,8 @@ def gateway_config() -> dict[str, str]:
 
 
 def gateway_configured() -> bool:
+    if httpx is None:
+        return False
     cfg = gateway_config()
     return bool(cfg["base_url"] and cfg["token"])
 
@@ -57,6 +59,7 @@ def chat_completions(
     model: Optional[str] = None,
     temperature: float = 0.1,
     timeout: float = 90.0,
+    tool_choice: Any = "auto",
 ) -> dict[str, Any]:
     if httpx is None:
         raise AIGatewayError("httpx is required for Cloudflare AI Gateway")
@@ -82,7 +85,7 @@ def chat_completions(
     }
     if tools:
         body["tools"] = tools
-        body["tool_choice"] = "auto"
+        body["tool_choice"] = tool_choice
 
     with httpx.Client(timeout=timeout) as client:
         res = client.post(url, headers=headers, json=body)

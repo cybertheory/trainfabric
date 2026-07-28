@@ -15,7 +15,6 @@ import {
   Square,
 } from "lucide-react";
 import { toast } from "sonner";
-import type { DatasetMeta } from "@trainfabric/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
@@ -84,7 +83,7 @@ function statusSentence(run: AutoDetail["run"], latest?: Activity): string {
     case "paused":
       return "Paused. Resume when you’re ready to continue trials.";
     case "awaiting_user":
-      return "Waiting for a dataset bind before trials can continue.";
+      return "Paused — reply in Steer chat (or MCP/CLI) so the agent can continue.";
     case "done":
       return "Run finished.";
     case "cancelled":
@@ -267,13 +266,17 @@ export default function AutoRunMonitorPage() {
               Next
             </p>
             {run.status === "awaiting_user" ? (
-              <div className="mt-3">
-                <BindPanel autoRunId={id} goal={run.goal} token={authToken} onBound={() => void load()} />
-              </div>
+              <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+                The agent paused and is waiting on your reply in Steer — name a dataset id (
+                <code className="text-[10px]">ds_…</code>), confirm a candidate, or ask it to search
+                again. Same path as MCP <code className="text-[10px]">message_auto_agent</code> /{" "}
+                <code className="text-[10px]">bind_auto_dataset</code>.
+              </p>
             ) : null}
             {run.status === "provisioning" || (run.status === "running" && !run.datasetId) ? (
               <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-                Nothing for you to do — the agent is setting up. Steer in chat if you want to nudge it.
+                Nothing for you to do — the agent is discovering a dataset from the repo brief. Steer
+                in chat only if you want to nudge the choice.
               </p>
             ) : null}
             {run.status !== "awaiting_user" &&
@@ -317,7 +320,7 @@ export default function AutoRunMonitorPage() {
                 className="inline-flex h-8 items-center gap-1 rounded-md border border-[hsl(var(--border-strong))] bg-[hsl(var(--elevated))] px-3 text-xs hover:bg-[hsl(var(--surface-2))]"
               >
                 <ExternalLink className="h-3.5 w-3.5" />
-                Box
+                Desktop
               </a>
             ) : null}
           </div>
@@ -434,77 +437,6 @@ function Sparkline({ trials, direction }: { trials: Trial[]; direction: string }
       <p className="mt-1 text-[11px] text-muted-foreground">
         {points.length} scored · best {best} ({direction})
       </p>
-    </div>
-  );
-}
-
-function BindPanel({
-  autoRunId,
-  goal,
-  token,
-  onBound,
-}: {
-  autoRunId: string;
-  goal?: string;
-  token?: string | null;
-  onBound: () => void;
-}) {
-  const [datasets, setDatasets] = useState<DatasetMeta[]>([]);
-  const [datasetId, setDatasetId] = useState("");
-  const [binding, setBinding] = useState(false);
-
-  useEffect(() => {
-    apiFetch<{ datasets: DatasetMeta[] }>(
-      `/datasets${goal ? `?search=${encodeURIComponent(goal)}` : ""}`,
-      { token },
-    )
-      .then((r) => setDatasets(r.datasets ?? []))
-      .catch(() => setDatasets([]));
-  }, [goal, token]);
-
-  async function bind() {
-    if (!datasetId) return;
-    setBinding(true);
-    try {
-      await apiFetch(`/auto/${autoRunId}/bind-dataset`, {
-        method: "POST",
-        token,
-        body: JSON.stringify({ datasetId, reason: "Confirmed by user in monitor" }),
-      });
-      toast.success("Dataset bound — agent resuming");
-      onBound();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Bind failed");
-    } finally {
-      setBinding(false);
-    }
-  }
-
-  return (
-    <div className="space-y-2 rounded-lg border border-amber-500/35 bg-amber-500/10 p-3">
-      <p className="text-sm font-medium">Bind a dataset to continue</p>
-      <p className="text-xs text-muted-foreground">
-        No clear discovery match. Pick one here or tell the agent in chat — same as MCP{" "}
-        <code className="text-[10px]">bind_auto_dataset</code>.
-      </p>
-      <div className="flex flex-wrap items-center gap-2">
-        <select
-          className="h-9 min-w-[240px] flex-1 rounded-md border border-input bg-background px-2 text-sm"
-          value={datasetId}
-          onChange={(e) => setDatasetId(e.target.value)}
-        >
-          <option value="">Select a dataset…</option>
-          {datasets.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.owner}/{d.name}
-            </option>
-          ))}
-        </select>
-        <Button type="button" size="sm" disabled={!datasetId || binding} onClick={() => void bind()}>
-          {binding ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-          Bind dataset
-        </Button>
-      </div>
     </div>
   );
 }

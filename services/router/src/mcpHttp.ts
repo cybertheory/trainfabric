@@ -223,7 +223,7 @@ function registerTools(server: McpServer, ctx: McpContext) {
     "start_auto",
     {
       description:
-        "Start a long-running autoresearch AutoRun (Box + Modal/HTTP GPU). Repo-first: GitHub App install or public repo URL with research brief (TRAINFABRIC.md / AGENTS.md / README.md). Prefer repo_full_name + installation_id for private clone/push.",
+        "Start a long-running autoresearch AutoRun (Box + Trainfabric GPU / HTTP runner). Repo-first: GitHub App install or public repo URL with research brief (TRAINFABRIC.md / AGENTS.md / README.md). Prefer repo_full_name + installation_id for private clone/push.",
       inputSchema: {
         goal: z.string().optional(),
         dataset_id: z.string().optional(),

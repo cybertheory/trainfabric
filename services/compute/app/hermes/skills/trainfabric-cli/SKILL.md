@@ -29,7 +29,7 @@ tf query [dataset_id] --columns a,b [--filter PREDICATE] [--limit 1000]
 # Autoresearch (same as MCP start_auto / check_auto / …)
 tf auto start --repo-url https://github.com/org/repo \
   --metric val_bpb --direction min --max-trials 20 \
-  --compute modal [--modal-ref user/app]
+  --compute trainfabric_gpu [--modal-ref user/app]
 tf auto start --repo org/repo --installation-id 123 \
   --compute runner --runner-id runner_… [--dataset ds_…]
 tf auto start --body-file ./create-auto.json

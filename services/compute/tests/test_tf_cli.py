@@ -447,7 +447,7 @@ def test_tf_auto_commands(monkeypatch):
                 "--max-trials",
                 "5",
                 "--compute",
-                "modal",
+                "trainfabric_gpu",
                 "--modal-ref",
                 "user/app",
                 "--dataset",
@@ -461,7 +461,7 @@ def test_tf_auto_commands(monkeypatch):
         assert body["repoUrl"] == "https://github.com/org/repo"
         assert body["datasetId"] == "ds_1"
         assert body["protocol"]["metric"]["name"] == "val_bpb"
-        assert body["compute"] == {"provider": "modal", "modalRef": "user/app"}
+        assert body["compute"] == {"provider": "trainfabric_gpu", "modalRef": "user/app"}
 
         assert runner.invoke(app, ["auto", "status", "auto_1"]).exit_code == 0
         assert FakeClient.last["url"].endswith("/auto/auto_1")
@@ -505,7 +505,7 @@ def test_tf_auto_start_requires_repo(monkeypatch):
     monkeypatch.setenv("TRAINFABRIC_API_URL", "https://api.example")
     monkeypatch.setenv("TRAINFABRIC_TOKEN", "tok")
     runner = CliRunner()
-    r = runner.invoke(app, ["auto", "start", "--compute", "modal"])
+    r = runner.invoke(app, ["auto", "start", "--compute", "trainfabric_gpu"])
     assert r.exit_code == 2
 
 
@@ -538,7 +538,7 @@ def test_tf_auto_start_body_file(monkeypatch, tmp_path):
                     "mutablePaths": ["a.py"],
                     "immutablePaths": ["b.py"],
                 },
-                "compute": {"provider": "modal"},
+                "compute": {"provider": "trainfabric_gpu"},
             }
         )
     )

@@ -14,6 +14,7 @@ import type {
   RegisterRunnerResponse,
   ReportAutoInstructionsRequest,
 } from "@trainfabric/shared";
+import { normalizeComputeProvider } from "@trainfabric/shared";
 import type { AutoStore } from "./autoStore";
 import type { ApiKeyStore } from "./apiKeys";
 import type { BoxClient } from "./box";
@@ -134,10 +135,10 @@ export async function createAutoRun(opts: {
 }): Promise<AutoRun> {
   validateProtocol(opts.body.protocol);
   const repoBind = resolveRepoBind(opts.body);
-  const compute: AutoComputeConfig = opts.body.compute;
-  if (compute.provider !== "modal" && compute.provider !== "runner") {
-    throw new Error("compute.provider must be modal|runner");
-  }
+  const compute: AutoComputeConfig = {
+    ...opts.body.compute,
+    provider: normalizeComputeProvider(opts.body.compute.provider),
+  };
 
   const fromBody = [
     ...(Array.isArray(opts.body.datasetIds) ? opts.body.datasetIds : []),
@@ -249,8 +250,8 @@ export async function createAutoRun(opts: {
       run.box = { ...run.box, boxId: `stub_${id}` };
       await logActivity(opts.store, id, "box", "Stub mode (no BOX_API_KEY on Worker)");
     }
-    // Goal-first with no dataset yet → wait for the agent to bind one.
-    run.status = datasetId ? "running" : "awaiting_user";
+    // Agent starts running immediately; it discovers/binds datasets itself (or asks in chat).
+    run.status = "running";
     run.updatedAt = Date.now();
     await opts.store.upsertAutoRun(run);
     await logActivity(
@@ -259,7 +260,7 @@ export async function createAutoRun(opts: {
       "status",
       datasetId
         ? "Running — agent starting trials"
-        : "Awaiting dataset — agent will load the repo brief and discover candidates",
+        : "Running — agent will discover a dataset from the repo brief (or ask in chat)",
     );
   } catch (e) {
     run.status = "error";
@@ -410,7 +411,13 @@ export async function enqueueTrial(opts: {
   callbackBaseUrl: string;
   /** When set, Modal/GPU clones via authenticated URL (token not stored on AutoRun). */
   githubToken?: string;
-  env: { MODAL_TOKEN?: string; MODAL_APP_REF?: string; MODAL_API_BASE?: string };
+  env: {
+    MODAL_TOKEN?: string;
+    MODAL_APP_REF?: string;
+    MODAL_API_BASE?: string;
+    AGENT_TOKEN_SECRET?: string;
+    GITHUB_TOKEN_CRYPTO_KEY?: string;
+  };
 }): Promise<AutoTrial> {
   const trialId = randomId("trial");
   const trial: AutoTrial = {
@@ -432,17 +439,22 @@ export async function enqueueTrial(opts: {
     : opts.run.repo.url;
 
   const provider = resolveComputeProvider(opts.run.compute, opts.env);
+  const completionSecret =
+    opts.env.AGENT_TOKEN_SECRET?.trim() ||
+    opts.env.GITHUB_TOKEN_CRYPTO_KEY?.trim() ||
+    "dev-trial-completion-secret";
+  const sig = await signTrialCompletion(completionSecret, opts.run.id, trialId);
   const { externalId } = await provider.submitTrial({
     trialId,
     autoRunId: opts.run.id,
     repoUrl,
     commitSha: opts.commitSha,
     budgetSec: Math.min(opts.run.protocol.budget.maxWallClockSec, 3600),
-    callbackUrl: `${opts.callbackBaseUrl}/auto/${opts.run.id}/trials/${trialId}/complete`,
+    callbackUrl: `${opts.callbackBaseUrl}/auto/${opts.run.id}/trials/${trialId}/complete?sig=${sig}`,
     env: opts.githubToken ? { GITHUB_TOKEN: opts.githubToken } : undefined,
   });
 
-  // Modal web endpoints often complete (via callback) before submitTrial returns.
+  // Managed GPU web endpoints often complete (via callback) before submitTrial returns.
   // Don't clobber a terminal status that the callback already wrote.
   const after = await opts.store.getAutoTrial(trialId);
   if (
@@ -547,39 +559,126 @@ function boxHostPath(daemonHostUrl: string, path: string): string {
   }
 }
 
+async function refreshDaemonHostUrl(
+  box: BoxClient,
+  boxId: string,
+): Promise<string | undefined> {
+  try {
+    // Prefer --public so Worker→Box /chat is not stuck behind a sticky gated token.
+    const hosted = await box.command(boxId, "host 8787 --public 2>&1 || host 8787 --private 2>&1");
+    const m = hosted.stdout?.match(/https:\/\/\S+/);
+    return m?.[0]?.replace(/[.,;]+$/, "");
+  } catch {
+    return undefined;
+  }
+}
+
+async function postBoxChat(
+  daemonHostUrl: string,
+  content: string,
+  autoRunId: string,
+): Promise<{ ok: boolean; agentReply?: string }> {
+  const res = await fetch(boxHostPath(daemonHostUrl, "/chat"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      "User-Agent":
+        "Mozilla/5.0 (compatible; TrainfabricRouter/1.0; +https://trainfabric.ai)",
+    },
+    body: JSON.stringify({ content, autoRunId }),
+    signal: AbortSignal.timeout(35_000),
+  });
+  if (!res.ok) return { ok: false };
+  let agentReply: string | undefined;
+  try {
+    const json = (await res.json()) as { reply?: string; message?: string };
+    agentReply = (json.reply || json.message || "").trim() || undefined;
+  } catch {
+    /* 200 with non-JSON: delivered, no talk-back */
+  }
+  return { ok: true, agentReply };
+}
+
+async function postBoxChatViaCommand(
+  box: BoxClient,
+  boxId: string,
+  content: string,
+  autoRunId: string,
+): Promise<{ ok: boolean; agentReply?: string }> {
+  const payload = JSON.stringify({ content, autoRunId }).replace(/'/g, `'\\''`);
+  try {
+    const result = await box.command(
+      boxId,
+      `curl -sS -m 35 -X POST http://127.0.0.1:8787/chat -H 'Content-Type: application/json' -H 'Accept: application/json' -d '${payload}'`,
+    );
+    const raw = (result.stdout || "").trim();
+    if (!raw) return { ok: false };
+    try {
+      const json = JSON.parse(raw) as { reply?: string; message?: string; ok?: boolean };
+      if (json.ok === false) return { ok: false };
+      const agentReply = (json.reply || json.message || "").trim() || undefined;
+      return { ok: true, agentReply };
+    } catch {
+      return { ok: false };
+    }
+  } catch {
+    return { ok: false };
+  }
+}
+
 /** Deliver a steer instruction to the running Box agent for this AutoRun only. */
 async function injectInstruction(
   box: BoxClient | null,
   run: AutoRun,
   content: string,
+  store?: AutoStore,
 ): Promise<{ delivered: boolean; agentReply?: string }> {
   const boxId = run.box.boxId;
   if (!box || !boxId || boxId.startsWith("stub_")) {
     return { delivered: false };
   }
-  // Preferred: daemon HTTP chat on this run's hosted URL (bound at provision).
-  if (run.box.daemonHostUrl) {
+
+  const tryHostChat = async (url: string | undefined) => {
+    if (!url) return null;
     try {
-      const res = await fetch(boxHostPath(run.box.daemonHostUrl, "/chat"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content, autoRunId: run.id }),
-      });
-      if (res.ok) {
-        let agentReply: string | undefined;
-        try {
-          const json = (await res.json()) as { reply?: string; message?: string };
-          agentReply = (json.reply || json.message || "").trim() || undefined;
-        } catch {
-          /* non-JSON body is still a successful delivery */
-        }
-        return { delivered: true, agentReply };
-      }
+      return await postBoxChat(url, content, run.id);
     } catch {
-      /* fall through to file drop */
+      return null;
+    }
+  };
+
+  // Preferred: daemon/shim HTTP chat on this run's hosted URL (Hermes talk-back).
+  let hostUrl = run.box.daemonHostUrl;
+  let chat = await tryHostChat(hostUrl);
+
+  // Stale host tokens (403) are common after Box restarts — mint a fresh tunnel once.
+  if (!chat?.ok) {
+    const fresh = await refreshDaemonHostUrl(box, boxId);
+    if (fresh && fresh !== hostUrl) {
+      hostUrl = fresh;
+      run.box = { ...run.box, daemonHostUrl: fresh };
+      if (store) {
+        await store.upsertAutoRun({
+          ...run,
+          box: run.box,
+          updatedAt: Date.now(),
+        });
+      }
+      chat = await tryHostChat(hostUrl);
     }
   }
-  // Fallback: drop the steer into the daemon inbox the loop polls.
+
+  // Hosted URL can stay gated/broken; Box commands API → localhost /chat still works.
+  if (!chat?.ok) {
+    chat = await postBoxChatViaCommand(box, boxId, content, run.id);
+  }
+
+  if (chat?.ok) {
+    return { delivered: true, agentReply: chat.agentReply };
+  }
+
+  // Fallback: drop the steer into the daemon inbox the loop polls (no live reply).
   try {
     const safe = content.replace(/'/g, "'\\''");
     await box.command(
@@ -657,7 +756,12 @@ export async function postAutoMessage(opts: {
     boxId: opts.run.box.boxId,
   });
 
-  const { delivered, agentReply } = await injectInstruction(opts.box, opts.run, content);
+  const { delivered, agentReply } = await injectInstruction(
+    opts.box,
+    opts.run,
+    content,
+    opts.store,
+  );
 
   let reply = (agentReply || "").trim();
   if (!reply) {
@@ -690,8 +794,22 @@ export async function heartbeatAutoRun(opts: {
     updatedAt: now,
     ...(typeof opts.body.trial === "number" ? { trial: opts.body.trial } : {}),
   };
+  let status = opts.run.status;
+  const phase = opts.body.phase;
+  // Agent asks for help → pause as awaiting_user; bindDataset / later heartbeats resume.
+  if (phase === "awaiting_user" || phase === "awaiting_dataset") {
+    if (status === "running" || status === "provisioning") status = "awaiting_user";
+  } else if (
+    status === "awaiting_user" &&
+    opts.run.datasetId &&
+    phase &&
+    ["running", "enqueueing", "waiting_gpu", "starting"].includes(phase)
+  ) {
+    status = "running";
+  }
   const next: AutoRun = {
     ...opts.run,
+    status,
     progress,
     updatedAt: now,
   };
@@ -741,4 +859,47 @@ export async function authRunner(
     lastHeartbeatAt: Date.now(),
   });
   return { id: runner.id, ownerId: runner.ownerId };
+}
+
+/** True when the caller owns this AutoRun (Clerk user or agent token for that user). */
+export function ownsAutoRun(
+  run: { ownerId: string },
+  identity: { subject: string } | null | undefined,
+): boolean {
+  return Boolean(identity?.subject && run.ownerId === identity.subject);
+}
+
+async function hmacHex(secret: string, message: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Per-trial callback signature so managed GPU can complete without a user JWT. */
+export async function signTrialCompletion(
+  secret: string,
+  runId: string,
+  trialId: string,
+): Promise<string> {
+  return hmacHex(secret, `${runId}:${trialId}`);
+}
+
+export async function verifyTrialCompletion(
+  secret: string,
+  runId: string,
+  trialId: string,
+  sig: string | null | undefined,
+): Promise<boolean> {
+  if (!sig?.trim()) return false;
+  const expected = await signTrialCompletion(secret, runId, trialId);
+  if (expected.length !== sig.length) return false;
+  let ok = 0;
+  for (let i = 0; i < expected.length; i++) ok |= expected.charCodeAt(i) ^ sig.charCodeAt(i);
+  return ok === 0;
 }

@@ -306,7 +306,7 @@ export const MCP_TOOLS = [
   {
     name: "start_auto",
     description:
-      "Start a long-running autoresearch AutoRun (Box sandbox + Modal/HTTP GPU). Repo-first: connect a GitHub repo that contains the research brief (TRAINFABRIC.md / AGENTS.md / README.md) and protocol.yaml. The agent loads goals/instructions from the repo after clone and discovers datasets from that brief (dataset_id optional hint). Requires repo_url + experiment protocol (metric, budget, mutable/immutable paths). Does not replace prompt_query.",
+      "Start a long-running autoresearch AutoRun (Box sandbox + Trainfabric GPU / HTTP runner). Repo-first: connect a GitHub repo that contains the research brief (TRAINFABRIC.md / AGENTS.md / README.md) and protocol.yaml. The agent loads goals/instructions from the repo after clone and discovers datasets from that brief (dataset_id optional hint). Requires repo_url + experiment protocol (metric, budget, mutable/immutable paths). Does not replace prompt_query.",
     inputSchema: {
       type: "object",
       properties: {
@@ -339,7 +339,8 @@ export const MCP_TOOLS = [
         },
         compute: {
           type: "object",
-          description: "{ provider: 'modal'|'runner', modalRef?, runnerId? }",
+          description:
+            "{ provider: 'trainfabric_gpu'|'runner', modalRef?, runnerId? } — legacy 'modal' accepted as trainfabric_gpu",
         },
         template_id: { type: "string" },
       },

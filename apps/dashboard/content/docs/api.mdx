@@ -33,7 +33,7 @@ GET /health
 | `POST` | `/datasets/:id/query` | Query slice |
 | `POST` | `/datasets/:id/estimate` | Estimate query |
 | `POST` | `/datasets/:id/sample` | Sample rows |
-| `POST` | `/datasets/:id/prompt` | Hermes NL → DuckDB slice |
+| `POST` | `/datasets/:id/prompt` | Natural-language slice |
 | `POST` | `/datasets/:id/rebuild` | Rebuild derived |
 | `GET` / `POST` | `/datasets/:id/connect` | Connection status / toggle (subscribe) |
 | `GET` | `/me/connections` | List connected datasets |
@@ -54,7 +54,7 @@ Used by Agents (GitHub) and Publish → Connect & pull (GitHub + HF). Clerk rema
 | `DELETE` | `/huggingface/connection` | Disconnect |
 | `GET` | `/huggingface/datasets` | List readable datasets (`search`, `author`) |
 
-HF OAuth app: create at huggingface.co → settings → applications. Redirect URI must be `{PUBLIC_API_BASE}/huggingface/callback`. Enable scopes `openid`, `profile`, `read-repos`, and `gated-repos`, then Update. Worker secrets: `HF_OAUTH_CLIENT_ID`, `HF_OAUTH_CLIENT_SECRET` (token crypto reuses `GITHUB_TOKEN_CRYPTO_KEY`).
+Connect Hugging Face from **Publish** in the dashboard (Connect & pull). GitHub uses the Trainfabric GitHub App from **Agents → Start an agent**.
 
 ## Social feed & notifications
 
@@ -110,7 +110,7 @@ Pass `Authorization: Bearer <token>` on authenticated routes.
 |-------|-----|
 | Clerk session JWT | Dashboard / browser |
 | Clerk API key (`ak_*`) or Trainfabric key (`tfak_*`) | CLI, MCP, automation |
-| Agent JWT | Short-lived Hermes / prompt (read-focused) |
+| Agent JWT | Short-lived prompt / query (read-focused) |
 
 Device login (CLI):
 
@@ -134,7 +134,7 @@ API key management:
 | `DELETE` | `/auth/api-keys/:id` |
 | `GET` | `/auth/whoami` |
 
-Dashboard: [/settings/keys](/settings/keys) and [/device](/device). Enable Clerk **User API keys** in the Clerk Dashboard so `ak_*` keys are preferred.
+Dashboard: [/settings/keys](/settings/keys) and [/device](/device). Create a key in the dashboard or run `tf login`.
 
 ## MCP
 

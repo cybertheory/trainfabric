@@ -93,39 +93,6 @@ function readLocal(rel) {
   return readFileSync(join(AUTORUNNER, rel), "utf8");
 }
 
-const chatShim = `#!/usr/bin/env python3
-import json,os,urllib.parse
-from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
-from pathlib import Path
-PORT=int(os.environ.get("AUTORUN_CHAT_PORT","8787")); HOME=Path.home()/"trainfabric"; INBOX=HOME/"inbox"/"steer.log"; STATUS=HOME/"status.json"
-def st():
-  try:
-    return json.loads(STATUS.read_text()) if STATUS.exists() else {}
-  except Exception:
-    return {}
-class H(BaseHTTPRequestHandler):
-  def log_message(self,*a): pass
-  def j(self,c,b):
-    r=json.dumps(b).encode(); self.send_response(c); self.send_header("Content-Type","application/json"); self.send_header("Content-Length",str(len(r))); self.end_headers(); self.wfile.write(r)
-  def do_GET(self):
-    p=urllib.parse.urlparse(self.path).path
-    if p in ("/health","/","/status"):
-      s=st(); self.j(200,{"ok":True,"autoRunId":os.environ.get("AUTORUN_ID",""),"phase":s.get("phase","running"),"trial":s.get("trial",0)}); return
-    self.j(404,{"error":"not found"})
-  def do_POST(self):
-    p=urllib.parse.urlparse(self.path).path; n=int(self.headers.get("Content-Length") or 0)
-    try: body=json.loads(self.rfile.read(n).decode() or "{}")
-    except Exception: body={}
-    if p!="/chat": self.j(404,{"error":"not found"}); return
-    content=str(body.get("content") or "").strip()
-    if not content: self.j(400,{"error":"content required"}); return
-    HOME.mkdir(parents=True,exist_ok=True); INBOX.parent.mkdir(parents=True,exist_ok=True)
-    INBOX.open("a").write(content.replace("\\n"," ")+"\\n"); s=st()
-    reply=f"Received on this Box sandbox. Currently {s.get('phase','running')} (trial {s.get('trial',0)}). Queued. Instruction: {content[:240]}"
-    self.j(200,{"ok":True,"reply":reply,"queued":True})
-ThreadingHTTPServer(("0.0.0.0",PORT),H).serve_forever()
-`;
-
 console.log("Creating golden Box (noEnv, no TTL)…");
 const created = await boxRequest("POST", "/boxes", {
   ttlSeconds: null,
@@ -148,7 +115,8 @@ const files = [
   ["~/trainfabric/autorunner_daemon.py", readLocal("autorunner_daemon.py")],
   ["~/trainfabric/gateway.py", readLocal("gateway.py")],
   ["~/trainfabric/agent_mutate.py", readLocal("agent_mutate.py")],
-  ["~/trainfabric/chat_shim.py", chatShim],
+  ["~/trainfabric/chat_reply.py", readLocal("chat_reply.py")],
+  ["~/trainfabric/chat_shim.py", readLocal("chat_shim.py")],
   [
     "~/trainfabric/skills/autoresearch-mutate.md",
     readLocal("skills/autoresearch-mutate/SKILL.md"),
@@ -188,7 +156,7 @@ await command(
 );
 await command(
   boxId,
-  "python3 -m py_compile ~/trainfabric/autorunner_daemon.py ~/trainfabric/chat_shim.py",
+  "python3 -m py_compile ~/trainfabric/autorunner_daemon.py ~/trainfabric/chat_shim.py ~/trainfabric/chat_reply.py ~/trainfabric/gateway.py",
 );
 
 console.log("Stopping box to snapshot template…");

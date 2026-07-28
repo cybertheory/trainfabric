@@ -37,8 +37,8 @@ GET https://trainfabric-router.rishabhspro.workers.dev/mcp/tools
 2. `inspect_schema` — columns + cheap partition filters
 3. `estimate_query` — before expensive work
 4. `query_slice` — columns + filters only (never dump whole tables)
-5. Optional: `prompt_query` (Hermes NL → DuckDB plan/execute), `sample_dataset`, `publish_dataset`, `create_derived_dataset`, `get_lineage`, `check_job`
-6. Long autoresearch: `start_auto` (repo-first — goals/instructions live in the GitHub repo) → `check_auto` / `pause_auto` / `bind_auto_dataset`, and `message_auto_agent` / `list_auto_messages` to chat with a running cloud agent (Box sandbox + Modal/HTTP GPU). Does **not** replace `prompt_query`.
+5. Optional: `prompt_query` (natural-language slice), `sample_dataset`, `publish_dataset`, `create_derived_dataset`, `get_lineage`, `check_job`
+6. Long autoresearch: `start_auto` (repo-first — goals/instructions live in the GitHub repo) → `check_auto` / `pause_auto` / `bind_auto_dataset`, and `message_auto_agent` / `list_auto_messages` to chat with a running cloud agent (Trainfabric GPU or self-hosted runner). Does **not** replace `prompt_query`.
 7. After research: `post_social_update` — share findings to the dataset community (requires user auth). `connect_dataset` / auto-connect on query. `list_social_feed` for updates.
 
 ### Share findings (social)
@@ -68,20 +68,20 @@ Manage identity with `GET /profile`, `POST /profile` (or `tf profile show|set`).
 prompt_query({ dataset_id, prompt: "fares on 2024-01-01", execute: true })
 ```
 
-Runs Hermes + duckdb-analytics skill in compute (schema → estimate → DuckDB). Uses Cloudflare AI Gateway when configured.
+Plans a slice from natural language (schema → estimate → execute when requested).
 
 ### Autoresearch (`/auto`)
 
-Long-running campaign. Agent sandbox = [Box](https://box.ascii.dev/). GPU trials = Modal **or** a self-hosted [HTTP GPU runner](https://github.com/cybertheory/trainfabric-gpu-runner).
+Long-running campaign. Cloud agent sandbox + GPU trials on managed **Trainfabric GPU** (`trainfabric_gpu`) **or** a self-hosted [HTTP GPU runner](https://github.com/cybertheory/trainfabric-gpu-runner).
 
-**Repo-first (GitHub App)**: connect the Trainfabric GitHub App from the dashboard (`/agents/new` or `/me`), then pass `repo_full_name` + `installation_id` (or a public `repo_url`). The tree should contain the research brief (`TRAINFABRIC.md` → `AGENTS.md` → `README.md`) and prefer encoding the eval contract in `protocol.yaml`. Platform **Create repo** seeds those files. The cloud agent loads the brief after authenticated clone, then runs `discover_datasets` / `bind_auto_dataset`. Pass `dataset_id` only as a starting hint; `goal` is an optional override.
+**Repo-first (GitHub App)**: connect the Trainfabric GitHub App from the dashboard (`/agents/new`), then pass `repo_full_name` + `installation_id` (or a public `repo_url`). The tree should contain the research brief (`TRAINFABRIC.md` → `AGENTS.md` → `README.md`) and prefer encoding the eval contract in `protocol.yaml`. Platform **Create repo** seeds those files. The cloud agent loads the brief after clone, then discovers / binds a dataset. Pass `dataset_id` only as a starting hint; `goal` is an optional override.
 
 **CLI** (same control plane as MCP `start_auto`):
 
 ```
 tf auto start --repo-url https://github.com/org/autoresearch-repo \
   --metric val_bpb --direction min --max-trials 20 \
-  --compute modal --modal-ref user/app
+  --compute trainfabric_gpu
 tf auto status auto_…
 tf auto message auto_… --body "prefer smaller batch"
 ```
@@ -104,11 +104,11 @@ start_auto({
     immutablePaths: ["prepare.py", "protocol.yaml"]
   },
   compute: { provider: "runner", runnerId: "runner_..." }
-  // or: compute: { provider: "modal", modalRef: "user/app" }
+  // or: compute: { provider: "trainfabric_gpu" }
 })
 ```
 
-`list_gpu_runners()` lists your registered runners. Poll with `check_auto({ auto_run_id })`. Pause/resume/cancel with `pause_auto({ auto_run_id, action })`. Bind a dataset with `bind_auto_dataset({ auto_run_id, dataset_id, reason })`.
+`list_gpu_runners()` lists your registered runners. Poll with `check_auto({ auto_run_id })`. Pause/resume/cancel with `pause_auto({ auto_run_id, action })`. Prefer letting the cloud agent discover/bind datasets itself; if it asks in chat, reply via `message_auto_agent` (e.g. a `ds_…` id or “use the first”) or call `bind_auto_dataset({ auto_run_id, dataset_id, reason })`.
 
 Docs: `/docs/agents`. Runner repo: https://github.com/cybertheory/trainfabric-gpu-runner
 

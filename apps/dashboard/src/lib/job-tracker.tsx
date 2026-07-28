@@ -103,14 +103,19 @@ async function fetchJob(jobId: string): Promise<{
   return res.json();
 }
 
-async function fetchAutoRun(autoRunId: string): Promise<{
+async function fetchAutoRun(
+  autoRunId: string,
+  token?: string | null,
+): Promise<{
   status?: string;
   progress?: number;
   error?: string;
   datasetId?: string;
 }> {
   const origin = publicApiOrigin();
-  const res = await fetch(`${origin}/auto/${autoRunId}`);
+  const res = await fetch(`${origin}/auto/${autoRunId}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
   if (!res.ok) throw new Error(`auto ${res.status}`);
   const data = (await res.json()) as {
     run?: {
@@ -223,7 +228,7 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
       });
       pushAlert({
         title: "Autoresearch started",
-        body: `${run.name} is provisioning on Box.`,
+        body: `${run.name} is provisioning.`,
         kind: "info",
         jobId: run.autoRunId,
         href: `/auto/${run.autoRunId}`,
@@ -256,7 +261,9 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
       for (const job of active) {
         try {
           const remote =
-            job.kind === "auto" ? await fetchAutoRun(job.jobId) : await fetchJob(job.jobId);
+            job.kind === "auto"
+              ? await fetchAutoRun(job.jobId, authToken)
+              : await fetchJob(job.jobId);
           if (cancelled) return;
           const status = remote.status ?? job.status;
           const progress =
@@ -326,7 +333,7 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       window.clearInterval(iv);
     };
-  }, [hydrated, activeCount, pushAlert]);
+  }, [hydrated, activeCount, pushAlert, authToken]);
 
   const markAlertRead = useCallback((id: string) => {
     setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, read: true } : a)));

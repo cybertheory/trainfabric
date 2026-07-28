@@ -138,10 +138,8 @@ function ApiKeysSettingsInner() {
         <h1 className="text-2xl font-semibold tracking-tight">API keys</h1>
         <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
           Provision long-lived keys for the Trainfabric CLI, MCP, and HTTP API. Prefer{" "}
-          <code className="text-xs">tf login</code> (device flow) or create a key here. Enable{" "}
-          <strong className="font-medium text-foreground">User API keys</strong> in the Clerk
-          Dashboard so keys are issued as Clerk <code className="text-xs">ak_*</code> secrets when
-          available; otherwise Trainfabric issues <code className="text-xs">tfak_*</code> keys.
+          <code className="text-xs">tf login</code> (device flow) or create a key here. Copy the
+          secret once when it is shown — it will not be displayed again.
         </p>
       </div>
 

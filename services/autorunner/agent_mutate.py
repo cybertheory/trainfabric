@@ -169,6 +169,50 @@ def _is_mutable(rel: str, protocol: dict[str, Any]) -> bool:
     return any(_path_matches(rel, m) for m in mutable)
 
 
+def _coerce_text_content(content: Any) -> Optional[str]:
+    """Normalize OpenAI-style content to a plain string."""
+    if content is None:
+        return None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for p in content:
+            if isinstance(p, str):
+                parts.append(p)
+            elif isinstance(p, dict):
+                if p.get("type") == "text":
+                    parts.append(str(p.get("text") or ""))
+                elif "text" in p:
+                    parts.append(str(p.get("text") or ""))
+        return "".join(parts)
+    return str(content)
+
+
+def _extract_json_obj(text: str) -> Optional[dict[str, Any]]:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("```"):
+        raw = raw.strip("`")
+        if raw.startswith("json"):
+            raw = raw[4:].strip()
+    try:
+        obj = json.loads(raw)
+        return obj if isinstance(obj, dict) else None
+    except json.JSONDecodeError:
+        pass
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            obj = json.loads(raw[start : end + 1])
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
 def propose_mutate(
     *,
     repo_dir: Path,
@@ -179,9 +223,10 @@ def propose_mutate(
     steer: Optional[list[str]] = None,
     instructions: str = "",
 ) -> dict[str, Any]:
-    """Run gateway tool loop. Returns {summary, hypothesis, files_touched, viz}.
+    """Propose a mutable-file edit via Cloudflare AI Gateway.
 
-    Falls back to a deterministic touch if gateway is unavailable.
+    Uses a JSON single-shot completion (Workers AI rejects multi-turn tool
+    results). Falls back to a deterministic touch if gateway is unavailable.
     """
     try:
         from gateway import AIGatewayError, gateway_configured, mockable_chat
@@ -192,95 +237,167 @@ def propose_mutate(
         from gateway import AIGatewayError, gateway_configured, mockable_chat  # type: ignore
 
     if not gateway_configured():
-        return _fallback_touch(repo_dir, protocol, trial_n, hypothesis)
-
-    skills = _load_skills()
-    system = (
-        "You are the Trainfabric autoresearch mutate agent (Hermes-parity) running in a Box sandbox.\n"
-        "Use tools to edit ONLY mutable paths from protocol.yaml. You may also write artifacts/viz/*.\n"
-        "Never modify immutablePaths. Prefer small, testable edits that could improve the metric.\n"
-        "When useful, publish a visualization of the change or prior metrics via publish_viz.\n"
-        "Call finish when the trial edit is ready to commit.\n\n"
-        f"{skills}\n\n"
-        f"## Repo brief\n{(instructions or '')[:6000]}\n\n"
-        f"## Protocol\n{json.dumps(protocol, indent=2)[:4000]}\n"
-    )
-    user = (
-        f"Trial {trial_n + 1}. Hypothesis context:\n{hypothesis}\n"
-        f"Goal override: {goal or '(from repo brief)'}\n"
-        f"Steer: {'; '.join(steer or []) or '(none)'}\n"
-        "Make one coherent improvement and optionally publish a viz artifact."
-    )
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
-
-    touched: list[str] = []
-    viz: list[str] = []
-    summary = ""
-    out_hypothesis = hypothesis
-
-    for _ in range(MAX_STEPS):
-        try:
-            resp = mockable_chat(messages, TOOL_SPECS)
-        except AIGatewayError as e:
-            return {
-                **_fallback_touch(repo_dir, protocol, trial_n, hypothesis),
-                "gateway_error": str(e),
-            }
-
-        choice = (resp.get("choices") or [{}])[0]
-        msg = choice.get("message") or {}
-        tool_calls = msg.get("tool_calls") or []
-        if msg.get("content") and not tool_calls:
-            summary = str(msg["content"])[:1000]
-            break
-
-        if not tool_calls:
-            break
-
-        messages.append(
-            {
-                "role": "assistant",
-                "content": msg.get("content"),
-                "tool_calls": tool_calls,
-            }
+        return _fallback_touch(
+            repo_dir,
+            protocol,
+            trial_n,
+            hypothesis,
+            reason="AI Gateway not configured in Box (need CF_AI_GATEWAY_TOKEN + account/base)",
         )
 
-        finished = False
-        for tc in tool_calls:
-            fn = (tc.get("function") or {}) if isinstance(tc, dict) else {}
-            name = fn.get("name") or ""
-            try:
-                args = json.loads(fn.get("arguments") or "{}")
-            except json.JSONDecodeError:
-                args = {}
-            result = _dispatch(name, args, repo_dir, protocol, touched, viz)
-            if name == "finish":
-                summary = str(args.get("summary") or result.get("summary") or summary)[:1000]
-                if args.get("hypothesis"):
-                    out_hypothesis = str(args["hypothesis"])[:500]
-                finished = True
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc.get("id") or name,
-                    "content": json.dumps(result)[:8000],
-                }
+    mutable_paths = [str(p) for p in (protocol.get("mutablePaths") or ["train.py"])]
+    primary = mutable_paths[0]
+    primary_path = repo_dir / primary
+    current = ""
+    if primary_path.is_file():
+        try:
+            current = primary_path.read_text(encoding="utf-8")
+        except OSError:
+            current = ""
+
+    system = (
+        "You are the Trainfabric autoresearch mutate agent.\n"
+        "Return ONLY a JSON object (no markdown fences) with keys:\n"
+        '  path: mutable relative path,\n'
+        "  old: exact existing substring to replace (copy verbatim from the file),\n"
+        "  new: replacement substring (real code change, not a comment-only touch),\n"
+        "  summary: short description,\n"
+        "  hypothesis: short hypothesis for this trial.\n"
+        "Keep old/new small (prefer < 40 lines). Never modify immutable paths.\n"
+        f"Primary mutable path: {primary}\n"
+        f"Allowed mutable paths: {mutable_paths}\n"
+        f"Protocol: {json.dumps(protocol)[:2000]}\n"
+    )
+    user = (
+        f"Trial {trial_n + 1}.\n"
+        f"Hypothesis context: {hypothesis}\n"
+        f"Goal: {goal or '(from repo brief)'}\n"
+        f"Steer: {'; '.join(steer or []) or '(none)'}\n"
+        f"Brief: {(instructions or '')[:3000]}\n\n"
+        f"Current {primary}:\n```\n{current[:14000]}\n```\n"
+        "Respond with the JSON object only."
+    )
+
+    try:
+        resp = mockable_chat(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            tools=None,
+            temperature=0.2,
+            timeout=90.0,
+        )
+    except AIGatewayError as e:
+        return {
+            **_fallback_touch(
+                repo_dir,
+                protocol,
+                trial_n,
+                hypothesis,
+                reason=f"Gateway error: {str(e)[:240]}",
+            ),
+            "gateway_error": str(e),
+        }
+
+    choice = (resp.get("choices") or [{}])[0]
+    msg = choice.get("message") or {}
+    text = _coerce_text_content(msg.get("content")) or ""
+    obj = _extract_json_obj(text)
+    if not obj:
+        return _fallback_touch(
+            repo_dir,
+            protocol,
+            trial_n,
+            hypothesis,
+            reason=f"Model returned non-JSON mutate response: {text[:120]!r}",
+        )
+
+    rel = str(obj.get("path") or primary).strip() or primary
+    old = obj.get("old")
+    new = obj.get("new")
+    # Back-compat: accept full-file content rewrite if provided and valid
+    content = obj.get("content")
+
+    try:
+        rel = _norm_rel(rel)
+    except ValueError as e:
+        return _fallback_touch(
+            repo_dir,
+            protocol,
+            trial_n,
+            hypothesis,
+            reason=f"Invalid path in mutate JSON: {e}",
+        )
+
+    if not _is_mutable(rel, protocol):
+        return _fallback_touch(
+            repo_dir,
+            protocol,
+            trial_n,
+            hypothesis,
+            reason=f"Mutate path not mutable: {rel}",
+        )
+
+    path = repo_dir / rel
+    if not path.is_file() and not (isinstance(content, str) and content.strip()):
+        return _fallback_touch(
+            repo_dir,
+            protocol,
+            trial_n,
+            hypothesis,
+            reason=f"Mutate target missing: {rel}",
+        )
+
+    before = path.read_text(encoding="utf-8") if path.is_file() else ""
+    after: Optional[str] = None
+
+    if isinstance(old, str) and isinstance(new, str) and old:
+        if old not in before:
+            return _fallback_touch(
+                repo_dir,
+                protocol,
+                trial_n,
+                hypothesis,
+                reason="Mutate old snippet not found in file",
             )
-        if finished:
-            break
+        if old == new:
+            return _fallback_touch(
+                repo_dir,
+                protocol,
+                trial_n,
+                hypothesis,
+                reason="Mutate old/new identical",
+            )
+        after = before.replace(old, new, 1)
+    elif isinstance(content, str) and content.strip():
+        after = content
+    else:
+        return _fallback_touch(
+            repo_dir,
+            protocol,
+            trial_n,
+            hypothesis,
+            reason="JSON mutate missing old/new (or content)",
+        )
 
-    if not touched:
-        return _fallback_touch(repo_dir, protocol, trial_n, out_hypothesis or hypothesis)
+    if after.strip() == before.strip():
+        return _fallback_touch(
+            repo_dir,
+            protocol,
+            trial_n,
+            hypothesis,
+            reason="Mutate content unchanged",
+        )
 
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(after, encoding="utf-8")
+    touched = [rel]
     _git_add(repo_dir, touched)
+    summary = str(obj.get("summary") or f"Mutated {rel}")[:1000]
+    out_hypothesis = str(obj.get("hypothesis") or hypothesis)[:500]
     return {
-        "summary": summary or f"Mutated {', '.join(touched)}",
+        "summary": summary,
         "hypothesis": out_hypothesis,
         "files_touched": touched,
-        "viz": viz,
+        "viz": [],
         "via": "ai_gateway",
     }
 
@@ -290,6 +407,8 @@ def _fallback_touch(
     protocol: dict[str, Any],
     trial_n: int,
     hypothesis: str,
+    *,
+    reason: str = "Gateway unavailable",
 ) -> dict[str, Any]:
     mutable = (protocol.get("mutablePaths") or ["train.py"])[0]
     note = repo_dir / mutable
@@ -298,7 +417,7 @@ def _fallback_touch(
             f.write(f"\n# autorunner touch trial={trial_n + 1} t={int(__import__('time').time())}\n")
         _git_add(repo_dir, [mutable])
     return {
-        "summary": f"Gateway unavailable; appended touch to {mutable}",
+        "summary": f"{reason}; appended touch to {mutable}",
         "hypothesis": hypothesis,
         "files_touched": [mutable] if note.exists() else [],
         "viz": [],

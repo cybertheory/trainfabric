@@ -121,8 +121,7 @@ function AgentStartCoach() {
   const [immutablePaths, setImmutablePaths] = useState(
     DEFAULT_PROTOCOL.immutablePaths.join(", "),
   );
-  const [provider, setProvider] = useState<"modal" | "runner">("modal");
-  const [modalRef, setModalRef] = useState("");
+  const [provider, setProvider] = useState<"trainfabric_gpu" | "runner">("trainfabric_gpu");
   const [runnerId, setRunnerId] = useState("");
 
   useEffect(() => {
@@ -357,7 +356,6 @@ function AgentStartCoach() {
           },
           compute: {
             provider,
-            modalRef: modalRef.trim() || undefined,
             runnerId: runnerId.trim() || undefined,
           },
         }),
@@ -703,7 +701,7 @@ function AgentStartCoach() {
               </div>
               <div>
                 <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">Compute</dt>
-                <dd className="mt-0.5">{provider === "modal" ? "Modal (default)" : `Runner · ${runnerId}`}</dd>
+                <dd className="mt-0.5">{provider === "trainfabric_gpu" ? "Trainfabric GPU (default)" : `Runner · ${runnerId}`}</dd>
               </div>
               <div>
                 <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">Protocol</dt>
@@ -775,23 +773,18 @@ function AgentStartCoach() {
                   <select
                     className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
                     value={provider}
-                    onChange={(e) => setProvider(e.target.value as "modal" | "runner")}
+                    onChange={(e) => setProvider(e.target.value as "trainfabric_gpu" | "runner")}
                   >
-                    <option value="modal">Modal</option>
+                    <option value="trainfabric_gpu">Trainfabric GPU</option>
                     <option value="runner">Self-hosted runner</option>
                   </select>
                 </div>
-                {provider === "modal" ? (
-                  <div className="space-y-1">
-                    <Label className="text-xs">Modal ref (optional)</Label>
-                    <Input value={modalRef} onChange={(e) => setModalRef(e.target.value)} />
-                  </div>
-                ) : (
+                {provider === "runner" ? (
                   <div className="space-y-1">
                     <Label className="text-xs">Runner id</Label>
                     <Input value={runnerId} onChange={(e) => setRunnerId(e.target.value)} />
                   </div>
-                )}
+                ) : null}
               </div>
             ) : null}
           </section>

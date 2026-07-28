@@ -14,18 +14,20 @@ import type {
   AutoTrial,
   AutoTrialStatus,
 } from "@trainfabric/shared";
+import { normalizeComputeProvider } from "@trainfabric/shared";
 
 export interface AutoStore {
   upsertAutoRun(body: Partial<AutoRun> & { id: string; status: AutoRunStatus }): Promise<void>;
   getAutoRun(id: string): Promise<AutoRun | null>;
-  listAutoRuns(datasetId: string): Promise<AutoRun[]>;
+  listAutoRuns(datasetId: string, ownerId?: string): Promise<AutoRun[]>;
   listAutoRunsByOwner(ownerId: string): Promise<AutoRun[]>;
   upsertAutoTrial(
     body: Partial<AutoTrial> & { id: string; status: AutoTrialStatus; autoRunId?: string },
   ): Promise<void>;
   getAutoTrial(id: string): Promise<AutoTrial | null>;
   listAutoTrials(autoRunId: string): Promise<AutoTrial[]>;
-  claimPendingTrial(runnerId: string): Promise<AutoTrial | null>;
+  /** Claim oldest pending trial belonging to this runner's owner only. */
+  claimPendingTrial(ownerId: string): Promise<AutoTrial | null>;
   upsertAutoRunner(
     body: Partial<AutoRunner> & { id: string },
   ): Promise<AutoRunner>;
@@ -129,6 +131,13 @@ async function ensureAutoSchema(db: D1Database): Promise<void> {
 }
 
 function rowToRun(r: Record<string, unknown>): AutoRun {
+  const rawCompute = JSON.parse(String(r.compute_json)) as AutoComputeConfig & {
+    provider: string;
+  };
+  const compute: AutoComputeConfig = {
+    ...rawCompute,
+    provider: normalizeComputeProvider(rawCompute.provider),
+  };
   return {
     id: String(r.id),
     datasetId: r.dataset_id ? String(r.dataset_id) : undefined,
@@ -141,7 +150,7 @@ function rowToRun(r: Record<string, unknown>): AutoRun {
     repo: JSON.parse(String(r.repo_json)) as AutoRepoBind,
     protocol: JSON.parse(String(r.protocol_json)) as AutoProtocol,
     box: JSON.parse(String(r.box_json || "{}")) as AutoBoxState,
-    compute: JSON.parse(String(r.compute_json)) as AutoComputeConfig,
+    compute,
     progress: JSON.parse(String(r.progress_json)) as AutoProgress,
     resultRef: r.result_ref ? String(r.result_ref) : undefined,
     error: r.error ? String(r.error) : undefined,
@@ -269,8 +278,17 @@ export function createD1AutoStore(db: D1Database): AutoStore {
       return r ? rowToRun(r as Record<string, unknown>) : null;
     },
 
-    async listAutoRuns(datasetId) {
+    async listAutoRuns(datasetId, ownerId) {
       await ensureAutoSchema(db);
+      if (ownerId) {
+        const { results } = await db
+          .prepare(
+            "SELECT * FROM auto_runs WHERE dataset_id = ? AND owner_id = ? ORDER BY created_at DESC",
+          )
+          .bind(datasetId, ownerId)
+          .all();
+        return (results ?? []).map((r) => rowToRun(r as Record<string, unknown>));
+      }
       const { results } = await db
         .prepare("SELECT * FROM auto_runs WHERE dataset_id = ? ORDER BY created_at DESC")
         .bind(datasetId)
@@ -357,18 +375,34 @@ export function createD1AutoStore(db: D1Database): AutoStore {
       return (results ?? []).map((r) => rowToTrial(r as Record<string, unknown>));
     },
 
-    async claimPendingTrial(_runnerId) {
+    async claimPendingTrial(ownerId) {
       await ensureAutoSchema(db);
       const r = await db
-        .prepare("SELECT * FROM auto_trials WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1")
+        .prepare(
+          `SELECT t.* FROM auto_trials t
+           INNER JOIN auto_runs r ON r.id = t.auto_run_id
+           WHERE t.status = 'pending' AND r.owner_id = ?
+           ORDER BY t.created_at ASC LIMIT 1`,
+        )
+        .bind(ownerId)
         .first();
       if (!r) return null;
       const trial = rowToTrial(r as Record<string, unknown>);
       const now = Date.now();
-      await db
-        .prepare("UPDATE auto_trials SET status='claimed', updated_at=? WHERE id=? AND status='pending'")
+      const updated = await db
+        .prepare(
+          "UPDATE auto_trials SET status='claimed', updated_at=? WHERE id=? AND status='pending'",
+        )
         .bind(now, trial.id)
         .run();
+      // Lost the race — another claim won.
+      if (
+        updated.meta &&
+        typeof updated.meta.changes === "number" &&
+        updated.meta.changes === 0
+      ) {
+        return null;
+      }
       return { ...trial, status: "claimed" as const, updatedAt: now };
     },
 

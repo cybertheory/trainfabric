@@ -296,7 +296,11 @@ export type AutoTrialStatus =
   | "error"
   | "cancelled";
 
-export type AutoComputeProvider = "modal" | "runner";
+/** Managed Trainfabric GPU (Modal-backed) or self-hosted HTTP runner. */
+export type AutoComputeProvider = "trainfabric_gpu" | "runner";
+
+/** @deprecated Use `trainfabric_gpu`. Accepted on ingest and normalized. */
+export type AutoComputeProviderLegacy = "modal";
 
 export interface AutoMetric {
   name: string;
@@ -347,8 +351,18 @@ export interface AutoBoxState {
 
 export interface AutoComputeConfig {
   provider: AutoComputeProvider;
+  /** Optional managed-GPU app/web endpoint override (Modal under the hood). */
   modalRef?: string;
   runnerId?: string;
+}
+
+/** Normalize legacy `modal` → `trainfabric_gpu` for stored configs. */
+export function normalizeComputeProvider(
+  provider: string,
+): AutoComputeProvider {
+  if (provider === "modal") return "trainfabric_gpu";
+  if (provider === "trainfabric_gpu" || provider === "runner") return provider;
+  throw new Error("compute.provider must be trainfabric_gpu|runner");
 }
 
 export interface AutoProgress {
@@ -468,7 +482,13 @@ export interface CreateAutoRunRequest {
    */
   datasetIds?: string[];
   protocol: AutoProtocol;
-  compute: AutoComputeConfig;
+  /**
+   * GPU compute. Prefer `trainfabric_gpu` (managed) or `runner` (self-hosted).
+   * Legacy `provider: "modal"` is accepted and normalized to `trainfabric_gpu`.
+   */
+  compute: AutoComputeConfig | (Omit<AutoComputeConfig, "provider"> & {
+    provider: AutoComputeProvider | AutoComputeProviderLegacy;
+  });
   templateId?: string;
 }
 

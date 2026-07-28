@@ -18,8 +18,12 @@ function memoryStore(seed?: { run?: AutoRun; trial?: AutoTrial }): AutoStore {
     async getAutoRun(id) {
       return runs.get(id) ?? null;
     },
-    async listAutoRuns() {
-      return [...runs.values()];
+    async listAutoRuns(datasetId, ownerId) {
+      return [...runs.values()].filter(
+        (r) =>
+          (r.datasetId === datasetId || (r.boundDatasets ?? []).includes(datasetId)) &&
+          (!ownerId || r.ownerId === ownerId),
+      );
     },
     async listAutoRunsByOwner(ownerId) {
       return [...runs.values()].filter((r) => r.ownerId === ownerId);
@@ -38,7 +42,15 @@ function memoryStore(seed?: { run?: AutoRun; trial?: AutoTrial }): AutoStore {
     async listAutoTrials(autoRunId) {
       return [...trials.values()].filter((t) => t.autoRunId === autoRunId);
     },
-    async claimPendingTrial() {
+    async claimPendingTrial(ownerId) {
+      for (const t of trials.values()) {
+        if (t.status !== "pending") continue;
+        const run = runs.get(t.autoRunId);
+        if (!run || run.ownerId !== ownerId) continue;
+        const next = { ...t, status: "claimed" as const, updatedAt: Date.now() };
+        trials.set(t.id, next);
+        return next;
+      }
       return null;
     },
     async upsertAutoRunner(body) {

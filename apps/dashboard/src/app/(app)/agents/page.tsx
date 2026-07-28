@@ -11,11 +11,6 @@ import { useJobTracker } from "@/lib/job-tracker";
 
 type AutoListResponse = {
   runs: AutoRun[];
-  prerequisites?: {
-    boxConfigured: boolean;
-    modalConfigured: boolean;
-    note: string;
-  };
 };
 
 function statusVariant(status: string): "default" | "secondary" | "outline" {
@@ -28,15 +23,20 @@ function statusVariant(status: string): "default" | "secondary" | "outline" {
 function boundLabel(run: AutoRun): string {
   const bound = run.boundDatasets ?? (run.datasetId ? [run.datasetId] : []);
   if (bound.length === 0) {
-    return run.status === "awaiting_user" ? "awaiting your pick" : "choosing dataset…";
+    return run.status === "awaiting_user" ? "waiting on chat…" : "choosing dataset…";
   }
   if (bound.length === 1) return bound[0];
   return `${bound.length} datasets`;
 }
 
+function computeLabel(provider: string): string {
+  if (provider === "trainfabric_gpu" || provider === "modal") return "Trainfabric GPU";
+  if (provider === "runner") return "Self-hosted runner";
+  return provider;
+}
+
 export default function AgentsPage() {
   const [runs, setRuns] = useState<AutoRun[]>([]);
-  const [prereq, setPrereq] = useState<AutoListResponse["prerequisites"]>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Clerk JWT synced by NotificationAuthBridge — refetch once it lands.
@@ -47,7 +47,6 @@ export default function AgentsPage() {
     apiFetch<AutoListResponse>("/auto", { token: authToken })
       .then((r) => {
         setRuns(r.runs ?? []);
-        setPrereq(r.prerequisites);
         setError(null);
       })
       .catch((e) => {
@@ -68,7 +67,7 @@ export default function AgentsPage() {
           <p className="max-w-xl text-sm text-muted-foreground">
             Long-running autoresearch campaigns. Connect the GitHub App, pick or create a repo —
             goals and instructions live there — then set protocol and compute. GPU trials run on
-            Modal or a{" "}
+            Trainfabric GPU or a{" "}
             <a
               href="https://github.com/cybertheory/trainfabric-gpu-runner"
               target="_blank"
@@ -91,29 +90,6 @@ export default function AgentsPage() {
           </Link>
         </Button>
       </header>
-
-      {prereq ? (
-        <div
-          className={`rounded-lg border px-4 py-3 text-sm ${
-            prereq.boxConfigured
-              ? "border-primary/25 bg-primary/5 text-foreground"
-              : "border-amber-500/30 bg-amber-500/5 text-foreground"
-          }`}
-        >
-          <p className="font-medium">
-            {prereq.boxConfigured ? "Box sandboxes ready" : "Box API key not set (stub mode)"}
-          </p>
-          <p className="mt-1 text-muted-foreground">{prereq.note}</p>
-          <p className="mt-2 text-xs text-muted-foreground">
-            You do <span className="font-medium text-foreground">not</span> paste a Box key in the
-            dashboard. Operators set <code className="text-[11px]">BOX_API_KEY</code> on the
-            Cloudflare Worker (see <code className="text-[11px]">.dev.vars.example</code>). Modal
-            uses <code className="text-[11px]">MODAL_TOKEN</code> /{" "}
-            <code className="text-[11px]">MODAL_APP_REF</code>
-            {prereq.modalConfigured ? " (configured)." : " (not configured yet)."}
-          </p>
-        </div>
-      ) : null}
 
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-2">
@@ -149,7 +125,7 @@ export default function AgentsPage() {
             <h3 className="mt-3 text-base font-medium">No agents yet</h3>
             <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
               Configure an autoresearch agent: connect a GitHub repo (goals and instructions live
-              there), freeze an experiment protocol, choose Modal or an HTTP GPU runner — then start.
+              there), freeze an experiment protocol, choose Trainfabric GPU or an HTTP GPU runner — then start.
               The agent picks datasets from the repo brief.
             </p>
             <Button asChild className="mt-5">
@@ -184,7 +160,7 @@ export default function AgentsPage() {
                     {run.protocol.budget.maxTrials}
                     {run.progress.bestScore != null ? ` · best ${run.progress.bestScore}` : ""}
                     {" · "}
-                    {run.compute.provider}
+                    {computeLabel(run.compute.provider)}
                   </p>
                 </div>
                 <Button asChild variant="outline" size="sm">

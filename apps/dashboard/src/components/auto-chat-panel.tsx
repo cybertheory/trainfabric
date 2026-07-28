@@ -40,9 +40,9 @@ function messageText(m: UIMessage): string {
 }
 
 /**
- * Chat with a long-running cloud AutoRun agent. Uses the Vercel AI SDK `useChat`
- * over Trainfabric's streaming endpoint. Messages sent via MCP / REST by external
- * agents land in the same thread and appear here on poll.
+ * Chat with a long-running cloud AutoRun agent over Trainfabric's streaming
+ * endpoint. Messages sent via MCP / REST by external agents land in the same
+ * thread and appear here on poll.
  */
 export function AutoChatPanel({ autoRunId }: { autoRunId: string }) {
   const { authToken } = useJobTracker();
@@ -121,8 +121,9 @@ export function AutoChatPanel({ autoRunId }: { autoRunId: string }) {
       <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-3 py-3">
         {messages.length === 0 ? (
           <p className="mt-6 text-center text-xs text-muted-foreground">
-            Steer the agent — ask for status, suggest a dataset, or nudge the next trial. Your dev
-            agent can join this same thread via MCP <code>message_auto_agent</code>.
+            Talk live to the Hermes agent on the Box via the API — ask for status, name a{" "}
+            <code>ds_…</code> to bind, or nudge the next trial. Same thread as MCP{" "}
+            <code>message_auto_agent</code>.
           </p>
         ) : (
           messages.map((m) => {

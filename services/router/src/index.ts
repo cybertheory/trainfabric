@@ -66,12 +66,14 @@ import {
   createAutoRun,
   enqueueTrial,
   logActivity,
+  ownsAutoRun,
   pauseAutoRun,
   heartbeatAutoRun,
   postAutoMessage,
   registerRunner,
   reportInstructions,
   resumeAutoRun,
+  verifyTrialCompletion,
 } from "./auto";
 import {
   authenticatedCloneUrl,
@@ -158,7 +160,7 @@ export interface Env {
   BOX_API_KEY?: string;
   BOX_TEMPLATE_ID?: string;
   BOX_API_BASE?: string;
-  /** Modal GPU trials */
+  /** Managed Trainfabric GPU trials (Modal-backed) */
   MODAL_TOKEN?: string;
   MODAL_APP_REF?: string;
   MODAL_API_BASE?: string;
@@ -197,6 +199,18 @@ function identityOrAnon(
 ): Identity | null {
   if (identity) return identity;
   if (!env.CLERK_JWT_ISSUER) return { subject: "anon" };
+  return null;
+}
+
+/** Owner-only AutoRun access (Clerk user or that user's agent token). */
+function requireAutoRunOwner(
+  run: { ownerId: string },
+  identity: Identity | null | undefined,
+): Response | null {
+  if (!identity) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  if (!ownsAutoRun(run, identity)) {
+    return Response.json({ error: "Not found" }, { status: 404 });
+  }
   return null;
 }
 
@@ -2005,13 +2019,15 @@ app.post("/datasets/:id/auto", async (c) => {
 app.get("/datasets/:id/auto", async (c) => {
   try {
     const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
     const deps = depsFrom(c);
     const ds = await deps.getDataset(c.req.param("id"));
     if (!ds) return c.json({ error: "Not found" }, 404);
     const { authorizeDataset } = await import("./resolver");
     authorizeDataset(ds, identity);
     const store = createAutoStore(c.env);
-    const runs = await store.listAutoRuns(ds.id);
+    // Only the caller's private agents on this dataset — never other users' runs.
+    const runs = await store.listAutoRuns(ds.id, identity.subject);
     return c.json({ runs });
   } catch (e) {
     return errResponse(e);
@@ -2656,11 +2672,68 @@ app.get("/auto", async (c) => {
   }
 });
 
+/** Account-wide GPU jobs (AutoTrials across AutoRuns) — Trainfabric GPU + self-hosted runners. */
+app.get("/gpu/jobs", async (c) => {
+  try {
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
+    const store = createAutoStore(c.env);
+    const runs = await store.listAutoRunsByOwner(identity.subject);
+    const statusFilter = (c.req.query("status") || "").trim().toLowerCase();
+    const providerFilter = (c.req.query("provider") || "").trim().toLowerCase();
+    const jobs = (
+      await Promise.all(
+        runs.map(async (run) => {
+          const trials = await store.listAutoTrials(run.id);
+          const provider =
+            run.compute.provider === "modal" ? "trainfabric_gpu" : run.compute.provider;
+          const repo =
+            run.repo.fullName ||
+            run.repo.url
+              .replace(/^https?:\/\/(www\.)?github\.com\//, "")
+              .replace(/\.git$/, "");
+          return trials.map((t) => ({
+            id: t.id,
+            autoRunId: run.id,
+            status: t.status,
+            score: t.score,
+            kept: t.kept,
+            commitSha: t.commitSha,
+            error: t.error,
+            externalId: t.externalId,
+            provider,
+            runnerId: run.compute.runnerId,
+            repo,
+            repoUrl: run.repo.url,
+            metric: run.protocol.metric.name,
+            createdAt: t.createdAt,
+            updatedAt: t.updatedAt,
+          }));
+        }),
+      )
+    )
+      .flat()
+      .filter((j) => (statusFilter ? j.status === statusFilter : true))
+      .filter((j) => {
+        if (!providerFilter) return true;
+        if (providerFilter === "modal") return j.provider === "trainfabric_gpu";
+        return j.provider === providerFilter;
+      })
+      .sort((a, b) => b.createdAt - a.createdAt);
+    return c.json({ jobs, count: jobs.length });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
 app.get("/auto/:id", async (c) => {
   try {
+    const identity = identityOrAnon(c.get("identity"), c.env);
     const store = createAutoStore(c.env);
     const run = await store.getAutoRun(c.req.param("id"));
     if (!run) return c.json({ error: "Not found" }, 404);
+    const denied = requireAutoRunOwner(run, identity);
+    if (denied) return denied;
     const [trials, activity, messages] = await Promise.all([
       store.listAutoTrials(run.id),
       store.listActivity(run.id).catch(() => []),
@@ -2702,6 +2775,8 @@ app.post("/auto/:id/instructions", async (c) => {
     const store = createAutoStore(c.env);
     const run = await store.getAutoRun(c.req.param("id"));
     if (!run) return c.json({ error: "Not found" }, 404);
+    const denied = requireAutoRunOwner(run, identity);
+    if (denied) return denied;
     const body = (await c.req.json()) as ReportAutoInstructionsRequest;
     if (!body.content?.trim()) return c.json({ error: "content required" }, 400);
     const next = await reportInstructions({ store, run, body });
@@ -2718,7 +2793,8 @@ app.post("/auto/:id/bind-dataset", async (c) => {
     const store = createAutoStore(c.env);
     const run = await store.getAutoRun(c.req.param("id"));
     if (!run) return c.json({ error: "Not found" }, 404);
-    const isOwner = run.ownerId === identity.subject || identity.subject === "anon";
+    const denied = requireAutoRunOwner(run, identity);
+    if (denied) return denied;
     const body = (await c.req.json()) as BindAutoDatasetRequest;
     if (!body.datasetId) return c.json({ error: "datasetId required" }, 400);
     // Resolve snapshot from dataset if not supplied, and authorize access.
@@ -2732,7 +2808,7 @@ app.post("/auto/:id/bind-dataset", async (c) => {
       store,
       run,
       body: { ...body, snapshotId },
-      boundBy: isOwner ? "user" : "agent",
+      boundBy: c.get("authVia") === "agent" ? "agent" : "user",
     });
     return c.json(next);
   } catch (e) {
@@ -2742,9 +2818,12 @@ app.post("/auto/:id/bind-dataset", async (c) => {
 
 app.get("/auto/:id/messages", async (c) => {
   try {
+    const identity = identityOrAnon(c.get("identity"), c.env);
     const store = createAutoStore(c.env);
     const run = await store.getAutoRun(c.req.param("id"));
     if (!run) return c.json({ error: "Not found" }, 404);
+    const denied = requireAutoRunOwner(run, identity);
+    if (denied) return denied;
     const messages = await store.listMessages(run.id);
     const limit = Number(c.req.query("limit") ?? 200);
     return c.json({ messages: messages.slice(-Math.max(1, limit)) });
@@ -2760,6 +2839,8 @@ app.post("/auto/:id/messages", async (c) => {
     const store = createAutoStore(c.env);
     const run = await store.getAutoRun(c.req.param("id"));
     if (!run) return c.json({ error: "Not found" }, 404);
+    const denied = requireAutoRunOwner(run, identity);
+    if (denied) return denied;
     const body = (await c.req.json()) as PostAutoMessageRequest;
     const out = await postAutoMessage({
       store,
@@ -2784,6 +2865,8 @@ app.post("/auto/:id/messages/stream", async (c) => {
     const store = createAutoStore(c.env);
     const run = await store.getAutoRun(c.req.param("id"));
     if (!run) return c.json({ error: "Not found" }, 404);
+    const denied = requireAutoRunOwner(run, identity);
+    if (denied) return denied;
     const body = (await c.req.json()) as {
       messages?: Array<{ role: string; content?: string; parts?: Array<{ type: string; text?: string }> }>;
       content?: string;
@@ -2825,10 +2908,8 @@ app.post("/auto/:id/github-credentials", async (c) => {
     const store = createAutoStore(c.env);
     const run = await store.getAutoRun(c.req.param("id"));
     if (!run) return c.json({ error: "Not found" }, 404);
-    if (run.ownerId !== identity.subject && c.get("authVia") !== "agent") {
-      // Campaign token is minted as the owner — agent/campaign bearer shares owner subject.
-      return c.json({ error: "Forbidden" }, 403);
-    }
+    const denied = requireAutoRunOwner(run, identity);
+    if (denied) return denied;
     const installationId = run.repo.installationId;
     if (!installationId) {
       return c.json({ error: "AutoRun has no GitHub installation bound" }, 400);
@@ -2841,9 +2922,6 @@ app.post("/auto/:id/github-credentials", async (c) => {
     // Owner or campaign token for this run's owner.
     if (inst.userId !== run.ownerId) {
       return c.json({ error: "Installation ownership mismatch" }, 403);
-    }
-    if (identity.subject !== run.ownerId) {
-      return c.json({ error: "Forbidden" }, 403);
     }
     const minted = await createInstallationAccessToken(c.env, installationId);
     const fullName =
@@ -2867,6 +2945,8 @@ app.post("/auto/:id/heartbeat", async (c) => {
     const store = createAutoStore(c.env);
     const run = await store.getAutoRun(c.req.param("id"));
     if (!run) return c.json({ error: "Not found" }, 404);
+    const denied = requireAutoRunOwner(run, identity);
+    if (denied) return denied;
     const body = (await c.req.json().catch(() => ({}))) as {
       phase?: string;
       message?: string;
@@ -2887,9 +2967,8 @@ app.post("/auto/:id/pause", async (c) => {
     const store = createAutoStore(c.env);
     const run = await store.getAutoRun(c.req.param("id"));
     if (!run) return c.json({ error: "Not found" }, 404);
-    if (run.ownerId !== identity.subject && identity.subject !== "anon") {
-      return c.json({ error: "Forbidden" }, 403);
-    }
+    const denied = requireAutoRunOwner(run, identity);
+    if (denied) return denied;
     const next = await pauseAutoRun(store, boxClientFromEnv(c.env), run);
     return c.json(next);
   } catch (e) {
@@ -2904,9 +2983,8 @@ app.post("/auto/:id/resume", async (c) => {
     const store = createAutoStore(c.env);
     const run = await store.getAutoRun(c.req.param("id"));
     if (!run) return c.json({ error: "Not found" }, 404);
-    if (run.ownerId !== identity.subject && identity.subject !== "anon") {
-      return c.json({ error: "Forbidden" }, 403);
-    }
+    const denied = requireAutoRunOwner(run, identity);
+    if (denied) return denied;
     const next = await resumeAutoRun(store, boxClientFromEnv(c.env), run);
     return c.json(next);
   } catch (e) {
@@ -2921,9 +2999,8 @@ app.post("/auto/:id/cancel", async (c) => {
     const store = createAutoStore(c.env);
     const run = await store.getAutoRun(c.req.param("id"));
     if (!run) return c.json({ error: "Not found" }, 404);
-    if (run.ownerId !== identity.subject && identity.subject !== "anon") {
-      return c.json({ error: "Forbidden" }, 403);
-    }
+    const denied = requireAutoRunOwner(run, identity);
+    if (denied) return denied;
     const next = await cancelAutoRun(store, boxClientFromEnv(c.env), run, createApiKeyStore(c.env.DB));
     return c.json(next);
   } catch (e) {
@@ -2933,9 +3010,13 @@ app.post("/auto/:id/cancel", async (c) => {
 
 app.post("/auto/:id/trials", async (c) => {
   try {
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    if (!identity) return c.json({ error: "Unauthorized" }, 401);
     const store = createAutoStore(c.env);
     const run = await store.getAutoRun(c.req.param("id"));
     if (!run) return c.json({ error: "Not found" }, 404);
+    const denied = requireAutoRunOwner(run, identity);
+    if (denied) return denied;
     if (run.status !== "running") return c.json({ error: `run is ${run.status}` }, 409);
     const body = (await c.req.json().catch(() => ({}))) as {
       hypothesis?: string;
@@ -2974,6 +3055,25 @@ app.post("/auto/:id/trials/:trialId/complete", async (c) => {
     if (!run) return c.json({ error: "Not found" }, 404);
     const trial = await store.getAutoTrial(c.req.param("trialId"));
     if (!trial || trial.autoRunId !== run.id) return c.json({ error: "Trial not found" }, 404);
+
+    const identity = identityOrAnon(c.get("identity"), c.env);
+    const runner = await authRunner(store, c.req.header("Authorization"));
+    const completionSecret =
+      c.env.AGENT_TOKEN_SECRET?.trim() ||
+      c.env.GITHUB_TOKEN_CRYPTO_KEY?.trim() ||
+      "dev-trial-completion-secret";
+    const sigOk = await verifyTrialCompletion(
+      completionSecret,
+      run.id,
+      trial.id,
+      c.req.query("sig"),
+    );
+    const ownerOk = ownsAutoRun(run, identity);
+    const runnerOk = Boolean(runner && runner.ownerId === run.ownerId);
+    if (!sigOk && !ownerOk && !runnerOk) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+
     const body = (await c.req.json()) as CompleteAutoTrialRequest;
     const out = await completeTrial({ store, run, trial, body, apiKeys: createApiKeyStore(c.env.DB) });
     return c.json(out);
@@ -3032,9 +3132,12 @@ app.post("/runners/claim", async (c) => {
     const store = createAutoStore(c.env);
     const runner = await authRunner(store, c.req.header("Authorization"));
     if (!runner) return c.json({ error: "Unauthorized" }, 401);
-    const trial = await store.claimPendingTrial(runner.id);
+    const trial = await store.claimPendingTrial(runner.ownerId);
     if (!trial) return c.json({ trial: null });
     const run = await store.getAutoRun(trial.autoRunId);
+    if (!run || run.ownerId !== runner.ownerId) {
+      return c.json({ trial: null });
+    }
     let cloneUrl: string | undefined;
     if (run?.repo.installationId && githubConfigured(c.env)) {
       try {
@@ -3405,9 +3508,11 @@ function buildMcpContext(c: {
       });
     },
     checkAuto: async (autoRunId) => {
+      if (!identity) throw new AuthError("Auth required");
       const store = createAutoStore(c.env);
       const run = await store.getAutoRun(autoRunId);
       if (!run) throw new NotFoundError();
+      if (!ownsAutoRun(run, identity)) throw new NotFoundError();
       const [trials, activity] = await Promise.all([
         store.listAutoTrials(run.id),
         store.listActivity(run.id).catch(() => []),
@@ -3415,31 +3520,31 @@ function buildMcpContext(c: {
       return { run, trials, activity, boundDatasets: run.boundDatasets ?? [] };
     },
     listAutoRuns: async (datasetId) => {
+      if (!identity) throw new AuthError("Auth required");
       const store = createAutoStore(c.env);
-      return store.listAutoRuns(datasetId);
+      return store.listAutoRuns(datasetId, identity.subject);
     },
     pauseAuto: async (autoRunId, action = "pause") => {
       if (!identity) throw new AuthError("Auth required");
       const store = createAutoStore(c.env);
       const run = await store.getAutoRun(autoRunId);
       if (!run) throw new NotFoundError();
-      if (run.ownerId !== identity.subject && identity.subject !== "anon") {
-        throw new AuthError("Forbidden");
-      }
+      if (!ownsAutoRun(run, identity)) throw new NotFoundError();
       const box = boxClientFromEnv(c.env);
       if (action === "resume") return resumeAutoRun(store, box, run);
       if (action === "cancel") return cancelAutoRun(store, box, run, createApiKeyStore(c.env.DB));
       return pauseAutoRun(store, box, run);
     },
     bindAutoDataset: async (autoRunId, datasetId, reason) => {
+      if (!identity) throw new AuthError("Auth required");
       const store = createAutoStore(c.env);
       const run = await store.getAutoRun(autoRunId);
       if (!run) throw new NotFoundError();
+      if (!ownsAutoRun(run, identity)) throw new NotFoundError();
       const ds = await deps.getDataset(datasetId);
       if (!ds) throw new NotFoundError();
       authorizeDataset(ds, identity);
-      const boundBy =
-        run.ownerId === identity?.subject || identity?.subject === "anon" ? "user" : "agent";
+      const boundBy = c.get("authVia") === "agent" ? "agent" : "user";
       return bindDataset({
         store,
         run,
@@ -3448,9 +3553,11 @@ function buildMcpContext(c: {
       });
     },
     messageAutoAgent: async (autoRunId, message) => {
+      if (!identity) throw new AuthError("Auth required");
       const store = createAutoStore(c.env);
       const run = await store.getAutoRun(autoRunId);
       if (!run) throw new NotFoundError();
+      if (!ownsAutoRun(run, identity)) throw new NotFoundError();
       return postAutoMessage({
         store,
         box: boxClientFromEnv(c.env),
@@ -3460,9 +3567,11 @@ function buildMcpContext(c: {
       });
     },
     listAutoMessages: async (autoRunId, limit) => {
+      if (!identity) throw new AuthError("Auth required");
       const store = createAutoStore(c.env);
       const run = await store.getAutoRun(autoRunId);
       if (!run) throw new NotFoundError();
+      if (!ownsAutoRun(run, identity)) throw new NotFoundError();
       const messages = await store.listMessages(run.id);
       return messages.slice(-Math.max(1, limit ?? 50));
     },
@@ -3555,6 +3664,8 @@ export default {
       path.startsWith("/jobs/") ||
       path === "/auto" ||
       path.startsWith("/auto/") ||
+      path === "/gpu/jobs" ||
+      path.startsWith("/gpu/") ||
       path.startsWith("/github") ||
       path.startsWith("/huggingface") ||
       path.startsWith("/agent") ||

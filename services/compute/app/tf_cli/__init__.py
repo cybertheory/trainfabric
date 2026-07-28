@@ -416,9 +416,13 @@ def auto_start(
         help="Comma-separated immutable paths",
     ),
     compute: str = typer.Option(
-        "modal", "--compute", help="Compute provider: modal|runner"
+        "trainfabric_gpu",
+        "--compute",
+        help="Compute provider: trainfabric_gpu|runner (legacy: modal)",
     ),
-    modal_ref: Optional[str] = typer.Option(None, "--modal-ref", help="Modal app ref"),
+    modal_ref: Optional[str] = typer.Option(
+        None, "--modal-ref", help="Managed GPU app/web endpoint override"
+    ),
     runner_id: Optional[str] = typer.Option(
         None, "--runner-id", help="Self-hosted GPU runner id"
     ),
@@ -466,11 +470,16 @@ def auto_start(
         }
 
     provider = compute.strip().lower()
-    if provider not in ("modal", "runner"):
-        print(json.dumps({"error": "--compute must be modal or runner"}), file=sys.stderr)
+    if provider == "modal":
+        provider = "trainfabric_gpu"
+    if provider not in ("trainfabric_gpu", "runner"):
+        print(
+            json.dumps({"error": "--compute must be trainfabric_gpu or runner"}),
+            file=sys.stderr,
+        )
         raise typer.Exit(2)
     compute_cfg: dict[str, Any] = {"provider": provider}
-    if provider == "modal":
+    if provider == "trainfabric_gpu":
         if modal_ref:
             compute_cfg["modalRef"] = modal_ref
     else:

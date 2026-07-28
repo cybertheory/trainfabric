@@ -1,7 +1,10 @@
 /**
- * Pluggable GPU trial providers — Modal first, self-hosted HTTP runners.
- * No SSH in v1.
+ * Pluggable GPU trial providers — managed Trainfabric GPU (Modal-backed)
+ * or self-hosted HTTP runners. No SSH in v1.
  */
+
+import type { AutoComputeProvider } from "@trainfabric/shared";
+import { normalizeComputeProvider } from "@trainfabric/shared";
 
 export interface TrialSubmitSpec {
   trialId: string;
@@ -15,14 +18,17 @@ export interface TrialSubmitSpec {
 }
 
 export interface ComputeProvider {
-  name: "modal" | "runner";
+  name: AutoComputeProvider;
   submitTrial(spec: TrialSubmitSpec): Promise<{ externalId: string }>;
   getStatus?(externalId: string): Promise<{ status: string; score?: number }>;
   cancel?(externalId: string): Promise<void>;
 }
 
-/** Modal trial submit — web endpoint URL or Functions REST invoke. */
-export function createModalProvider(cfg: {
+/**
+ * Managed Trainfabric GPU — Modal web endpoint or Functions REST invoke.
+ * Public provider name is `trainfabric_gpu`.
+ */
+export function createTrainfabricGpuProvider(cfg: {
   token: string;
   /** HTTPS web endpoint (preferred) or Functions API ref e.g. workspace/app/fn */
   appRef: string;
@@ -42,7 +48,7 @@ export function createModalProvider(cfg: {
   });
 
   return {
-    name: "modal",
+    name: "trainfabric_gpu",
     async submitTrial(spec) {
       const body = payload(spec);
       // Preferred: Modal @fastapi_endpoint URL (MODAL_APP_REF=https://….modal.run)
@@ -73,10 +79,10 @@ export function createModalProvider(cfg: {
       if (!res.ok) {
         // Soft-fail path: queue as external pending so webhook can complete
         if (res.status === 404 || res.status === 501) {
-          return { externalId: `modal-pending:${spec.trialId}` };
+          return { externalId: `tf-gpu-pending:${spec.trialId}` };
         }
         const text = await res.text();
-        throw new Error(`Modal submit failed: ${res.status} ${text}`);
+        throw new Error(`Trainfabric GPU submit failed: ${res.status} ${text}`);
       }
       // Web endpoint runs sync and callbacks itself — fire-and-forget id is enough.
       const text = await res.text();
@@ -88,11 +94,14 @@ export function createModalProvider(cfg: {
       }
       return {
         externalId:
-          json.call_id || json.id || json.trial_id || `modal:${spec.trialId}`,
+          json.call_id || json.id || json.trial_id || `tf-gpu:${spec.trialId}`,
       };
     },
   };
 }
+
+/** @deprecated Use createTrainfabricGpuProvider */
+export const createModalProvider = createTrainfabricGpuProvider;
 
 /**
  * Self-hosted runners claim trials via the AutoStore; this provider only
@@ -108,22 +117,23 @@ export function createSelfHostedRunnerProvider(): ComputeProvider {
 }
 
 export function resolveComputeProvider(
-  compute: { provider: "modal" | "runner"; modalRef?: string },
+  compute: { provider: string; modalRef?: string },
   env: { MODAL_TOKEN?: string; MODAL_APP_REF?: string; MODAL_API_BASE?: string },
 ): ComputeProvider {
-  if (compute.provider === "modal") {
+  const provider = normalizeComputeProvider(compute.provider);
+  if (provider === "trainfabric_gpu") {
     const token = env.MODAL_TOKEN;
     const appRef = compute.modalRef || env.MODAL_APP_REF;
     if (!token || !appRef) {
       // Still return a provider that queues externally — completion via webhook
       return {
-        name: "modal",
+        name: "trainfabric_gpu",
         async submitTrial(spec) {
-          return { externalId: `modal-local:${spec.trialId}` };
+          return { externalId: `tf-gpu-local:${spec.trialId}` };
         },
       };
     }
-    return createModalProvider({
+    return createTrainfabricGpuProvider({
       token,
       appRef,
       apiBase: env.MODAL_API_BASE,
