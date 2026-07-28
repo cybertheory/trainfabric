@@ -135,6 +135,30 @@ export async function createInstallationAccessToken(
   return { token: out.token, expiresAt: out.expires_at };
 }
 
+/** True if the App installation still exists on GitHub (false after uninstall). */
+export async function installationExistsOnGithub(
+  env: GithubAppEnv,
+  installationId: number,
+): Promise<boolean> {
+  const jwt = await createAppJwt(env);
+  const res = await fetch(`${GH_API}/app/installations/${installationId}`, {
+    headers: {
+      Authorization: `Bearer ${jwt}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "trainfabric-router",
+    },
+  });
+  if (res.status === 404) return false;
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(
+      `GitHub GET /app/installations/${installationId} → ${res.status}: ${text.slice(0, 300)}`,
+    );
+  }
+  return true;
+}
+
 export type SignedInstallState = {
   userId: string;
   returnTo: string;

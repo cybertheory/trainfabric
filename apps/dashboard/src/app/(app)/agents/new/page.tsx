@@ -248,6 +248,20 @@ function AgentStartCoach() {
     }
   }
 
+  async function disconnectGithub() {
+    if (!authToken) return;
+    try {
+      await apiFetch("/github/connection", { method: "DELETE", token: authToken });
+      setGhStatus({ configured: true, connected: false, installationCount: 0 });
+      setGhInstalls([]);
+      setInstallationId(null);
+      setGhRepos([]);
+      toast.success("GitHub disconnected");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not disconnect GitHub");
+    }
+  }
+
   function selectRepo(repo: GhRepo) {
     setSelectedFullName(repo.fullName);
     setRepoUrl(repo.htmlUrl.replace(/\.git$/, ""));
@@ -422,15 +436,26 @@ function AgentStartCoach() {
                     ? ` · ${ghStatus.installationCount} install${ghStatus.installationCount === 1 ? "" : "s"}`
                     : null}
                 </p>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="mt-2 h-8 px-0"
-                  onClick={() => void connectGithub()}
-                >
-                  Manage install
-                </Button>
+                <div className="mt-2 flex flex-wrap gap-3">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 px-0"
+                    onClick={() => void connectGithub()}
+                  >
+                    Manage install
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 px-0 text-muted-foreground"
+                    onClick={() => void disconnectGithub()}
+                  >
+                    Disconnect
+                  </Button>
+                </div>
               </div>
             ) : (
               <div className="tf-inset flex flex-col items-start gap-3 px-4 py-5">

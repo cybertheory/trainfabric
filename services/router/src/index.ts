@@ -83,6 +83,7 @@ import {
   exchangeOAuthCode,
   getGithubUser,
   githubConfigured,
+  installationExistsOnGithub,
   listInstallationRepoTree,
   listInstallationRepos,
   listUserInstallations,
@@ -1798,15 +1799,35 @@ app.get("/github/status", async (c) => {
     const account = await store.getAccount(gate.identity.subject);
     // Installations are keyed by Clerk user even when user OAuth account row is missing
     // (e.g. App install without "Request user authorization during installation").
-    const installs = (await store.listInstallations(gate.identity.subject)).filter(
+    let installs = (await store.listInstallations(gate.identity.subject)).filter(
       (i) => !i.suspended,
     );
-    const connected = Boolean(account) || installs.length > 0;
+    // Prune rows left behind when uninstall webhook was missed / misconfigured.
+    const live: typeof installs = [];
+    for (const inst of installs) {
+      try {
+        const exists = await installationExistsOnGithub(c.env, inst.installationId);
+        if (exists) live.push(inst);
+        else await store.deleteInstallation(inst.installationId);
+      } catch {
+        // Soft-fail: keep row if GitHub API is temporarily unavailable.
+        live.push(inst);
+      }
+    }
+    installs = live;
+    if (account && installs.length === 0) {
+      // OAuth account alone cannot clone/push — clear stale "connected" after uninstall.
+      await store.deleteAccount(gate.identity.subject);
+    }
+    const connected = installs.length > 0;
+    const login = installs[0]?.accountLogin ?? (connected ? account?.login : undefined);
     return c.json({
       configured: true,
       connected,
-      login: account?.login ?? installs[0]?.accountLogin,
-      avatarUrl: account?.avatarUrl ?? installs[0]?.avatarUrl,
+      login: connected ? login : undefined,
+      avatarUrl: connected
+        ? (installs[0]?.avatarUrl ?? account?.avatarUrl)
+        : undefined,
       installationCount: installs.length,
     });
   } catch (e) {
@@ -2027,7 +2048,14 @@ app.post("/github/webhook", async (c) => {
     if (event === "installation" && payload.installation?.id) {
       const id = payload.installation.id;
       if (payload.action === "deleted") {
+        const existing = await store.getInstallation(id);
         await store.deleteInstallation(id);
+        if (existing) {
+          const remaining = await store.listInstallations(existing.userId);
+          if (remaining.length === 0) {
+            await store.deleteAccount(existing.userId);
+          }
+        }
       } else if (payload.action === "suspend") {
         await store.setInstallationSuspended(id, true);
       } else if (payload.action === "unsuspend") {
