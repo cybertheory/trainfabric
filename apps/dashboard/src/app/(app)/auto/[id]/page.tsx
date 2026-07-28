@@ -130,9 +130,10 @@ export default function AutoRunMonitorPage() {
   const [goalOpen, setGoalOpen] = useState(false);
   const [activityLimit, setActivityLimit] = useState(12);
   const prevStatusRef = useRef<string | null>(null);
-  const { authToken } = useJobTracker();
+  const { authToken, authReady } = useJobTracker();
 
   const load = useCallback(async () => {
+    if (!authToken) return;
     try {
       const out = await apiFetch<AutoDetail>(`/auto/${id}`, { token: authToken });
       setDetail(out);
@@ -143,10 +144,11 @@ export default function AutoRunMonitorPage() {
   }, [id, authToken]);
 
   useEffect(() => {
+    if (!authReady || !authToken) return;
     void load();
     const iv = window.setInterval(() => void load(), 4000);
     return () => window.clearInterval(iv);
-  }, [load]);
+  }, [load, authReady, authToken]);
 
   useEffect(() => {
     const status = detail?.run.status;

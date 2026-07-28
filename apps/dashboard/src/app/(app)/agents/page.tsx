@@ -39,22 +39,40 @@ export default function AgentsPage() {
   const [runs, setRuns] = useState<AutoRun[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // Clerk JWT synced by NotificationAuthBridge — refetch once it lands.
-  const { authToken } = useJobTracker();
+  // Clerk JWT synced by NotificationAuthBridge — wait until ready; never hit /auto bare.
+  const { authToken, authReady } = useJobTracker();
 
   useEffect(() => {
+    if (!authReady) return;
+
+    if (!authToken) {
+      setLoading(false);
+      setRuns([]);
+      setError("Sign in required to list AutoRuns.");
+      return;
+    }
+
+    let cancelled = false;
     setLoading(true);
     apiFetch<AutoListResponse>("/auto", { token: authToken })
       .then((r) => {
+        if (cancelled) return;
         setRuns(r.runs ?? []);
         setError(null);
       })
       .catch((e) => {
+        if (cancelled) return;
         setError(e instanceof Error ? e.message : "Failed to load agents");
         setRuns([]);
       })
-      .finally(() => setLoading(false));
-  }, [authToken]);
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, authReady]);
 
   return (
     <div className="mx-auto max-w-4xl space-y-8 px-1 py-2">

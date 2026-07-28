@@ -65,6 +65,9 @@ type JobTrackerValue = {
   ) => void;
   setAuthToken: (token: string | null) => void;
   authToken: string | null;
+  /** True once Clerk bridge has resolved (signed-in token or signed-out). */
+  authReady: boolean;
+  setAuthReady: (ready: boolean) => void;
 };
 
 const JOBS_KEY = "tf_tracked_jobs";
@@ -148,6 +151,7 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [authToken, setAuthToken] = useState<string | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const jobsRef = useRef(jobs);
   jobsRef.current = jobs;
 
@@ -464,6 +468,8 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
       mergeServerNotifications,
       setAuthToken,
       authToken,
+      authReady,
+      setAuthReady,
     }),
     [
       jobs,
@@ -479,6 +485,7 @@ export function JobTrackerProvider({ children }: { children: ReactNode }) {
       clearFinishedJobs,
       mergeServerNotifications,
       authToken,
+      authReady,
     ],
   );
 

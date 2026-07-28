@@ -40,7 +40,7 @@ function statusClass(status: string): string {
 }
 
 export default function GpuRunsPage() {
-  const { authToken } = useJobTracker();
+  const { authToken, authReady } = useJobTracker();
   const [jobs, setJobs] = useState<GpuJobRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -48,6 +48,15 @@ export default function GpuRunsPage() {
   const [status, setStatus] = useState<"all" | "pending" | "running" | "done" | "error">("all");
 
   useEffect(() => {
+    if (!authReady) return;
+
+    if (!authToken) {
+      setLoading(false);
+      setJobs([]);
+      setError("Sign in required to list GPU jobs.");
+      return;
+    }
+
     let cancelled = false;
     async function load() {
       setLoading(true);
@@ -144,7 +153,7 @@ export default function GpuRunsPage() {
     return () => {
       cancelled = true;
     };
-  }, [authToken, provider, status]);
+  }, [authToken, authReady, provider, status]);
 
   const counts = useMemo(() => {
     const running = jobs.filter((j) => j.status === "running" || j.status === "claimed" || j.status === "pending")
