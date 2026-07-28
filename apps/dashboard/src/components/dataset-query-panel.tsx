@@ -420,7 +420,6 @@ export function DatasetQueryPanel({
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="truncate text-sm font-medium">{q.name}</span>
                       {q.visibility === "public" ? <Badge variant="outline">public</Badge> : null}
-                      {q.costTier ? <CostBadge tier={q.costTier} /> : null}
                     </div>
                     <p className="truncate font-mono text-[11px] text-muted-foreground">
                       {q.filter || "(no filter)"}
