@@ -1,7 +1,8 @@
 "use client";
 
+import { FormEvent, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Bot, Database, Plus, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -11,6 +12,8 @@ import { cn } from "@/lib/utils";
 
 export function SiteHeader() {
   const pathname = usePathname();
+  const router = useRouter();
+  const [q, setQ] = useState("");
 
   function navClass(href: string) {
     const active = pathname === href || (href !== "/home" && pathname.startsWith(href));
@@ -18,6 +21,12 @@ export function SiteHeader() {
       "rounded-md px-2 py-1 transition-colors hover:text-foreground",
       active ? "bg-[hsl(var(--elevated))] text-foreground" : "text-muted-foreground",
     );
+  }
+
+  function onSearch(e: FormEvent) {
+    e.preventDefault();
+    const term = q.trim();
+    router.push(term ? `/datasets?search=${encodeURIComponent(term)}` : "/datasets");
   }
 
   return (
@@ -46,13 +55,19 @@ export function SiteHeader() {
           </Link>
         </nav>
 
-        <Link
-          href="/datasets"
-          className="tf-inset ml-2 hidden h-9 max-w-sm flex-1 items-center gap-2 px-3 text-sm text-muted-foreground transition hover:border-[hsl(var(--border-strong))] sm:flex"
+        <form
+          onSubmit={onSearch}
+          className="tf-inset ml-2 hidden h-9 max-w-sm flex-1 items-center gap-2 px-3 sm:flex"
         >
-          <Search className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">Search datasets, agents…</span>
-        </Link>
+          <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search datasets…"
+            className="h-full w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+            aria-label="Search datasets"
+          />
+        </form>
 
         <div className="ml-auto flex items-center gap-2">
           <JobProgressChip />

@@ -180,6 +180,46 @@ function registerTools(server: McpServer, ctx: McpContext) {
   );
 
   server.registerTool(
+    "post_social_update",
+    {
+      description:
+        "Post a research update to a dataset community feed (auth required).",
+      inputSchema: {
+        dataset_id: z.string(),
+        body: z.string(),
+        findings: z.record(z.unknown()).optional(),
+        source: z.enum(["user", "agent"]).optional(),
+        author_name: z.string().optional(),
+      },
+    },
+    async (args) => run("post_social_update", args as Record<string, unknown>),
+  );
+
+  server.registerTool(
+    "connect_dataset",
+    {
+      description: "Connect (subscribe) or disconnect the current user to a dataset community.",
+      inputSchema: {
+        dataset_id: z.string(),
+        connect: z.boolean().optional(),
+      },
+    },
+    async (args) => run("connect_dataset", args as Record<string, unknown>),
+  );
+
+  server.registerTool(
+    "list_social_feed",
+    {
+      description: "List social feed posts for connected datasets (or a specific dataset).",
+      inputSchema: {
+        dataset_id: z.string().optional(),
+        limit: z.number().optional(),
+      },
+    },
+    async (args) => run("list_social_feed", args as Record<string, unknown>),
+  );
+
+  server.registerTool(
     "start_auto",
     {
       description:

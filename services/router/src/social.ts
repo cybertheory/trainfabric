@@ -236,6 +236,14 @@ export function createD1SocialStore(db: D1Database): SocialStore {
         )
         .bind(userId, datasetId, source, Date.now())
         .run();
+      try {
+        await db
+          .prepare("UPDATE datasets SET connections = IFNULL(connections, 0) + 1 WHERE id = ?")
+          .bind(datasetId)
+          .run();
+      } catch {
+        /* non-fatal if dataset row missing */
+      }
       return { connected: true, created: true, source };
     },
 
@@ -250,6 +258,18 @@ export function createD1SocialStore(db: D1Database): SocialStore {
           .prepare("DELETE FROM connections WHERE user_id = ? AND dataset_id = ?")
           .bind(userId, datasetId)
           .run();
+        try {
+          await db
+            .prepare(
+              `UPDATE datasets SET connections = CASE
+                WHEN IFNULL(connections, 0) > 0 THEN connections - 1 ELSE 0 END
+               WHERE id = ?`,
+            )
+            .bind(datasetId)
+            .run();
+        } catch {
+          /* non-fatal */
+        }
         return { connected: false };
       }
       await db
@@ -258,6 +278,14 @@ export function createD1SocialStore(db: D1Database): SocialStore {
         )
         .bind(userId, datasetId, source, Date.now())
         .run();
+      try {
+        await db
+          .prepare("UPDATE datasets SET connections = IFNULL(connections, 0) + 1 WHERE id = ?")
+          .bind(datasetId)
+          .run();
+      } catch {
+        /* non-fatal */
+      }
       return { connected: true };
     },
 
@@ -453,8 +481,8 @@ export function createD1SocialStore(db: D1Database): SocialStore {
           .all<{ dataset_id: string }>();
         datasetIds = (conns.results ?? []).map((c) => c.dataset_id);
         if (datasetIds.length === 0) {
-          // No connections yet — show global public feed so home isn't empty.
-          datasetIds = null;
+          // Connection-scoped Home only — no global public fallback.
+          return [];
         }
       }
 

@@ -34,6 +34,9 @@ import { upsertDatasetEmbedding } from "./discover";
 import { CatalogDO } from "./CatalogDO";
 import { WarmRouterDO } from "./WarmRouterDO";
 import { ComputeContainer as ComputeContainerClass } from "./ComputeContainer";
+import { TrainfabricAgentDO } from "./TrainfabricAgentDO";
+import { runTrainfabricAgentTurn } from "./agentLoop";
+import type { AgentStoredMessage } from "./TrainfabricAgentDO";
 import {
   autoConnect,
   createSocialStore,
@@ -109,7 +112,7 @@ import {
 } from "./huggingfaceStore";
 import type { RemoteAuth } from "./remoteSource";
 
-export { CatalogDO, WarmRouterDO, ComputeContainerClass as ComputeContainer };
+export { CatalogDO, WarmRouterDO, ComputeContainerClass as ComputeContainer, TrainfabricAgentDO };
 
 export interface Env {
   R2: R2Bucket;
@@ -117,6 +120,7 @@ export interface Env {
   CATALOG_DO: DurableObjectNamespace;
   WARM_ROUTER_DO: DurableObjectNamespace;
   COMPUTE?: DurableObjectNamespace<ComputeContainer>;
+  TRAINFABRIC_AGENT_DO?: DurableObjectNamespace;
   VECTORIZE?: VectorizeIndex;
   AI?: Ai;
   CONVEX_URL?: string;
@@ -912,6 +916,129 @@ app.post("/notifications/read-all", async (c) => {
     if (!identity) return c.json({ error: "Unauthorized" }, 401);
     const out = await store.markAllNotificationsRead(identity.subject);
     return c.json(out);
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+/* ── Trainfabric agent (Home ask box) ─────────────────────────────── */
+
+function agentDoStub(env: Env, userId: string) {
+  if (!env.TRAINFABRIC_AGENT_DO) throw new Error("TRAINFABRIC_AGENT_DO not bound");
+  const id = env.TRAINFABRIC_AGENT_DO.idFromName(userId);
+  return env.TRAINFABRIC_AGENT_DO.get(id);
+}
+
+app.post("/agent/sessions", async (c) => {
+  try {
+    const gate = requireClerkIdentity(c);
+    if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+    if (!c.env.TRAINFABRIC_AGENT_DO) {
+      return c.json({ error: "Trainfabric agent DO not configured" }, 503);
+    }
+    const stub = agentDoStub(c.env, gate.identity.subject);
+    await stub.fetch("https://agent/clear", { method: "POST" });
+    return c.json({ ok: true, sessionKey: gate.identity.subject });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.get("/agent/messages", async (c) => {
+  try {
+    const gate = requireClerkIdentity(c);
+    if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+    if (!c.env.TRAINFABRIC_AGENT_DO) {
+      return c.json({ messages: [] });
+    }
+    const stub = agentDoStub(c.env, gate.identity.subject);
+    const limit = c.req.query("limit") || "100";
+    const res = await stub.fetch(`https://agent/messages?limit=${encodeURIComponent(limit)}`);
+    return new Response(res.body, {
+      status: res.status,
+      headers: { "content-type": "application/json" },
+    });
+  } catch (e) {
+    return errResponse(e);
+  }
+});
+
+app.post("/agent/messages/stream", async (c) => {
+  try {
+    const gate = requireClerkIdentity(c);
+    if ("error" in gate) return c.json({ error: gate.error }, gate.status);
+    if (!c.env.TRAINFABRIC_AGENT_DO) {
+      return c.json({ error: "Trainfabric agent DO not configured" }, 503);
+    }
+
+    const body = (await c.req.json()) as {
+      messages?: Array<{
+        role: string;
+        content?: string;
+        parts?: Array<{ type: string; text?: string }>;
+      }>;
+      content?: string;
+    };
+    let content = body.content ?? "";
+    if (!content && Array.isArray(body.messages)) {
+      const last = [...body.messages].reverse().find((m) => m.role === "user");
+      content =
+        last?.content ??
+        last?.parts?.filter((p) => p.type === "text").map((p) => p.text ?? "").join("") ??
+        "";
+    }
+    content = content.trim();
+    if (!content) return c.json({ error: "message required" }, 400);
+
+    const stub = agentDoStub(c.env, gate.identity.subject);
+    const histRes = await stub.fetch("https://agent/messages?limit=40");
+    const histJson = (await histRes.json()) as { messages?: AgentStoredMessage[] };
+    const prior = (histJson.messages ?? []).filter(
+      (m) => m.role === "user" || m.role === "assistant" || m.role === "system",
+    );
+
+    const userMsg: AgentStoredMessage = {
+      id: `msg_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`,
+      role: "user",
+      content,
+      createdAt: Date.now(),
+    };
+    await stub.fetch("https://agent/append", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(userMsg),
+    });
+
+    const mcp = buildMcpContext({
+      env: c.env,
+      get: () => gate.identity,
+      req: { url: c.req.url },
+      executionCtx: c.executionCtx,
+    });
+
+    const replyText = await runTrainfabricAgentTurn(
+      c.env,
+      mcp,
+      prior.map((m) => ({
+        role: m.role as "user" | "assistant" | "system",
+        content: m.content,
+      })),
+      content,
+    );
+
+    const assistantMsg: AgentStoredMessage = {
+      id: `msg_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`,
+      role: "assistant",
+      content: replyText,
+      createdAt: Date.now(),
+    };
+    await stub.fetch("https://agent/append", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(assistantMsg),
+    });
+
+    return streamAiMessage(assistantMsg.id, assistantMsg.content);
   } catch (e) {
     return errResponse(e);
   }
@@ -3174,6 +3301,7 @@ export default {
       path.startsWith("/auto/") ||
       path.startsWith("/github") ||
       path.startsWith("/huggingface") ||
+      path.startsWith("/agent") ||
       path.startsWith("/runners") ||
       path.startsWith("/results/") ||
       path.startsWith("/r2/") ||

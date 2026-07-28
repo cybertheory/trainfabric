@@ -57,7 +57,8 @@ max_instances = 2
 bindings = [
   { name = "CATALOG_DO", class_name = "CatalogDO" },
   { name = "WARM_ROUTER_DO", class_name = "WarmRouterDO" },
-  { name = "COMPUTE", class_name = "ComputeContainer" }
+  { name = "COMPUTE", class_name = "ComputeContainer" },
+  { name = "TRAINFABRIC_AGENT_DO", class_name = "TrainfabricAgentDO" }
 ]
 
 [[migrations]]
@@ -67,6 +68,10 @@ new_classes = ["CatalogDO", "WarmRouterDO"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["ComputeContainer"]
+
+[[migrations]]
+tag = "v3"
+new_classes = ["TrainfabricAgentDO"]
 
 # Dashboard UI is hosted on Vercel (dynamic Next.js).
 # This Worker is API-only.

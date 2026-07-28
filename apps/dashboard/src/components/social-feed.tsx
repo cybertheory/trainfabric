@@ -1,51 +1,33 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import type { DatasetMeta, SocialPost } from "@trainfabric/shared";
-import {
-  Bot,
-  BookOpen,
-  Database,
-  Loader2,
-  Plus,
-  Search,
-  Send,
-  Star,
-  X,
-} from "lucide-react";
-import { toast } from "sonner";
+import type { AppNotification, DatasetMeta, SocialPost } from "@trainfabric/shared";
+import { BookOpen, Bot, Database, Link2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DatasetCard } from "@/components/dataset-card";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { SocialActivityCard } from "@/components/social-activity-card";
+import { SocialActivityCard, timeAgoLabel } from "@/components/social-activity-card";
+import { TrainfabricAgentBox } from "@/components/trainfabric-agent-box";
 import { apiFetch } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-type Props = {
-  token?: string | null;
-};
+type FeedItem =
+  | { type: "post"; key: string; at: number; post: SocialPost }
+  | { type: "notification"; key: string; at: number; notification: AppNotification };
 
-export function SocialFeedHome({ token }: Props) {
+export function SocialFeedHome({ token }: { token?: string | null }) {
   const [posts, setPosts] = useState<SocialPost[]>([]);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [topDatasets, setTopDatasets] = useState<DatasetMeta[]>([]);
   const [connectedIds, setConnectedIds] = useState<string[]>([]);
   const [connectedDatasets, setConnectedDatasets] = useState<DatasetMeta[]>([]);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<DatasetMeta[]>([]);
-  const [searching, setSearching] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [body, setBody] = useState("");
-  const [datasetId, setDatasetId] = useState("");
-  const [posting, setPosting] = useState(false);
-  const [composeOpen, setComposeOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [feed, catalog, conns] = await Promise.all([
+      const [feed, catalog, conns, notifs] = await Promise.all([
         apiFetch<{ posts: SocialPost[] }>("/social/feed?limit=50", { token }),
         apiFetch<{ datasets: DatasetMeta[] }>("/datasets?limit=20", { token }),
         token
@@ -57,112 +39,55 @@ export function SocialFeedHome({ token }: Props) {
               connections: [] as { datasetId: string }[],
               datasets: [] as DatasetMeta[],
             }),
+        token
+          ? apiFetch<{ notifications: AppNotification[] }>("/notifications?limit=40", {
+              token,
+            }).catch(() => ({ notifications: [] }))
+          : Promise.resolve({ notifications: [] as AppNotification[] }),
       ]);
       setPosts(feed.posts ?? []);
-      const sorted = [...(catalog.datasets ?? [])].sort((a, b) => b.stars - a.stars);
+      const sorted = [...(catalog.datasets ?? [])].sort(
+        (a, b) => b.connections - a.connections,
+      );
       setTopDatasets(sorted.slice(0, 8));
       setConnectedIds(conns.connections.map((c) => c.datasetId));
       setConnectedDatasets(conns.datasets ?? []);
-      if (!datasetId && (conns.connections[0] || sorted[0])) {
-        setDatasetId(conns.connections[0]?.datasetId ?? sorted[0]!.id);
-      }
+      setNotifications(notifs.notifications ?? []);
     } catch {
       /* keep empty */
     } finally {
       setLoading(false);
     }
-  }, [token, datasetId]);
-
-  useEffect(() => {
-    const query = searchQuery.trim();
-    if (!query) {
-      setSearchResults([]);
-      setSearching(false);
-      return;
-    }
-    setSearching(true);
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      apiFetch<{ datasets: DatasetMeta[] }>(
-        `/datasets?search=${encodeURIComponent(query)}&limit=12`,
-        { token, signal: controller.signal },
-      )
-        .then((result) => setSearchResults(result.datasets ?? []))
-        .catch(() => {
-          if (!controller.signal.aborted) setSearchResults([]);
-        })
-        .finally(() => {
-          if (!controller.signal.aborted) setSearching(false);
-        });
-    }, 180);
-    return () => {
-      window.clearTimeout(timer);
-      controller.abort();
-    };
-  }, [searchQuery, token]);
+  }, [token]);
 
   useEffect(() => {
     void refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- initial load
-  }, [token]);
+  }, [refresh]);
 
-  const datasetOptions = useMemo(() => {
-    const byId = new Map(
-      [...connectedDatasets, ...topDatasets].map((dataset) => [dataset.id, dataset]),
-    );
-    for (const id of connectedIds) {
-      if (!byId.has(id)) {
-        const fromPost = posts.find((p) => p.datasetId === id);
-        if (fromPost) {
-          byId.set(id, {
-            id,
-            owner: fromPost.datasetOwner ?? "?",
-            name: fromPost.datasetName ?? id,
-            visibility: "public",
-            description: "",
-            tags: [],
-            stars: 0,
-            latestSnapshotId: "",
-            rowCount: 0,
-            sizeBytes: 0,
-            kind: "base",
-            createdAt: 0,
-            updatedAt: 0,
-          });
-        }
-      }
+  const hasConnections = connectedIds.length > 0;
+
+  const feedItems: FeedItem[] = (() => {
+    const items: FeedItem[] = [];
+    for (const post of posts) {
+      items.push({ type: "post", key: `post-${post.id}`, at: post.createdAt, post });
     }
-    return Array.from(byId.values());
-  }, [topDatasets, connectedDatasets, connectedIds, posts]);
-
-  const selectedDataset = datasetOptions.find((d) => d.id === datasetId);
-
-  async function submitPost() {
-    if (!body.trim() || !datasetId) {
-      toast.error("Pick a dataset and write an update");
-      return;
-    }
-    setPosting(true);
-    try {
-      const out = await apiFetch<{ post: SocialPost }>("/social/posts", {
-        method: "POST",
-        token,
-        body: JSON.stringify({ datasetId, body: body.trim(), source: "user" }),
+    // Notifications that aren't already represented as posts we have
+    const postIds = new Set(posts.map((p) => p.id));
+    for (const n of notifications) {
+      if (n.postId && postIds.has(n.postId)) continue;
+      items.push({
+        type: "notification",
+        key: `notif-${n.id}`,
+        at: n.createdAt,
+        notification: n,
       });
-      setPosts((prev) => [out.post, ...prev]);
-      setBody("");
-      setComposeOpen(false);
-      toast.success("Posted to the community");
-    } catch (e) {
-      toast.error("Could not post", { description: String(e) });
-    } finally {
-      setPosting(false);
     }
-  }
+    items.sort((a, b) => b.at - a.at);
+    return items;
+  })();
 
   return (
     <div className="mx-auto grid max-w-[1400px] gap-6 px-4 py-6 lg:grid-cols-[240px_minmax(0,1fr)] xl:grid-cols-[240px_minmax(0,1fr)_260px] sm:px-6 lg:px-8">
-      {/* Left rail */}
       <aside className="order-2 space-y-5 lg:order-1 lg:sticky lg:top-20 lg:self-start">
         <div className="tf-surface overflow-hidden rounded-xl p-3">
           <div className="mb-2 flex items-center justify-between px-1">
@@ -191,8 +116,8 @@ export function SocialFeedHome({ token }: Props) {
                     </p>
                     <p className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
                       <span className="inline-flex items-center gap-0.5">
-                        <Star className="h-3 w-3" />
-                        {d.stars}
+                        <Link2 className="h-3 w-3" />
+                        {d.connections}
                       </span>
                       {connectedIds.includes(d.id) ? (
                         <Badge variant="secondary" className="h-4 px-1 text-[10px]">
@@ -231,161 +156,40 @@ export function SocialFeedHome({ token }: Props) {
         ) : null}
       </aside>
 
-      {/* Center */}
       <div className="order-1 min-w-0 space-y-5 lg:order-2">
         <header className="space-y-1">
           <h1 className="font-display text-2xl font-semibold tracking-tight sm:text-3xl">Home</h1>
           <p className="text-sm text-muted-foreground">
-            Activity across datasets you follow — research notes from agents and humans.
+            Ask Trainfabric agent, then catch up on activity from datasets you follow.
           </p>
         </header>
 
-        {/* GitHub-style command / compose hub */}
-        <section className="tf-elevated overflow-hidden">
-          <div className="border-b border-[hsl(var(--border-subtle))] px-4 pt-4">
-            <Textarea
-              value={composeOpen || body ? body : ""}
-              onFocus={() => setComposeOpen(true)}
-              onChange={(e) => {
-                setComposeOpen(true);
-                setBody(e.target.value);
-              }}
-              placeholder="Share an update, or search datasets…"
-              rows={composeOpen || body ? 3 : 1}
-              className="min-h-[40px] resize-none border-0 bg-transparent px-0 py-1 text-base shadow-none focus-visible:ring-0"
-            />
-          </div>
+        <TrainfabricAgentBox token={token} />
 
-          <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-              <select
-                className="h-8 max-w-[14rem] truncate rounded-md border border-[hsl(var(--border-strong))] bg-[hsl(var(--inset))] px-2 text-xs"
-                value={datasetId}
-                onChange={(e) => setDatasetId(e.target.value)}
-                aria-label="Dataset"
-              >
-                <option value="">Dataset…</option>
-                {datasetOptions.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.owner}/{d.name}
-                  </option>
-                ))}
-              </select>
-              {selectedDataset ? (
-                <span className="hidden text-[11px] text-muted-foreground sm:inline">
-                  Posting to {selectedDataset.owner}/{selectedDataset.name}
-                </span>
-              ) : null}
-            </div>
-            <div className="flex items-center gap-1.5">
-              <div className="relative hidden sm:block">
-                <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search…"
-                  className="h-8 w-36 border-[hsl(var(--border-strong))] bg-[hsl(var(--inset))] pl-7 text-xs"
-                />
-              </div>
-              <Button
-                type="button"
-                size="sm"
-                className="h-8"
-                disabled={posting || !body.trim() || !datasetId}
-                onClick={() => void submitPost()}
-              >
-                {posting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                Post
-              </Button>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-2 border-t border-[hsl(var(--border-subtle))] px-3 py-2.5">
-            <QuickPill href="/agents/new" icon={Bot}>
-              Agent
-            </QuickPill>
-            <QuickPill href="/datasets" icon={Database}>
-              Discover
-            </QuickPill>
-            <QuickPill href="/new" icon={Plus}>
-              Publish
-            </QuickPill>
-            <QuickPill href="/docs/mcp" icon={BookOpen}>
-              MCP
-            </QuickPill>
-          </div>
-
-          {/* Mobile search */}
-          <div className="border-t border-[hsl(var(--border-subtle))] px-3 py-2 sm:hidden">
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search datasets…"
-                className="h-9 border-[hsl(var(--border-strong))] bg-[hsl(var(--inset))] pl-8"
-              />
-              {searching ? (
-                <Loader2 className="absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin" />
-              ) : searchQuery ? (
-                <button
-                  type="button"
-                  aria-label="Clear"
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2"
-                  onClick={() => setSearchQuery("")}
-                >
-                  <X className="h-3.5 w-3.5 text-muted-foreground" />
-                </button>
-              ) : null}
-            </div>
-          </div>
-
-          {searchQuery.trim() ? (
-            <div className="space-y-3 border-t border-[hsl(var(--border-subtle))] bg-[hsl(var(--inset))] p-3">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-sm font-medium">Dataset results</p>
-                <Button asChild variant="ghost" size="sm" className="h-7">
-                  <Link href={`/datasets?search=${encodeURIComponent(searchQuery.trim())}`}>
-                    View all
-                  </Link>
-                </Button>
-              </div>
-              {searchResults.length ? (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {searchResults.slice(0, 4).map((dataset) => (
-                    <DatasetCard key={dataset.id} dataset={dataset} />
-                  ))}
-                </div>
-              ) : !searching ? (
-                <p className="py-4 text-center text-sm text-muted-foreground">
-                  No datasets match “{searchQuery.trim()}”.
-                </p>
-              ) : null}
-            </div>
-          ) : null}
-        </section>
-
-        {/* Feed */}
         <section className="space-y-3">
           <div className="flex items-center justify-between px-0.5">
-            <h2 className="text-sm font-semibold text-foreground">Feed</h2>
+            <h2 className="text-sm font-semibold text-foreground">Activity</h2>
             <span className="text-xs text-muted-foreground">
-              {loading ? "…" : `${posts.length} update${posts.length === 1 ? "" : "s"}`}
+              {loading
+                ? "…"
+                : hasConnections
+                  ? `${feedItems.length} event${feedItems.length === 1 ? "" : "s"}`
+                  : "connected datasets only"}
             </span>
           </div>
 
           {loading ? (
             <div className="tf-card flex items-center gap-2 px-4 py-8 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
-              Loading feed…
+              Loading activity…
             </div>
           ) : null}
 
-          {!loading && posts.length === 0 ? (
+          {!loading && !hasConnections ? (
             <div className="tf-inset border-dashed px-4 py-12 text-center">
               <Database className="mx-auto h-8 w-8 text-muted-foreground/50" />
               <p className="mt-3 text-sm text-muted-foreground">
-                No activity yet. Connect to a dataset, run an agent, or post above.
+                Connect a dataset to see activity here.
               </p>
               <div className="mt-4 flex flex-wrap justify-center gap-2">
                 <Button asChild size="sm">
@@ -398,17 +202,30 @@ export function SocialFeedHome({ token }: Props) {
             </div>
           ) : null}
 
+          {!loading && hasConnections && feedItems.length === 0 ? (
+            <div className="tf-inset border-dashed px-4 py-12 text-center">
+              <p className="text-sm text-muted-foreground">
+                No events yet on your connected datasets.
+              </p>
+            </div>
+          ) : null}
+
           <ul className="space-y-3">
-            {posts.map((p) => (
-              <li key={p.id}>
-                <SocialActivityCard post={p} />
-              </li>
-            ))}
+            {feedItems.map((item) =>
+              item.type === "post" ? (
+                <li key={item.key}>
+                  <SocialActivityCard post={item.post} />
+                </li>
+              ) : (
+                <li key={item.key}>
+                  <NotificationEventCard notification={item.notification} />
+                </li>
+              ),
+            )}
           </ul>
         </section>
       </div>
 
-      {/* Right rail */}
       <aside className="order-3 hidden space-y-4 xl:sticky xl:top-20 xl:block xl:self-start">
         <div className="tf-surface space-y-3 rounded-xl p-4">
           <h2 className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
@@ -447,7 +264,7 @@ export function SocialFeedHome({ token }: Props) {
                 <BookOpen className="h-3.5 w-3.5 text-primary" />
                 <span>
                   <span className="block font-medium">Connect via MCP</span>
-                  <span className="text-[11px] text-muted-foreground">Same loop as the dashboard</span>
+                  <span className="text-[11px] text-muted-foreground">Same tools as this agent</span>
                 </span>
               </Link>
             </li>
@@ -470,22 +287,32 @@ export function SocialFeedHome({ token }: Props) {
   );
 }
 
-function QuickPill({
-  href,
-  icon: Icon,
-  children,
-}: {
-  href: string;
-  icon: React.ComponentType<{ className?: string }>;
-  children: React.ReactNode;
-}) {
-  return (
-    <Link
-      href={href}
-      className="inline-flex h-8 items-center gap-1.5 rounded-full border border-[hsl(var(--border-strong))] bg-[hsl(var(--surface))] px-3 text-xs font-medium text-muted-foreground transition hover:border-primary/40 hover:bg-[hsl(var(--elevated))] hover:text-foreground"
-    >
-      <Icon className="h-3.5 w-3.5" />
-      {children}
-    </Link>
+function NotificationEventCard({ notification }: { notification: AppNotification }) {
+  const inner = (
+    <article className="tf-card p-4 sm:p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-foreground">{notification.title}</p>
+          {notification.body ? (
+            <p className="mt-1 text-sm text-muted-foreground line-clamp-3">{notification.body}</p>
+          ) : null}
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            {notification.kind.replace(/_/g, " ")} · {timeAgoLabel(notification.createdAt)}
+            {!notification.read ? " · unread" : ""}
+          </p>
+        </div>
+        <Badge variant="secondary" className="shrink-0 text-[10px]">
+          event
+        </Badge>
+      </div>
+    </article>
   );
+  if (notification.href) {
+    return (
+      <Link href={notification.href} className="block transition hover:opacity-95">
+        {inner}
+      </Link>
+    );
+  }
+  return inner;
 }
