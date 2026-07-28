@@ -119,15 +119,23 @@ export default function DatasetDetailPage() {
 
   if (notFound) {
     return (
-      <p className="text-muted-foreground">
-        Dataset <code>{owner}/{name}</code> not found.
-      </p>
+      <div className="mx-auto max-w-[1400px] px-4 py-8 sm:px-6 lg:px-8">
+        <p className="text-muted-foreground">
+          Dataset <code>{owner}/{name}</code> not found.
+        </p>
+      </div>
     );
   }
-  if (!dataset) return <p className="text-muted-foreground">Loading…</p>;
+  if (!dataset) {
+    return (
+      <div className="mx-auto max-w-[1400px] px-4 py-8 sm:px-6 lg:px-8">
+        <p className="text-muted-foreground">Loading…</p>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-8">
+    <div className="mx-auto max-w-[1400px] space-y-8 px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
       <header className="flex flex-wrap items-start justify-between gap-4 border-b border-border/70 pb-6">
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
