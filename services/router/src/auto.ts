@@ -18,6 +18,7 @@ import { normalizeComputeProvider } from "@trainfabric/shared";
 import type { AutoStore } from "./autoStore";
 import type { ApiKeyStore } from "./apiKeys";
 import type { BoxClient } from "./box";
+import { BoxError } from "./box";
 import { resolveComputeProvider } from "./computeProviders";
 
 function randomId(prefix: string): string {
@@ -412,6 +413,18 @@ export async function enqueueTrial(opts: {
   run: AutoRun;
   hypothesis?: string;
   commitSha?: string;
+  /** Optional lakehouse handoff for managed Modal (s3:// + size → cluster tier). */
+  dataSpec?: {
+    uri: string;
+    endpoint_url?: string;
+    format?: string;
+    region?: string;
+    size_bytes?: number;
+    estimated_bytes?: number;
+    cluster?: boolean;
+  };
+  estimatedBytes?: number;
+  gpuNodes?: number;
   callbackBaseUrl: string;
   /** When set, Modal/GPU clones via authenticated URL (token not stored on AutoRun). */
   githubToken?: string;
@@ -456,6 +469,9 @@ export async function enqueueTrial(opts: {
     budgetSec: Math.min(opts.run.protocol.budget.maxWallClockSec, 3600),
     callbackUrl: `${opts.callbackBaseUrl}/auto/${opts.run.id}/trials/${trialId}/complete?sig=${sig}`,
     env: opts.githubToken ? { GITHUB_TOKEN: opts.githubToken } : undefined,
+    dataSpec: opts.dataSpec,
+    estimatedBytes: opts.estimatedBytes,
+    gpuNodes: opts.gpuNodes,
   });
 
   // Managed GPU web endpoints often complete (via callback) before submitTrial returns.
@@ -827,6 +843,92 @@ export async function heartbeatAutoRun(opts: {
       { phase: opts.body.phase, ...(opts.body.meta || {}) },
     );
   }
+  return next;
+}
+
+const ACTIVE_RUN_STATUSES = new Set(["provisioning", "running", "awaiting_user"]);
+const DEAD_BOX_STATES = new Set([
+  "stopped",
+  "error",
+  "deleted",
+  "terminated",
+  "dead",
+  "destroyed",
+]);
+/** No heartbeat for this long while active → treat as dead (boxes stop without notifying us). */
+export const AUTO_RUN_STALE_MS = 30 * 60 * 1000;
+
+/**
+ * Mark AutoRuns as error when their Box is stopped/gone or the daemon went silent.
+ * Paused runs intentionally stop the box — skip those.
+ */
+export async function reconcileAutoRunLiveness(opts: {
+  store: AutoStore;
+  run: AutoRun;
+  box: BoxClient | null;
+  apiKeys?: ApiKeyStore | null;
+  now?: number;
+  staleMs?: number;
+}): Promise<AutoRun> {
+  const run = opts.run;
+  if (!ACTIVE_RUN_STATUSES.has(run.status)) return run;
+
+  const now = opts.now ?? Date.now();
+  const staleMs = opts.staleMs ?? AUTO_RUN_STALE_MS;
+  let deadReason: string | null = null;
+
+  const boxId = run.box.boxId;
+  if (opts.box && boxId && !boxId.startsWith("stub_")) {
+    try {
+      const rec = await opts.box.get(boxId);
+      const state = String(rec.state ?? "").toLowerCase();
+      if (DEAD_BOX_STATES.has(state)) {
+        deadReason = `Sandbox ${state} — agent can no longer report progress`;
+      }
+    } catch (e) {
+      if (e instanceof BoxError && (e.status === 404 || e.status === 410)) {
+        deadReason = "Sandbox no longer exists";
+      }
+      /* other Box API failures: fall through to heartbeat staleness */
+    }
+  }
+
+  if (!deadReason) {
+    const last = run.progress?.updatedAt || run.updatedAt || run.createdAt;
+    if (typeof last === "number" && now - last > staleMs) {
+      const mins = Math.max(1, Math.round((now - last) / 60_000));
+      deadReason = `No agent heartbeat for ${mins}m — sandbox likely stopped`;
+    }
+  }
+
+  if (!deadReason) return run;
+
+  const next: AutoRun = {
+    ...run,
+    status: "error",
+    error: deadReason,
+    updatedAt: now,
+  };
+  await opts.store.upsertAutoRun(next);
+  await revokeCampaignApiKey(opts.apiKeys, next);
+  await logActivity(opts.store, next.id, "status", deadReason, { reconciled: true });
+
+  try {
+    const trials = await opts.store.listAutoTrials(next.id);
+    for (const t of trials) {
+      if (t.status === "pending" || t.status === "claimed" || t.status === "running") {
+        await opts.store.upsertAutoTrial({
+          ...t,
+          status: "error",
+          error: deadReason,
+          updatedAt: now,
+        });
+      }
+    }
+  } catch {
+    /* best-effort */
+  }
+
   return next;
 }
 

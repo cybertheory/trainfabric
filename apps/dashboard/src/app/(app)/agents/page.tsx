@@ -53,24 +53,35 @@ export default function AgentsPage() {
     }
 
     let cancelled = false;
-    setLoading(true);
-    apiFetch<AutoListResponse>("/auto", { token: authToken })
-      .then((r) => {
+    let first = true;
+
+    async function load() {
+      if (first) setLoading(true);
+      try {
+        const r = await apiFetch<AutoListResponse>("/auto", { token: authToken });
         if (cancelled) return;
         setRuns(r.runs ?? []);
         setError(null);
-      })
-      .catch((e) => {
+      } catch (e) {
         if (cancelled) return;
-        setError(e instanceof Error ? e.message : "Failed to load agents");
-        setRuns([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+        // Keep showing prior rows on poll failures; only surface error on first load.
+        if (first) {
+          setError(e instanceof Error ? e.message : "Failed to load agents");
+          setRuns([]);
+        }
+      } finally {
+        if (!cancelled && first) {
+          first = false;
+          setLoading(false);
+        }
+      }
+    }
 
+    void load();
+    const iv = window.setInterval(() => void load(), 5000);
     return () => {
       cancelled = true;
+      window.clearInterval(iv);
     };
   }, [authToken, authReady]);
 

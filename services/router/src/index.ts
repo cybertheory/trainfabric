@@ -70,6 +70,7 @@ import {
   pauseAutoRun,
   heartbeatAutoRun,
   postAutoMessage,
+  reconcileAutoRunLiveness,
   registerRunner,
   reportInstructions,
   resumeAutoRun,
@@ -1682,36 +1683,35 @@ async function startRemoteIngest(
         );
         await registry.setJob({ jobId, status: "running", progress: 50 });
 
-        const ingestAbort = new AbortController();
-        const ingestTimer = setTimeout(() => ingestAbort.abort(), 180_000);
-        let res: Response;
-        try {
-          res = await stub.fetch("https://catalog/commit", {
+        // DO stub.fetch often ignores AbortSignal — race a hard timeout instead.
+        const commitBody = JSON.stringify({
+          action: "ingest",
+          computeUrl: computeUrlFor(c.env),
+          payload: {
+            staging_path: stagingPath,
+            dataset_id: datasetId,
+            partition_hint: meta.partition_hint,
+            sort_column: meta.sort_column,
+          },
+        });
+        const res = await Promise.race([
+          stub.fetch("https://catalog/commit", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              action: "ingest",
-              computeUrl: computeUrlFor(c.env),
-              payload: {
-                staging_path: stagingPath,
-                dataset_id: datasetId,
-                partition_hint: meta.partition_hint,
-                sort_column: meta.sort_column,
-              },
-            }),
-            signal: ingestAbort.signal,
-          });
-        } catch (e) {
-          const msg =
-            e instanceof Error && e.name === "AbortError"
-              ? "Ingest timed out waiting for compute (try again — cold start can take a minute)"
-              : e instanceof Error
-                ? e.message
-                : String(e);
-          throw new Error(msg);
-        } finally {
-          clearTimeout(ingestTimer);
-        }
+            body: commitBody,
+          }),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () =>
+                reject(
+                  new Error(
+                    "Ingest timed out waiting for compute (try again — cold start can take a minute)",
+                  ),
+                ),
+              240_000,
+            ),
+          ),
+        ]);
         await registry.setJob({ jobId, status: "running", progress: 75 });
         const json = (await res.json()) as {
           error?: string;
@@ -1802,20 +1802,34 @@ async function startIngest(
     (async () => {
       await registry.setJob({ jobId, status: "running", progress: 10 });
       try {
-        const res = await stub.fetch("https://catalog/commit", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            action: "ingest",
-            computeUrl: computeUrlFor(c.env),
-            payload: {
-              staging_path: stagingPath,
-              dataset_id: datasetId,
-              partition_hint: meta.partition_hint,
-              sort_column: meta.sort_column,
-            },
-          }),
+        const commitBody = JSON.stringify({
+          action: "ingest",
+          computeUrl: computeUrlFor(c.env),
+          payload: {
+            staging_path: stagingPath,
+            dataset_id: datasetId,
+            partition_hint: meta.partition_hint,
+            sort_column: meta.sort_column,
+          },
         });
+        const res = await Promise.race([
+          stub.fetch("https://catalog/commit", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: commitBody,
+          }),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () =>
+                reject(
+                  new Error(
+                    "Ingest timed out waiting for compute (try again — cold start can take a minute)",
+                  ),
+                ),
+              240_000,
+            ),
+          ),
+        ]);
         const json = (await res.json()) as {
           error?: string;
           schemaContract?: Record<string, unknown>;
@@ -2714,7 +2728,12 @@ app.get("/auto", async (c) => {
     const identity = identityOrAnon(c.get("identity"), c.env);
     if (!identity) return c.json({ error: "Unauthorized" }, 401);
     const store = createAutoStore(c.env);
-    const runs = await store.listAutoRunsByOwner(identity.subject);
+    const box = boxClientFromEnv(c.env);
+    const apiKeys = createApiKeyStore(c.env.DB);
+    const listed = await store.listAutoRunsByOwner(identity.subject);
+    const runs = await Promise.all(
+      listed.map((run) => reconcileAutoRunLiveness({ store, run, box, apiKeys })),
+    );
     return c.json({
       runs,
       prerequisites: {
@@ -2791,17 +2810,23 @@ app.get("/auto/:id", async (c) => {
   try {
     const identity = identityOrAnon(c.get("identity"), c.env);
     const store = createAutoStore(c.env);
-    const run = await store.getAutoRun(c.req.param("id"));
+    let run = await store.getAutoRun(c.req.param("id"));
     if (!run) return c.json({ error: "Not found" }, 404);
     const denied = requireAutoRunOwner(run, identity);
     if (denied) return denied;
+    const box = boxClientFromEnv(c.env);
+    run = await reconcileAutoRunLiveness({
+      store,
+      run,
+      box,
+      apiKeys: createApiKeyStore(c.env.DB),
+    });
     const [trials, activity, messages] = await Promise.all([
       store.listAutoTrials(run.id),
       store.listActivity(run.id).catch(() => []),
       store.listMessages(run.id).catch(() => []),
     ]);
     let events: unknown[] = [];
-    const box = boxClientFromEnv(c.env);
     if (box && run.box.boxId && !run.box.boxId.startsWith("stub_")) {
       try {
         const ev = await box.events(run.box.boxId, run.box.lastEventCursor);
@@ -3075,6 +3100,17 @@ app.post("/auto/:id/trials", async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as {
       hypothesis?: string;
       commitSha?: string;
+      dataSpec?: {
+        uri: string;
+        endpoint_url?: string;
+        format?: string;
+        region?: string;
+        size_bytes?: number;
+        estimated_bytes?: number;
+        cluster?: boolean;
+      };
+      estimatedBytes?: number;
+      gpuNodes?: number;
     };
     const origin = c.env.PUBLIC_API_URL || c.env.PUBLIC_API_BASE || new URL(c.req.url).origin;
     let githubToken: string | undefined;
@@ -3092,6 +3128,9 @@ app.post("/auto/:id/trials", async (c) => {
       run,
       hypothesis: body.hypothesis,
       commitSha: body.commitSha,
+      dataSpec: body.dataSpec,
+      estimatedBytes: body.estimatedBytes,
+      gpuNodes: body.gpuNodes,
       callbackBaseUrl: origin,
       githubToken,
       env: c.env,
@@ -3322,9 +3361,16 @@ function buildMcpContext(c: {
         partition_hint: args.partition_hint as string | undefined,
         sort_column: args.sort_column as string | undefined,
       };
-      if (args.source_url) {
+      // Prefer source_url; also accept HF/GitHub URLs mistakenly passed as data_ref.
+      const rawRef = args.data_ref != null ? String(args.data_ref).trim() : "";
+      const looksRemote =
+        /^https?:\/\//i.test(rawRef) &&
+        /(huggingface\.co|hf\.co|github\.com)/i.test(rawRef);
+      const sourceUrl =
+        (args.source_url != null ? String(args.source_url).trim() : "") ||
+        (looksRemote ? rawRef : "");
+      if (sourceUrl) {
         if (!identity) throw new Error("Auth required");
-        const sourceUrl = String(args.source_url).trim();
         const sourceAuth =
           (args.source_auth as "github" | "huggingface" | "none" | undefined) ?? "none";
         const remoteAuth = await resolveConnectedRemoteAuth(c.env, identity, {
@@ -3346,59 +3392,16 @@ function buildMcpContext(c: {
         return { datasetId: json.datasetId, jobId: json.jobId };
       }
       if (!args.data_ref) throw new Error("data_ref or source_url required");
-      // Simplified: expect data_ref already staged
-      const datasetId = `ds_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
-      const jobId = `job_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
-      await registry.createDataset({
-        datasetId,
-        owner: String(args.owner),
-        visibility: meta.visibility,
-        name: meta.name,
-        description: meta.description,
-        tags: meta.tags,
-        kind: "base",
-      });
-      await registry.setJob({ jobId, datasetId, kind: "ingest", status: "pending" });
-      const doId = c.env.CATALOG_DO.idFromName(datasetId);
-      const stub = c.env.CATALOG_DO.get(doId);
-      // Fire and forget
-      void stub.fetch("https://catalog/commit", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          action: "ingest",
-          computeUrl: computeUrlFor(c.env),
-          payload: {
-            staging_path: String(args.data_ref),
-            dataset_id: datasetId,
-            partition_hint: meta.partition_hint,
-            sort_column: meta.sort_column,
-          },
-        }),
-      }).then(async (res) => {
-        const json = (await res.json()) as {
-          snapshotId?: string;
-          schemaContract?: Record<string, unknown>;
-          namespace?: string;
-          icebergTable?: string;
-          error?: string;
-        };
-        if (json.error) {
-          await registry.setJob({ jobId, status: "error", error: json.error });
-          return;
-        }
-        await registry.updateAfterIngest({
-          datasetId,
-          snapshotId: json.snapshotId ?? "",
-          rowCount: Number(json.schemaContract?.rowCount ?? 0),
-          sizeBytes: Number(json.schemaContract?.sizeBytes ?? 0),
-          schema: json.schemaContract,
-          icebergNamespace: json.namespace,
-          icebergTable: json.icebergTable,
-        });
-        await registry.setJob({ jobId, status: "done", progress: 100 });
-      });
-      return { datasetId, jobId };
+      // Staged R2/local path — same durable waitUntil path as REST ingest.
+      if (!identity) throw new Error("Auth required");
+      const res = await startIngest(
+        ingestCtx as never,
+        identity,
+        meta,
+        String(args.data_ref),
+      );
+      const json = (await res.json()) as { datasetId: string; jobId: string };
+      return { datasetId: json.datasetId, jobId: json.jobId };
     },
     getJob: (id) => registry.getJob(id),
     createDerived: async (args) => {
