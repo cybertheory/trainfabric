@@ -15,11 +15,35 @@ Dashboard: **Agents → Configure agent**. Monitor + chat: open any run from the
 
 | Layer | Role |
 |-------|------|
-| Trainfabric control plane | Create the run, bind datasets, enqueue trials, chat |
+| Trainfabric control plane | Create the run, bind datasets, enqueue trials, chat — **Worker submits managed GPU jobs to Modal** |
 | Cloud agent sandbox | Clone the repo, load the brief, discover data, propose changes, keep/revert commits |
-| GPU trials | **Trainfabric GPU** *or* your **self-hosted runner** — train/eval and report a score |
+| GPU trials | **Trainfabric GPU (Modal)** — R2 lakehouse mounted via CloudBucketMount; large jobs use multi-GPU / clustered nodes |
 
-No SSH. Self-hosted GPUs connect over HTTPS with a runner token.
+No SSH for managed GPU. Optional self-hosted runners still connect over HTTPS with a runner token.
+
+## Managed GPU (Modal)
+
+Default compute is `trainfabric_gpu`. The Worker POSTs each trial to `MODAL_APP_REF`; Modal:
+
+1. Mounts the TrainFabric R2 bucket at `/mnt/r2` (`CloudBucketMount`)
+2. Clones the research repo and reads `artifacts/data_spec.json` (`s3://…` URI)
+3. Picks **cpu / single-node GPU / multi-node cluster** from `size_bytes` / `estimatedBytes` / `gpuNodes` / `"cluster": true`
+4. Runs `train.py` with `TF_DATA_PATH` pointing at the mount (no TB download into the container)
+5. POSTs the score to `/auto/:id/trials/:trialId/complete`
+
+Agent handoff — write:
+
+```json
+{
+  "uri": "s3://trainfabric-data/results/<queryHash>.parquet",
+  "format": "parquet",
+  "size_bytes": 5000000000
+}
+```
+
+Optional on `POST /auto/:id/trials`: `dataSpec`, `estimatedBytes`, `gpuNodes`.
+
+Deploy notes: `/docs` + `services/autorunner/README.md` (Modal secret `trainfabric-r2`, `R2_ENDPOINT`).
 
 ## Custom GPU (self-hosted runner)
 

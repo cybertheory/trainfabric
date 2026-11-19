@@ -11,7 +11,8 @@ The **GPU trial worker** lives in a separate public repo (clone and run on any G
 | `app/hermes/` + `app/tf_cli/` (from compute) | Box golden image | **Same Hermes agent + `tf` CLI** as the query container |
 | `autorunner_daemon.py` (this folder) | Box sandbox | Clone research repo, load brief, discover/bind via `tf`, Hermes prompt, enqueue trials via `tf auto trial`, ratchet git |
 | `gateway.py` + `agent_mutate.py` | Box sandbox | Mutate loop (uses `app.hermes.gateway`) + `artifacts/viz/` publish |
-| `skills/*` | Box sandbox | `autoresearch-mutate`, `publish-viz-github`, `trainfabric-cli` |
+| Official skill | `apps/dashboard/content/skills/trainfabric` (also on Box as `~/trainfabric/skills/trainfabric.md`) | **Same skill** Cursor agents install — MCP/`tf` primary, API fallback |
+| `duckdb-analytics` | Hermes compute (internal) | NL→DuckDB planner only — not the public skill |
 | [trainfabric-gpu-runner](https://github.com/cybertheory/trainfabric-gpu-runner) | Your GPU / Spark / rented box | Heartbeat, claim, run entrypoint, report score |
 
 Docs: `/docs/agents`. MCP: `register_gpu_runner` / `list_gpu_runners` / `start_auto` with `compute.provider: "runner"`.
@@ -19,6 +20,8 @@ Docs: `/docs/agents`. MCP: `register_gpu_runner` / `list_gpu_runners` / `start_a
 ## Box golden template
 
 Campaign sandboxes **fork** a stopped golden Box (filesystem + packages, no secrets).
+
+The golden image installs Hermes/`tf` deps into `~/trainfabric/.venv` (PEP 668 / Debian-managed Python cannot use system `pip`).
 
 ```bash
 # Build / refresh the template (needs BOX_API_KEY)
@@ -29,7 +32,7 @@ cd services/router
 printf '%s' 'bx_…' | wrangler secret put BOX_TEMPLATE_ID
 ```
 
-Each `POST /auto` mints a durable `tfak_*` API key for the owner (`autorun:{id}`), injects it as `TF_TOKEN` / `TRAINFABRIC_TOKEN` into the fork, and revokes it when the campaign is cancelled or completes its trial budget. Soft-refresh curls latest autorunner + Hermes/`tf` files from `main` after fork.
+Each `POST /auto` mints a durable `tfak_*` API key for the owner (`autorun:{id}`), injects it as `TF_TOKEN` / `TRAINFABRIC_TOKEN` into the fork, and revokes it when the campaign is cancelled or completes its trial budget. Soft-refresh curls latest autorunner + Hermes/`tf` files from `main` after fork (and ensures the venv deps are present).
 
 ## Box daemon env
 
@@ -88,11 +91,20 @@ The dashboard **polls** `GET /auto/:id` (which also lazily fetches Box event log
 
 `POST /auto/:id/messages` looks up that AutoRun’s `boxId` / `daemonHostUrl` and POSTs to that sandbox’s `/chat` only — never a different campaign’s box.
 
-## Modal
+## Modal (managed Trainfabric GPU)
 
-Deploy the trial web endpoint, then point the Worker at it:
+The Cloudflare Worker submits trials to Modal (`compute.provider: "trainfabric_gpu"`). Modal mounts the lakehouse R2 bucket and scales to clustered GPUs when the job is large.
 
 ```bash
+# One-time: R2 credentials for CloudBucketMount
+modal secret create trainfabric-r2 \
+  AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
+  AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+
+# Deploy (set R2_ENDPOINT / R2_BUCKET for your account)
+export R2_ENDPOINT=https://<ACCOUNT>.r2.cloudflarestorage.com
+export R2_BUCKET=trainfabric-data
+# optional: TF_MODAL_GPU=H100:8 TF_MODAL_NODES=2 TF_CLUSTER_BYTES=1073741824
 modal token set --token-id ak-… --token-secret as-… --profile=rishabhspro
 modal profile activate rishabhspro
 modal deploy services/autorunner/modal_trial.py
@@ -103,5 +115,6 @@ Worker secrets:
 - `MODAL_TOKEN` — `token_id:token_secret` (or proxy token `wk-…:ws-…`)
 - `MODAL_APP_REF` — the printed `https://…--run-trial.modal.run` URL
 
-`compute.provider: "trainfabric_gpu"` (legacy `"modal"`) POSTs trial kwargs to that URL; the function clones the
-research repo, runs the entrypoint, and POSTs `/auto/:id/trials/:trialId/complete`.
+Flow: Worker POSTs trial kwargs (optional `data_spec` / `estimated_bytes` / `gpu_nodes`) → Modal web endpoint **spawns** cpu / gpu / clustered function with **CloudBucketMount** at `/mnt/r2` → clones repo → resolves `artifacts/data_spec.json` → runs entrypoint → POSTs `/auto/:id/trials/:trialId/complete`.
+
+Agent writes `artifacts/data_spec.json` with `s3://trainfabric-data/…` (no secrets). Large `size_bytes` or `gpuNodes > 1` selects the clustered tier.

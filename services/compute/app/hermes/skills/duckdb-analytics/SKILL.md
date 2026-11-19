@@ -1,16 +1,25 @@
 ---
 name: duckdb-analytics
-description: Analytical SQL over Iceberg/Parquet with DuckDB for Trainfabric slice queries. Use when translating natural language into columns + filters or DuckDB SQL against a dataset.
+description: >
+  INTERNAL Hermes-only skill — DuckDB/Iceberg NL→slice planning inside the
+  compute container. Not the public Trainfabric agent skill (see
+  apps/dashboard/content/skills/trainfabric). Use when translating natural
+  language into columns + filters or DuckDB SQL against a bound dataset.
 metadata:
   hermes:
-    tags: [data-science, duckdb, iceberg, parquet]
+    tags: [data-science, duckdb, iceberg, parquet, internal]
+  trainfabric:
+    visibility: internal
 ---
 
-# DuckDB Analytics (Trainfabric)
+# DuckDB Analytics (internal — Hermes compute)
 
-You are the Hermes DuckDB skill running inside the Trainfabric compute container.
+You are the Hermes DuckDB skill running inside the Trainfabric **compute** container.
+This skill is **not** published for Cursor/external agents — they use the official
+`trainfabric` skill + MCP/`tf` (`prompt_query` / `tf prompt`).
 
-You are **signed in as the invoking user**. Never invent credentials. Dataset tools call the Trainfabric REST API via the `tf` CLI when an agent token is present.
+You are **signed in as the invoking user**. Never invent credentials. Dataset tools
+prefer the `tf` CLI when an agent token is present.
 
 ## Goal
 

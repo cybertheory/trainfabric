@@ -47,17 +47,20 @@ export default function DatasetDetailPage() {
     if (!owner || !name) return;
     setNotFound(false);
     setDataset(null);
-    apiFetch<{ datasets: DatasetDetail[] }>(`/datasets?search=${encodeURIComponent(name)}`)
+    // Must send auth so private datasets owned by the user are visible in search.
+    apiFetch<{ datasets: DatasetDetail[] }>(
+      `/datasets?owner=${encodeURIComponent(owner)}&search=${encodeURIComponent(name)}&limit=20`,
+      { token: authToken },
+    )
       .then(async (r) => {
         const found =
           r.datasets.find((d) => d.owner === owner && d.name === name) ??
-          r.datasets.find((d) => d.name === name) ??
-          r.datasets[0];
+          r.datasets.find((d) => d.name === name);
         if (!found) {
           setNotFound(true);
           return;
         }
-        const full = await apiFetch<DatasetDetail>(`/datasets/${found.id}`);
+        const full = await apiFetch<DatasetDetail>(`/datasets/${found.id}`, { token: authToken });
         setDataset(full);
         setSelected(full.schema?.columns.map((c) => c.name) ?? []);
         const seeded = full.schema?.sampleRows ?? [];
@@ -70,6 +73,7 @@ export default function DatasetDetailPage() {
         apiFetch<{ rows: Record<string, unknown>[] }>(`/datasets/${found.id}/sample`, {
           method: "POST",
           body: JSON.stringify({ n: 20 }),
+          token: authToken,
         })
           .then((s) => {
             if (s.rows?.length) setPreview(s.rows);
@@ -77,13 +81,13 @@ export default function DatasetDetailPage() {
           .catch(() => {
             /* keep seeded rows */
           });
-        apiFetch<{ snapshots: unknown[] }>(`/datasets/${found.id}/snapshots`)
+        apiFetch<{ snapshots: unknown[] }>(`/datasets/${found.id}/snapshots`, { token: authToken })
           .then((s) => setSnapshots(s.snapshots))
           .catch(() => setSnapshots([]));
-        apiFetch(`/datasets/${found.id}/lineage`)
+        apiFetch(`/datasets/${found.id}/lineage`, { token: authToken })
           .then(setLineage)
           .catch(() => setLineage(null));
-        apiFetch<{ queries: QueryRow[] }>(`/datasets/${found.id}/queries`)
+        apiFetch<{ queries: QueryRow[] }>(`/datasets/${found.id}/queries`, { token: authToken })
           .then((q) => setQueries(q.queries))
           .catch(() => setQueries([]));
         apiFetch<{ runs: AutoRun[] }>(`/datasets/${found.id}/auto`, { token: authToken })

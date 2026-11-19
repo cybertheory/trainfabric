@@ -1,0 +1,5 @@
+{
+  "uri": "s3://trainfabric-data/results/REPLACE_QUERY_HASH.parquet",
+  "format": "parquet",
+  "region": "auto"
+}

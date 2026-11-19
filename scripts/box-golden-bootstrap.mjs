@@ -48,7 +48,7 @@ if (!apiKey) {
   process.exit(1);
 }
 
-async function boxRequest(method, path, body) {
+async function boxRequest(method, path, body, timeoutMs = 60_000) {
   const res = await fetch(`${BOX_API_BASE}${path}`, {
     method,
     headers: {
@@ -56,6 +56,7 @@ async function boxRequest(method, path, body) {
       "Content-Type": "application/json",
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok || json.ok === false) {
@@ -68,11 +69,16 @@ async function boxRequest(method, path, body) {
 async function waitReady(boxId, timeoutMs = 180_000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const env = await boxRequest("GET", `/boxes/${boxId}`);
-    const box = env.box ?? { id: boxId, state: env.status };
-    const state = String(box.state ?? "");
-    if (state === "ready" || state === "idle" || state === "running") return box;
-    if (state === "error") throw new Error(`Box ${boxId} entered error`);
+    try {
+      const env = await boxRequest("GET", `/boxes/${boxId}`, undefined, 15_000);
+      const box = env.box ?? { id: boxId, state: env.status };
+      const state = String(box.state ?? "");
+      if (state === "ready" || state === "idle" || state === "running") return box;
+      if (state === "error") throw new Error(`Box ${boxId} entered error`);
+      console.log("  waiting for box…", state);
+    } catch (e) {
+      console.warn("  waitReady poll failed:", e instanceof Error ? e.message : e);
+    }
     await new Promise((r) => setTimeout(r, 2000));
   }
   throw new Error(`Box ${boxId} not ready within timeout`);
@@ -98,6 +104,7 @@ function readLocal(rel) {
 function walkFiles(dir, base = dir) {
   const out = [];
   for (const name of readdirSync(dir)) {
+    if (name === "__pycache__" || name === ".pytest_cache" || name.endsWith(".pyc")) continue;
     const full = join(dir, name);
     const st = statSync(full);
     if (st.isDirectory()) out.push(...walkFiles(full, base));
@@ -148,15 +155,11 @@ const files = [
   ["~/trainfabric/agent_mutate.py", readLocal("agent_mutate.py")],
   ["~/trainfabric/chat_reply.py", readLocal("chat_reply.py")],
   ["~/trainfabric/chat_shim.py", readLocal("chat_shim.py")],
+  // Official unified skill (same file Cursor agents install)
   [
-    "~/trainfabric/skills/autoresearch-mutate.md",
-    readLocal("skills/autoresearch-mutate/SKILL.md"),
+    "~/trainfabric/skills/trainfabric.md",
+    readFileSync(join(ROOT, "apps/dashboard/content/skills/trainfabric/SKILL.md"), "utf8"),
   ],
-  [
-    "~/trainfabric/skills/publish-viz-github.md",
-    readLocal("skills/publish-viz-github/SKILL.md"),
-  ],
-  ["~/trainfabric/skills/trainfabric-cli.md", readLocal("skills/trainfabric-cli/SKILL.md")],
   // Lightweight app package so `import app.hermes` / `python -m app.tf_cli` work.
   ["~/trainfabric/app/__init__.py", "# Box golden — Hermes + tf only\n"],
 ];
@@ -177,11 +180,14 @@ for (const pkg of ["hermes", "tf_cli"]) {
 const tfWrapper = `#!/bin/sh
 export PYTHONPATH="$HOME/trainfabric\${PYTHONPATH:+:\$PYTHONPATH}"
 export HERMES_SKILLS_DIR="\${HERMES_SKILLS_DIR:-$HOME/trainfabric/app/hermes/skills}"
+# Prefer golden venv Python (PEP 668-safe) when present.
+TF_PY="$HOME/trainfabric/.venv/bin/python3"
+if [ ! -x "\$TF_PY" ]; then TF_PY="$(command -v python3)"; fi
 # Box campaign env aliases
 if [ -n "\$TF_API_URL" ] && [ -z "\$TRAINFABRIC_API_URL" ]; then export TRAINFABRIC_API_URL="\$TF_API_URL"; fi
 if [ -n "\$TF_TOKEN" ] && [ -z "\$TRAINFABRIC_TOKEN" ]; then export TRAINFABRIC_TOKEN="\$TF_TOKEN"; fi
 if [ -n "\$TF_DATASET_ID" ] && [ -z "\$TRAINFABRIC_DATASET_ID" ]; then export TRAINFABRIC_DATASET_ID="\$TF_DATASET_ID"; fi
-exec python3 -m app.tf_cli "\$@"
+exec "\$TF_PY" -m app.tf_cli "\$@"
 `;
 await writeBoxPath(boxId, "~/trainfabric/bin/tf", tfWrapper);
 await command(
@@ -189,20 +195,39 @@ await command(
   "chmod +x ~/trainfabric/bin/tf && ln -sfn ~/trainfabric/bin/tf ~/.local/bin/tf && ln -sfn ~/trainfabric/bin/tf /usr/local/bin/tf 2>/dev/null || true",
 );
 
-await command(
+// PEP 668 + Debian-owned `rich` break system/user pip — use a dedicated venv.
+const pipOut = await command(
   boxId,
-  "python3 -m pip install --user -q httpx matplotlib typer 2>/dev/null || pip3 install --user -q httpx matplotlib typer",
+  [
+    "python3 -m venv ~/trainfabric/.venv",
+    "&& ~/trainfabric/.venv/bin/pip install -q --upgrade pip",
+    "&& ~/trainfabric/.venv/bin/pip install -q 'httpx>=0.27' 'typer>=0.12' matplotlib",
+    "&& ~/trainfabric/.venv/bin/python -c \"import httpx,typer; print('deps_ok', httpx.__version__, typer.__version__)\"",
+  ].join(" "),
 );
+console.log((pipOut.stdout || "").trim() || (pipOut.stderr || "").trim());
+if (!String(pipOut.stdout || "").includes("deps_ok")) {
+  throw new Error(
+    `Golden bootstrap: httpx/typer not importable after venv pip.\nstdout=${pipOut.stdout}\nstderr=${pipOut.stderr}`,
+  );
+}
 
 console.log("Warm boot (Hermes + tf)…");
-await command(
+const warm = await command(
   boxId,
-  'export PYTHONPATH="$HOME/trainfabric${PYTHONPATH:+:$PYTHONPATH}" PATH="$HOME/trainfabric/bin:$HOME/.local/bin:$PATH" && cd ~/trainfabric && python3 -c "from app.hermes import run_hermes_prompt; from app.hermes.gateway import gateway_configured; import agent_mutate; print(\'hermes_ok\', gateway_configured())"',
+  'export PYTHONPATH="$HOME/trainfabric${PYTHONPATH:+:$PYTHONPATH}" PATH="$HOME/trainfabric/bin:$HOME/trainfabric/.venv/bin:$HOME/.local/bin:$PATH" && cd ~/trainfabric && ~/trainfabric/.venv/bin/python -c "from app.hermes import run_hermes_prompt; from app.hermes.gateway import gateway_configured; import agent_mutate; import httpx; print(\'hermes_ok\', gateway_configured(), \'httpx\', httpx.__version__)"',
 );
-await command(
+console.log((warm.stdout || "").trim());
+if (!String(warm.stdout || "").includes("hermes_ok")) {
+  throw new Error(`Warm boot failed:\nstdout=${warm.stdout}\nstderr=${warm.stderr}`);
+}
+const tfHelp = await command(
   boxId,
-  'export PATH="$HOME/trainfabric/bin:$HOME/.local/bin:$PATH" PYTHONPATH="$HOME/trainfabric${PYTHONPATH:+:$PYTHONPATH}" && tf --help >/dev/null && python3 -m py_compile ~/trainfabric/autorunner_daemon.py ~/trainfabric/chat_shim.py ~/trainfabric/chat_reply.py ~/trainfabric/app/hermes/agent.py ~/trainfabric/app/tf_cli/__init__.py',
+  'export PATH="$HOME/trainfabric/bin:$HOME/trainfabric/.venv/bin:$HOME/.local/bin:$PATH" PYTHONPATH="$HOME/trainfabric${PYTHONPATH:+:$PYTHONPATH}" && tf --help >/dev/null && ~/trainfabric/.venv/bin/python -m py_compile ~/trainfabric/autorunner_daemon.py ~/trainfabric/chat_shim.py ~/trainfabric/chat_reply.py ~/trainfabric/app/hermes/agent.py ~/trainfabric/app/tf_cli/__init__.py && echo tf_ok',
 );
+if (!String(tfHelp.stdout || "").includes("tf_ok")) {
+  throw new Error(`tf CLI check failed:\nstdout=${tfHelp.stdout}\nstderr=${tfHelp.stderr}`);
+}
 
 console.log("Stopping box to snapshot template…");
 await boxRequest("POST", `/boxes/${boxId}/stop`);

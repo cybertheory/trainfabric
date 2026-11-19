@@ -212,21 +212,53 @@ export function createBoxClient(cfg: BoxClientConfig) {
       // Golden image already has Hermes + tf + daemon; soft-refresh code from main.
       // Note: Box SIGTERMs commands that include `pkill`, and also SIGTERMs process-group
       // children from bare `nohup … &`. Spawn via Python start_new_session instead.
+      // Install Python deps first (before long curl soft-refresh) so a timeout still leaves httpx.
+      // Use a venv — Box images are PEP 668 and Debian `rich` breaks --break-system-packages.
+      if (!opts.skipSoftRefresh) {
+        const deps = await this.command(
+          box.id,
+          [
+            "mkdir -p ~/trainfabric/bin ~/.local/bin",
+            "&& (test -x ~/trainfabric/.venv/bin/python",
+            "|| python3 -m venv ~/trainfabric/.venv)",
+            "&& ~/trainfabric/.venv/bin/pip install -q 'httpx>=0.27' 'typer>=0.12' matplotlib",
+            "&& ~/trainfabric/.venv/bin/python -c 'import httpx,typer; print(\"deps_ok\", httpx.__version__)'",
+          ].join(" "),
+        ).catch((e) => {
+          console.warn("box deps install failed", e instanceof Error ? e.message : e);
+          return undefined;
+        });
+        const depsOut = `${deps?.stdout ?? ""}\n${deps?.stderr ?? ""}`;
+        if (!depsOut.includes("deps_ok")) {
+          const check = await this.command(
+            box.id,
+            "test -x ~/trainfabric/.venv/bin/python && ~/trainfabric/.venv/bin/python -c 'import httpx,typer; print(\"deps_ok\")' || python3 -c 'import httpx,typer; print(\"deps_ok\")'",
+          ).catch(() => undefined);
+          if (!String(check?.stdout ?? "").includes("deps_ok")) {
+            throw new BoxError(
+              "Box missing httpx/typer — rebuild golden via scripts/box-golden-bootstrap.mjs",
+              500,
+              "box_deps_missing",
+            );
+          }
+        }
+      }
+
       const softRefresh = opts.skipSoftRefresh
         ? "true"
         : [
             "BASE=https://raw.githubusercontent.com/cybertheory/trainfabric/main",
             "AR=$BASE/services/autorunner",
             "HZ=$BASE/services/compute/app",
-            "mkdir -p ~/trainfabric/app/hermes/skills/duckdb-analytics ~/trainfabric/app/hermes/skills/trainfabric-cli ~/trainfabric/app/tf_cli ~/trainfabric/bin ~/trainfabric/skills ~/.local/bin",
+            "mkdir -p ~/trainfabric/app/hermes/skills/duckdb-analytics ~/trainfabric/app/hermes/skills/trainfabric ~/trainfabric/app/tf_cli ~/trainfabric/bin ~/trainfabric/skills ~/.local/bin",
             "curl -fsSL $AR/autorunner_daemon.py -o ~/trainfabric/autorunner_daemon.py || true",
             "curl -fsSL $AR/gateway.py -o ~/trainfabric/gateway.py || true",
             "curl -fsSL $AR/chat_reply.py -o ~/trainfabric/chat_reply.py || true",
             "curl -fsSL $AR/chat_shim.py -o ~/trainfabric/chat_shim.py || true",
             "curl -fsSL $AR/agent_mutate.py -o ~/trainfabric/agent_mutate.py || true",
-            "curl -fsSL $AR/skills/autoresearch-mutate/SKILL.md -o ~/trainfabric/skills/autoresearch-mutate.md || true",
-            "curl -fsSL $AR/skills/publish-viz-github/SKILL.md -o ~/trainfabric/skills/publish-viz-github.md || true",
-            "curl -fsSL $AR/skills/trainfabric-cli/SKILL.md -o ~/trainfabric/skills/trainfabric-cli.md || true",
+            // Official unified skill (same file Cursor agents install) — dashboard path wins
+            "curl -fsSL $AR/skills/trainfabric/SKILL.md -o ~/trainfabric/skills/trainfabric.md || true",
+            "curl -fsSL $BASE/apps/dashboard/content/skills/trainfabric/SKILL.md -o ~/trainfabric/skills/trainfabric.md || true",
             // Same Hermes agent as compute container
             "printf '%s\\n' '# Box golden — Hermes + tf' > ~/trainfabric/app/__init__.py",
             "curl -fsSL $HZ/hermes/__init__.py -o ~/trainfabric/app/hermes/__init__.py || true",
@@ -235,40 +267,48 @@ export function createBoxClient(cfg: BoxClientConfig) {
             "curl -fsSL $HZ/hermes/gateway.py -o ~/trainfabric/app/hermes/gateway.py || true",
             "curl -fsSL $HZ/hermes/cli_auth.py -o ~/trainfabric/app/hermes/cli_auth.py || true",
             "curl -fsSL $HZ/hermes/skills/duckdb-analytics/SKILL.md -o ~/trainfabric/app/hermes/skills/duckdb-analytics/SKILL.md || true",
-            "curl -fsSL $HZ/hermes/skills/trainfabric-cli/SKILL.md -o ~/trainfabric/app/hermes/skills/trainfabric-cli/SKILL.md || true",
+            "curl -fsSL $HZ/hermes/skills/trainfabric/SKILL.md -o ~/trainfabric/app/hermes/skills/trainfabric/SKILL.md || true",
+            "curl -fsSL $BASE/apps/dashboard/content/skills/trainfabric/SKILL.md -o ~/trainfabric/app/hermes/skills/trainfabric/SKILL.md || true",
             "curl -fsSL $HZ/tf_cli/__init__.py -o ~/trainfabric/app/tf_cli/__init__.py || true",
             "curl -fsSL $HZ/tf_cli/__main__.py -o ~/trainfabric/app/tf_cli/__main__.py || true",
             "curl -fsSL $HZ/tf_cli/credentials.py -o ~/trainfabric/app/tf_cli/credentials.py || true",
+            // Soft-refresh pulls main; keep a browser-like UA even before that lands on main.
+            "python3 -c \"from pathlib import Path; p=Path.home()/'trainfabric/app/tf_cli/__init__.py'; t=p.read_text() if p.exists() else ''; p.write_text(t.replace('trainfabric-tf-cli/1.0','Mozilla/5.0 (compatible; TrainfabricTfCli/1.0; +https://trainfabric.ai)'))\" 2>/dev/null || true",
             `cat > ~/trainfabric/bin/tf <<'EOF'
 #!/bin/sh
 export PYTHONPATH="$HOME/trainfabric\${PYTHONPATH:+:\$PYTHONPATH}"
 export HERMES_SKILLS_DIR="\${HERMES_SKILLS_DIR:-$HOME/trainfabric/app/hermes/skills}"
+TF_PY="$HOME/trainfabric/.venv/bin/python3"
+if [ ! -x "\$TF_PY" ]; then TF_PY="$(command -v python3)"; fi
 if [ -n "\$TF_API_URL" ] && [ -z "\$TRAINFABRIC_API_URL" ]; then export TRAINFABRIC_API_URL="\$TF_API_URL"; fi
 if [ -n "\$TF_TOKEN" ] && [ -z "\$TRAINFABRIC_TOKEN" ]; then export TRAINFABRIC_TOKEN="\$TF_TOKEN"; fi
 if [ -n "\$TF_DATASET_ID" ] && [ -z "\$TRAINFABRIC_DATASET_ID" ]; then export TRAINFABRIC_DATASET_ID="\$TF_DATASET_ID"; fi
-exec python3 -m app.tf_cli "\$@"
+exec "\$TF_PY" -m app.tf_cli "\$@"
 EOF`,
             "chmod +x ~/trainfabric/bin/tf && ln -sfn ~/trainfabric/bin/tf ~/.local/bin/tf 2>/dev/null || true",
-            "python3 -m pip install --break-system-packages -q httpx typer matplotlib 2>/dev/null || python3 -m pip install --user -q httpx typer matplotlib 2>/dev/null || true",
           ].join(" && ");
 
       await this.command(
         box.id,
         `mkdir -p ~/trainfabric/inbox ~/trainfabric/skills ~/trainfabric/app/hermes ~/trainfabric/bin && ${softRefresh}`,
-      ).catch(() => undefined);
+      ).catch((e) => {
+        console.warn("box soft-refresh failed", e instanceof Error ? e.message : e);
+      });
 
       // Prefer chat_shim on :8787 (Hermes talk-back); daemon skips if port taken.
       // Ensure tf + Hermes are on PATH/PYTHONPATH for the campaign processes.
       const start =
         opts.daemonStartCmd ??
-        `export PATH="$HOME/trainfabric/bin:$HOME/.local/bin:$PATH" PYTHONPATH="$HOME/trainfabric\${PYTHONPATH:+:\$PYTHONPATH}" HERMES_SKILLS_DIR="$HOME/trainfabric/app/hermes/skills"; ` +
+        `export PATH="$HOME/trainfabric/bin:$HOME/trainfabric/.venv/bin:$HOME/.local/bin:$PATH" PYTHONPATH="$HOME/trainfabric\${PYTHONPATH:+:\$PYTHONPATH}" HERMES_SKILLS_DIR="$HOME/trainfabric/app/hermes/skills"; ` +
           `test -f ~/trainfabric/autorunner_daemon.py || echo 'missing autorunner_daemon.py in template' >&2; python3 -c "import os,signal,subprocess; home=os.path.expanduser('~');
-os.environ['PATH']=f\"{home}/trainfabric/bin:{home}/.local/bin:\"+os.environ.get('PATH','');
+venv=f'{home}/trainfabric/.venv/bin';
+os.environ['PATH']=f\"{home}/trainfabric/bin:{venv}:{home}/.local/bin:\"+os.environ.get('PATH','');
 os.environ['PYTHONPATH']=f\"{home}/trainfabric:\"+os.environ.get('PYTHONPATH','');
 os.environ.setdefault('HERMES_SKILLS_DIR', f'{home}/trainfabric/app/hermes/skills');
+py=f'{venv}/python3' if os.path.isfile(f'{venv}/python3') else 'python3';
 [os.kill(int(p), signal.SIGTERM) for p in subprocess.getoutput('pgrep -f trainfabric/autorunner_daemon.py|trainfabric/chat_shim.py').split() if p.isdigit()];
-subprocess.Popen(['python3', f'{home}/trainfabric/chat_shim.py'], stdout=open('/tmp/tf-chat.log','a'), stderr=subprocess.STDOUT, start_new_session=True, env=os.environ.copy());
-subprocess.Popen(['python3', f'{home}/trainfabric/autorunner_daemon.py'], stdout=open('/tmp/autorunner.log','a'), stderr=subprocess.STDOUT, start_new_session=True, env=os.environ.copy());
+subprocess.Popen([py, f'{home}/trainfabric/chat_shim.py'], stdout=open('/tmp/tf-chat.log','a'), stderr=subprocess.STDOUT, start_new_session=True, env=os.environ.copy());
+subprocess.Popen([py, f'{home}/trainfabric/autorunner_daemon.py'], stdout=open('/tmp/autorunner.log','a'), stderr=subprocess.STDOUT, start_new_session=True, env=os.environ.copy());
 print('daemons_spawned_hermes_tf')"`;
       await this.command(box.id, start).catch(() => undefined);
 

@@ -92,8 +92,14 @@ describe("create-repo helpers", () => {
   it("seeds starter files for platform repos", () => {
     expect(REPO_STARTER_FILES["TRAINFABRIC.md"]).toMatch(/Goal/i);
     expect(REPO_STARTER_FILES["protocol.yaml"]).toMatch(/mutablePaths/);
-    expect(REPO_STARTER_FILES["AGENTS.md"]).toBeTruthy();
+    expect(REPO_STARTER_FILES["protocol.yaml"]).toMatch(/artifacts\/\*\*/);
+    expect(REPO_STARTER_FILES["AGENTS.md"]).toMatch(/data_spec\.json/);
     expect(REPO_STARTER_FILES[".gitignore"]).toBeTruthy();
+    expect(REPO_STARTER_FILES["train.py"]).toMatch(/is_trainfabric_r2_url/);
+    expect(REPO_STARTER_FILES["train.py"]).toMatch(/data_spec\.json/);
+    expect(REPO_STARTER_FILES["prepare.py"]).toMatch(/data_spec\.json/);
+    expect(REPO_STARTER_FILES["artifacts/data_spec.json"]).toMatch(/s3:\/\//);
+    expect(REPO_STARTER_FILES["artifacts/data_url.txt"]).toMatch(/data_spec\.json/);
   });
 
   it("builds authenticated clone URLs", () => {

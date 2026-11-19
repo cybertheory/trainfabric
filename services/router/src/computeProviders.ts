@@ -6,6 +6,17 @@
 import type { AutoComputeProvider } from "@trainfabric/shared";
 import { normalizeComputeProvider } from "@trainfabric/shared";
 
+/** Agent/lakehouse handoff — mirrored into Modal as data_spec (no secrets). */
+export interface TrialDataSpec {
+  uri: string;
+  endpoint_url?: string;
+  format?: string;
+  region?: string;
+  size_bytes?: number;
+  estimated_bytes?: number;
+  cluster?: boolean;
+}
+
 export interface TrialSubmitSpec {
   trialId: string;
   autoRunId: string;
@@ -15,6 +26,11 @@ export interface TrialSubmitSpec {
   budgetSec: number;
   callbackUrl: string;
   env?: Record<string, string>;
+  /** Preferred s3:// lakehouse URI (+ optional size for Modal tier pick). */
+  dataSpec?: TrialDataSpec;
+  estimatedBytes?: number;
+  /** Request multi-node Modal cluster when > 1. */
+  gpuNodes?: number;
 }
 
 export interface ComputeProvider {
@@ -45,6 +61,9 @@ export function createTrainfabricGpuProvider(cfg: {
     budget_sec: spec.budgetSec,
     callback_url: spec.callbackUrl,
     env: spec.env ?? {},
+    data_spec: spec.dataSpec,
+    estimated_bytes: spec.estimatedBytes ?? spec.dataSpec?.size_bytes ?? spec.dataSpec?.estimated_bytes,
+    gpu_nodes: spec.gpuNodes,
   });
 
   return {

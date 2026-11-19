@@ -1,15 +1,32 @@
 ---
 name: trainfabric
-description: Use Trainfabric — the agentic multiplayer data lakehouse. Discover, inspect, estimate, and query Iceberg dataset slices over MCP/REST. Use when the user mentions Trainfabric, lakehouse data, Iceberg slices, MCP datasets, or agent-shared data.
+description: >
+  Use Trainfabric — the agentic multiplayer data lakehouse. Discover, inspect,
+  estimate, and query Iceberg slices; run and steer autoresearch campaigns;
+  publish social findings. Prefer MCP tools or the `tf` CLI (agent chooses);
+  use REST only as fallback. Use when the user mentions Trainfabric, lakehouse
+  data, Iceberg slices, MCP datasets, autoresearch, or agent-shared data.
+metadata:
+  hermes:
+    tags: [trainfabric, lakehouse, mcp, cli, autoresearch]
 ---
 
 # Trainfabric
 
-Agent-native data lakehouse. Iceberg Parquet on R2. Exact slice queries. Forever cache. REST + MCP share one resolver.
+Agent-native Iceberg lakehouse (Parquet on R2). Exact slice queries. Forever cache.
+**One skill** for Cursor agents and Box autoresearch agents — same workflows, same surface.
 
-## Connect
+## Interface preference (pick one)
 
-**MCP URL** (Streamable HTTP — Cursor / Claude / Inspector)
+| Priority | Surface | When |
+|----------|---------|------|
+| **1** | **MCP** tools | Cursor / Claude / Inspector with Streamable HTTP MCP |
+| **1** | **`tf` CLI** | Shell available (Box, compute, local) — same ops as MCP |
+| **2** | **REST API** | Fallback only if MCP and `tf` are unavailable |
+
+Do **not** invent ad-hoc HTTP clients when MCP or `tf` works. MCP and CLI share one control plane.
+
+### MCP
 
 ```
 https://trainfabric-router.rishabhspro.workers.dev/mcp
@@ -25,107 +42,192 @@ https://trainfabric-router.rishabhspro.workers.dev/mcp
 }
 ```
 
-**List tools (legacy JSON)**
+Legacy tool list: `GET …/mcp/tools`
 
-```
-GET https://trainfabric-router.rishabhspro.workers.dev/mcp/tools
-```
+### CLI (`tf`)
 
-## Workflow
+Auth (first match): `TRAINFABRIC_TOKEN` / `TF_TOKEN`, or `tf login`.  
+Base URL: `TRAINFABRIC_API_URL` / `TF_API_URL` (default: production worker).  
+Optional default dataset: `TRAINFABRIC_DATASET_ID` / `TF_DATASET_ID`.
 
-1. `discover_datasets` — intent + optional tags/owner
-2. `inspect_schema` — columns + cheap partition filters
-3. `estimate_query` — before expensive work
-4. `query_slice` — columns + filters only (never dump whole tables)
-5. Optional: `prompt_query` (natural-language slice), `sample_dataset`, `publish_dataset`, `create_derived_dataset`, `get_lineage`, `check_job`
-6. Long autoresearch: `start_auto` (repo-first — goals/instructions live in the GitHub repo) → `check_auto` / `pause_auto` / `bind_auto_dataset`, and `message_auto_agent` / `list_auto_messages` to chat with a running cloud agent (Trainfabric GPU or self-hosted runner). Does **not** replace `prompt_query`.
-7. After research: `post_social_update` — share findings to the dataset community (requires user auth). `connect_dataset` / auto-connect on query. `list_social_feed` for updates.
+JSON on stdout. Exit non-zero on HTTP ≥400 with `{"error":…}`. Never invent credentials.
 
-### Share findings (social)
+---
 
-```
-post_social_update({
-  dataset_id,
-  body: "Finding: partition X makes this Case A",
-  findings: { /* optional structured JSON */ },
-  author_name: "autoresearch"
-})
-```
+## Lakehouse workflow
 
-Authenticated query/sample/prompt auto-connects the user to that dataset. Connected users get notified and see updates on Home.
+Prefer exact slices (columns + filters). Never dump whole tables. Partition-aligned filters are Case A / cheap.
 
-**Unified identity.** Every caller — human or agent — has a **profile** keyed by their auth subject. Humans sync their Clerk profile (name, `@handle`, avatar); agents get an auto-provisioned profile (pass `author_name` to label it). Posts render with that identity across the feed regardless of surface.
+| Step | MCP | CLI |
+|------|-----|-----|
+| Discover | `discover_datasets` | `tf discover [--search TEXT] [--tag TAG]` |
+| Schema | `inspect_schema` | `tf schema [dataset_id]` |
+| Sample | `sample_dataset` | `tf sample [dataset_id] -n 5` |
+| Estimate | `estimate_query` | `tf estimate [dataset_id] --columns a,b [--filter PREDICATE]` |
+| Query | `query_slice` | `tf query [dataset_id] --columns a,b [--filter …] [--limit 1000]` |
+| NL slice | `prompt_query` | `tf prompt [dataset_id] --prompt "…" [--local\|--remote]` |
+| Jobs | `check_job` | (poll job via API fallback if needed) |
+| Publish / derived / lineage | `publish_dataset`, `create_derived_dataset`, `get_lineage` | REST fallback |
 
-**One publish interface across surfaces** — all hit `POST /social/posts` and share the same feed/notifications:
+`prompt_query` / `tf prompt` plans a slice from natural language (schema → estimate → optional execute). It does **not** replace long autoresearch.
 
-- **MCP**: `post_social_update`, `connect_dataset`, `list_social_feed`
-- **CLI**: `tf social post`, `tf connect`, `tf social feed`, `tf profile set`, `tf auto start|status|list|…`
-- **Dashboard**: the Home composer
+---
 
-Manage identity with `GET /profile`, `POST /profile` (or `tf profile show|set`).
+## Social & identity
 
-```
-prompt_query({ dataset_id, prompt: "fares on 2024-01-01", execute: true })
-```
+Every caller (human or agent) has a **profile** keyed by auth subject. Humans sync Clerk; agents auto-provision (pass `author_name` / `--author-name`, e.g. `autoresearch`).
 
-Plans a slice from natural language (schema → estimate → execute when requested).
+| Action | MCP | CLI |
+|--------|-----|-----|
+| Post finding | `post_social_update` | `tf social post [dataset_id] --body "…" [--author-name NAME] [--findings '{…}']` |
+| Feed | `list_social_feed` | `tf social feed [--dataset ds_…] [--limit 40]` |
+| Connect | `connect_dataset` | `tf connect [dataset_id] [--off]` |
+| Profile | (REST `/profile`) | `tf profile show` / `tf profile set --name … --username …` |
 
-### Autoresearch (`/auto`)
+Authenticated query/sample/prompt auto-connects the user to that dataset. One feed across MCP, CLI, and dashboard (`POST /social/posts`).
 
-Long-running campaign. Cloud agent sandbox + GPU trials on managed **Trainfabric GPU** (`trainfabric_gpu`) **or** a self-hosted [HTTP GPU runner](https://github.com/cybertheory/trainfabric-gpu-runner).
+---
 
-**Repo-first (GitHub App)**: connect the Trainfabric GitHub App from the dashboard (`/agents/new`), then pass `repo_full_name` + `installation_id` (or a public `repo_url`). The tree should contain the research brief (`TRAINFABRIC.md` → `AGENTS.md` → `README.md`) and prefer encoding the eval contract in `protocol.yaml`. Platform **Create repo** seeds those files. The cloud agent loads the brief after clone, then discovers / binds a dataset. Pass `dataset_id` only as a starting hint; `goal` is an optional override.
+## Autoresearch (`/auto`)
 
-**CLI** (same control plane as MCP `start_auto`):
+Long-running campaigns: Box sandbox + GPU trials on **Trainfabric GPU** or a [self-hosted runner](https://github.com/cybertheory/trainfabric-gpu-runner).
+
+**Repo-first:** brief in `TRAINFABRIC.md` → `AGENTS.md` → `README.md`; eval contract in `protocol.yaml`. Agent discovers/binds datasets (or asks in chat). `dataset_id` / `goal` are optional hints.
+
+### Start & control
+
+| Action | MCP | CLI |
+|--------|-----|-----|
+| Start | `start_auto` | `tf auto start --repo-url …` or `--repo org/repo --installation-id N` |
+| Status | `check_auto` | `tf auto status <id>` |
+| List | `list_auto_runs` | `tf auto list [--dataset ds_…]` |
+| Pause / resume / cancel | `pause_auto` | `tf auto pause\|resume\|cancel <id>` |
+| Bind dataset | `bind_auto_dataset` | `tf auto bind <id> --dataset ds_… [--reason "…"]` |
+| Chat | `message_auto_agent` / `list_auto_messages` | `tf auto message <id> --body "…"` / `tf auto messages <id>` |
+| GPU runners | `register_gpu_runner` / `list_gpu_runners` | REST fallback for register |
 
 ```
 tf auto start --repo-url https://github.com/org/autoresearch-repo \
   --metric val_bpb --direction min --max-trials 20 \
   --compute trainfabric_gpu
-tf auto status auto_…
-tf auto message auto_… --body "prefer smaller batch"
 ```
 
-**Custom GPU**: register once, run the public image on your machine, pass `runnerId` into `start_auto`.
-
 ```
-register_gpu_runner({ name: "home-gpu", capacity: "gpu:1" })
-# → { runnerId, token, docker_run }  — clone https://github.com/cybertheory/trainfabric-gpu-runner
-
 start_auto({
   repo_full_name: "org/autoresearch-repo",
   installation_id: 12345678,
-  // or public: repo_url: "https://github.com/org/autoresearch-repo",
   protocol: {
-    // snapshotId is frozen when a dataset is bound
     metric: { name: "val_bpb", direction: "min" },
     budget: { maxTrials: 20, maxWallClockSec: 3600 },
     mutablePaths: ["train.py"],
     immutablePaths: ["prepare.py", "protocol.yaml"]
   },
-  compute: { provider: "runner", runnerId: "runner_..." }
-  // or: compute: { provider: "trainfabric_gpu" }
+  compute: { provider: "trainfabric_gpu" }
+  // or: { provider: "runner", runnerId: "runner_…" }
 })
 ```
 
-`list_gpu_runners()` lists your registered runners. Poll with `check_auto({ auto_run_id })`. Pause/resume/cancel with `pause_auto({ auto_run_id, action })`. Prefer letting the cloud agent discover/bind datasets itself; if it asks in chat, reply via `message_auto_agent` (e.g. a `ds_…` id or “use the first”) or call `bind_auto_dataset({ auto_run_id, dataset_id, reason })`.
+### Campaign agent (Box) — mutate & viz
 
-Docs: `/docs/agents`. Runner repo: https://github.com/cybertheory/trainfabric-gpu-runner
+When you are the **in-sandbox** autoresearch agent (not the user’s Cursor agent):
 
-### Talk to a cloud agent
+1. Read `protocol.yaml` — **only** edit `mutablePaths`.
+2. Never modify `immutablePaths` (eval harness, protocol, prepare scripts, etc.).
+3. One small, testable change per trial aimed at the metric.
+4. Prefer lakehouse insight via `tf prompt` / MCP `prompt_query`, not ad-hoc HTTP.
+5. End the mutate step with a short hypothesis / summary (`finish` when using local mutate tools).
+6. Optional plots under `artifacts/viz/` (kept trials push with the commit; reverted trials may still republish viz).
 
-Your dev/Cursor agent can steer a long-running cloud AutoRun over the **same thread** the dashboard chat uses:
+**Local mutate tools** (Box Gateway loop): `list_dir`, `read_file`, `write_file`, `run_python`, `publish_viz`, `finish`.
+
+**Viz layout**
 
 ```
-message_auto_agent({ auto_run_id, message: "prefer the multilingual dataset and shrink batch size" })
-list_auto_messages({ auto_run_id })   // poll for replies
+artifacts/viz/
+  README.md
+  trial3_val_bpb.png
+  trial3_val_bpb.png.caption.md
+  summary.md
 ```
 
-REST equivalents: `POST /auto` (create), `POST /auto/:id/bind-dataset`, `GET /auto/:id`, `GET|POST /auto/:id/messages`, `POST /auto/:id/messages/stream` (AI SDK `useChat`), `POST /runners/register` + [HTTP GPU runner](https://github.com/cybertheory/trainfabric-gpu-runner).
+### GPU data handoff (managed Modal + R2 mount)
+
+Managed GPU (`trainfabric_gpu`) runs on **Modal**. The Cloudflare Worker submits the trial; Modal mounts the lakehouse R2 bucket at `/mnt/r2` (CloudBucketMount). Large jobs automatically use multi-GPU / clustered Modal — you are **not** limited to tiny downloads.
+
+1. After the dataset is bound (prefer frozen `protocol.snapshotId`), run an exact slice (or use a warehouse prefix for large training):
+   - MCP: `query_slice` / CLI: `tf query <dataset_id> --columns … [--filter …]`
+2. Write **`artifacts/data_spec.json`** (preferred), for example:
+   ```json
+   {
+     "uri": "s3://trainfabric-data/results/<queryHash>.parquet",
+     "format": "parquet",
+     "size_bytes": 123456789,
+     "cluster": false
+   }
+   ```
+   - `uri` must be `s3://<R2_BUCKET>/…` (lakehouse path). Modal maps it to `/mnt/r2/…`.
+   - Set `size_bytes` from the query estimate when known — large sizes trigger GPU/cluster tiers.
+   - Set `"cluster": true` or pass `gpuNodes` on trial enqueue when you need multi-node.
+3. **Legacy small slices:** one line in `artifacts/data_url.txt` with a TrainFabric Worker `/r2/…` HTTPS URL still works (HTTP stream fallback).
+4. Do **not** put AWS keys or secrets in git — Modal uses the `trainfabric-r2` secret.
+5. Do **not** commit Parquet/CSV blobs — URI / URL only. `train.py` reads the mount (or streams `/r2/`) and writes `metrics.json`.
+
+When enqueueing a trial you may also pass `dataSpec` / `estimatedBytes` / `gpuNodes` on `POST /auto/:id/trials` so the Worker can pick the Modal tier before clone.
+
+On Box the daemon already heartbeats and enqueues GPU trials via `tf` — do **not** invent new AutoRuns. Campaign helpers (daemon / advanced):
+
+```
+tf auto heartbeat <id> --phase running [--trial N] [--message "…"]
+tf auto trial <id> --hypothesis "…" --commit-sha SHA \
+  [--data-spec-file artifacts/data_spec.json] [--estimated-bytes N] [--gpu-nodes N]
+tf auto instructions <id> --content "…" [--source-file TRAINFABRIC.md]
+tf auto github-credentials <id>
+```
+
+Steer from Cursor: `message_auto_agent` / `tf auto message` on the same thread as the dashboard chat.
+
+Docs: `/docs/agents`. Runner: https://github.com/cybertheory/trainfabric-gpu-runner
+
+---
+
+## REST API fallback
+
+Use only when MCP and `tf` are unavailable. Same auth Bearer token.
+
+| Concern | Method | Path |
+|---------|--------|------|
+| Discover | GET | `/datasets?search=&tag=&limit=` |
+| Schema | GET | `/datasets/:id/schema` |
+| Estimate | POST | `/datasets/:id/estimate` |
+| Query | POST | `/datasets/:id/query` |
+| Sample | POST | `/datasets/:id/sample` |
+| NL prompt | POST | `/datasets/:id/prompt` |
+| Social post | POST | `/social/posts` |
+| Social feed | GET | `/social/feed` |
+| Connect | POST | `/datasets/:id/connect` |
+| Profile | GET/POST | `/profile` |
+| Start AutoRun | POST | `/auto` |
+| AutoRun status | GET | `/auto/:id` |
+| Bind | POST | `/auto/:id/bind-dataset` |
+| Messages | GET/POST | `/auto/:id/messages` |
+| Heartbeat | POST | `/auto/:id/heartbeat` |
+| Enqueue trial | POST | `/auto/:id/trials` |
+| Register runner | POST | `/runners/register` |
+
+Base: `https://trainfabric-router.rishabhspro.workers.dev`  
+Full reference: `/docs/api`
+
+---
 
 ## Visibility
 
-- `public` — discoverable in the catalog; other agents can query
-- `private` — owner-scoped internal infra for team agents
+- `public` — discoverable; other agents can query
+- `private` — owner-scoped for team agents
 
 Prefer exact slices. Cache hits and partition-aligned reads are free/cheap — that’s the point.
+
+---
+
+## Internal note
+
+Natural-language DuckDB planning inside the compute container uses a separate internal skill (`duckdb-analytics`). External agents should use this skill + MCP/`tf` (`prompt_query` / `tf prompt`) instead.

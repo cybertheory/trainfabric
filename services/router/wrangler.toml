@@ -52,7 +52,8 @@ binding = "AI"
 [[containers]]
 class_name = "ComputeContainer"
 image = "../compute/Dockerfile"
-max_instances = 2
+instance_type = "standard-1"
+max_instances = 8
 
 [durable_objects]
 bindings = [

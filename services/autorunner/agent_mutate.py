@@ -115,26 +115,25 @@ TOOL_SPECS: list[dict[str, Any]] = [
 def _load_skills() -> str:
     chunks: list[str] = []
     names = [
-        "autoresearch-mutate.md",
-        "publish-viz-github.md",
-        "trainfabric-cli.md",
+        "trainfabric.md",
+        "trainfabric/SKILL.md",
     ]
-    # Also support nested skill dirs if synced that way
     for name in names:
         p = SKILLS_DIR / name
         if p.is_file():
-            chunks.append(f"## Skill: {name}\n{p.read_text(encoding='utf-8')[:12000]}")
+            chunks.append(f"## Skill: {name}\n{p.read_text(encoding='utf-8')[:16000]}")
+            break
     if not chunks:
-        # Fall back to packaged skill text next to this module
+        # Fall back to packaged skill next to this module / repo layout
         here = Path(__file__).resolve().parent / "skills"
         for rel in (
-            "autoresearch-mutate/SKILL.md",
-            "publish-viz-github/SKILL.md",
-            "trainfabric-cli/SKILL.md",
+            "trainfabric/SKILL.md",
+            "trainfabric.md",
         ):
             p = here / rel
             if p.is_file():
-                chunks.append(f"## Skill: {rel}\n{p.read_text(encoding='utf-8')[:12000]}")
+                chunks.append(f"## Skill: {rel}\n{p.read_text(encoding='utf-8')[:16000]}")
+                break
     return "\n\n".join(chunks) if chunks else "(no skill files loaded)"
 
 

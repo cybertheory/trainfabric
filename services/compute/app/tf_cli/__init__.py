@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Any, Optional
 
 import httpx
@@ -61,7 +62,8 @@ def _headers() -> dict[str, str]:
         "Authorization": f"Bearer {_token()}",
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "User-Agent": "trainfabric-tf-cli/1.0",
+        # Browser-like UA — Cloudflare bot score bans bare "trainfabric-*" from Box egress.
+        "User-Agent": "Mozilla/5.0 (compatible; TrainfabricTfCli/1.0; +https://trainfabric.ai)",
     }
 
 
@@ -615,13 +617,32 @@ def auto_trial(
     auto_run_id: str = typer.Argument(...),
     hypothesis: str = typer.Option(..., "--hypothesis", "-H"),
     commit_sha: str = typer.Option(..., "--commit-sha", help="Git SHA for this trial"),
+    data_spec_file: Optional[str] = typer.Option(
+        None,
+        "--data-spec-file",
+        help="Path to artifacts/data_spec.json (s3:// URI + optional size_bytes)",
+    ),
+    estimated_bytes: Optional[int] = typer.Option(
+        None,
+        "--estimated-bytes",
+        help="Hint for Modal tier (cpu / gpu / cluster)",
+    ),
+    gpu_nodes: Optional[int] = typer.Option(
+        None,
+        "--gpu-nodes",
+        help="Request Modal multi-node cluster when > 1",
+    ),
 ) -> None:
     """Enqueue a GPU trial for an AutoRun (POST /auto/:id/trials)."""
-    _request(
-        "POST",
-        f"/auto/{auto_run_id}/trials",
-        {"hypothesis": hypothesis, "commitSha": commit_sha},
-    )
+    body: dict[str, Any] = {"hypothesis": hypothesis, "commitSha": commit_sha}
+    if data_spec_file:
+        path = Path(data_spec_file)
+        body["dataSpec"] = json.loads(path.read_text(encoding="utf-8"))
+    if estimated_bytes is not None:
+        body["estimatedBytes"] = estimated_bytes
+    if gpu_nodes is not None:
+        body["gpuNodes"] = gpu_nodes
+    _request("POST", f"/auto/{auto_run_id}/trials", body)
 
 
 @auto_app.command("instructions")
